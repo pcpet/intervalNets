@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import inf, nextafter
 from typing import Any
 
 from .interval import Interval
@@ -49,6 +50,16 @@ def _scalar_interval_from_weight(weight: float, value: Interval) -> Interval:
     return Interval.point(weight) * value
 
 
+def _apply_monotone_bounds(x: IntervalTensor, func) -> IntervalTensor:
+    lower = tuple(nextafter(func(bound), -inf) for bound in x.lower)
+    upper = tuple(nextafter(func(bound), inf) for bound in x.upper)
+    return IntervalTensor(lower, upper)
+
+
+def _relu_forward(layer, x: IntervalTensor) -> IntervalTensor:
+    return _apply_monotone_bounds(x, lambda value: max(0.0, value))
+
+
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
     weight = layer.weight.detach().cpu().tolist()
     bias = layer.bias.detach().cpu().tolist() if layer.bias is not None else None
@@ -81,8 +92,10 @@ def interval_forward(module, x: IntervalTensor) -> IntervalTensor:
         return IntervalTensor(tuple(x.lower), tuple(x.upper))
     if isinstance(module, nn.Linear):
         return _linear_forward(module, x)
+    if isinstance(module, nn.ReLU):
+        return _relu_forward(module, x)
     raise NotImplementedError(
-        f"Interval forward currently supports nn.Sequential, nn.Flatten, and nn.Linear only; got {type(module).__name__}."
+        f"Interval forward currently supports nn.Sequential, nn.Flatten, nn.Linear, and nn.ReLU only; got {type(module).__name__}."
     )
 
 
