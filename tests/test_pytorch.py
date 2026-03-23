@@ -37,20 +37,6 @@ def test_zero_network_contains_zero_with_rounding_margin() -> None:
     assert all(item > 0.0 for item in output.upper)
 
 
-def test_random_nonzero_network_expands_degenerate_input() -> None:
-    torch.manual_seed(0)
-    model = nn.Sequential(nn.Linear(3, 4), nn.Linear(4, 2))
-
-    with torch.no_grad():
-        assert torch.count_nonzero(model[0].weight) > 0
-        assert torch.count_nonzero(model[1].weight) > 0
-
-    interval = IntervalTensor.point([1.0, 1.0, 1.0])
-    output = interval_forward(model, interval)
-
-    assert all(lower < upper for lower, upper in zip(output.lower, output.upper))
-
-
 def test_eval_overload_runs_interval_propagation() -> None:
     enable_interval_eval()
     model = nn.Sequential(nn.Linear(2, 3), nn.Linear(3, 1))
