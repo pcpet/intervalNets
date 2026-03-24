@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import inf, nextafter
+from math import exp, inf, log, nextafter
 from typing import Any
 
 from .interval import Interval
@@ -89,22 +89,27 @@ def _sigmoid_forward(layer, x: IntervalTensor) -> IntervalTensor:
     return _apply_monotone_bounds(x, _sigmoid_scalar)
 
 
+def _logsumexp(values: tuple[float, ...]) -> float:
+    """Numerically stable log(sum(exp(values)))."""
+    pivot = max(values)
+    if pivot == -inf:
+        return -inf
+    return pivot + log(sum(exp(value - pivot) for value in values))
+
+
 def _softmax_component_bounds(index: int, lower: tuple[float, ...], upper: tuple[float, ...]) -> tuple[float, float]:
-    lower_num = float(torch.exp(torch.tensor(lower[index], dtype=torch.float64)).item())
-    lower_den = lower_num + sum(
-        float(torch.exp(torch.tensor(upper[j], dtype=torch.float64)).item())
-        for j in range(len(lower))
-        if j != index
-    )
+    # Exact box extrema for component i:
+    # min uses x_i=lower_i and x_j=upper_j (j != i),
+    # max uses x_i=upper_i and x_j=lower_j (j != i).
+    lower_terms = tuple(lower[index] if j == index else upper[j] for j in range(len(lower)))
+    upper_terms = tuple(upper[index] if j == index else lower[j] for j in range(len(lower)))
 
-    upper_num = float(torch.exp(torch.tensor(upper[index], dtype=torch.float64)).item())
-    upper_den = upper_num + sum(
-        float(torch.exp(torch.tensor(lower[j], dtype=torch.float64)).item())
-        for j in range(len(lower))
-        if j != index
-    )
+    lower_log_ratio = lower[index] - _logsumexp(lower_terms)
+    upper_log_ratio = upper[index] - _logsumexp(upper_terms)
 
-    return nextafter(lower_num / lower_den, -inf), nextafter(upper_num / upper_den, inf)
+    lower_value = exp(lower_log_ratio)
+    upper_value = exp(upper_log_ratio)
+    return nextafter(lower_value, -inf), nextafter(upper_value, inf)
 
 
 def _softmax_forward(layer, x: IntervalTensor) -> IntervalTensor:
@@ -113,7 +118,10 @@ def _softmax_forward(layer, x: IntervalTensor) -> IntervalTensor:
 
     dim = layer.dim
     n = len(x.lower)
-    if dim not in (-1, 0):
+    # Older PyTorch models may carry dim=None; for 1D vectors this is equivalent
+    # to applying softmax over the single axis.
+    normalized_dim = -1 if dim is None else dim
+    if normalized_dim not in (-1, 0):
         raise NotImplementedError(
             f"Interval Softmax currently supports dim=-1/0 for 1D vectors only; got dim={dim}."
         )
