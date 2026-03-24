@@ -51,9 +51,6 @@ def _scalar_interval_from_weight(weight: float, value: Interval) -> Interval:
 
 
 def _apply_monotone_bounds(x: IntervalTensor, func) -> IntervalTensor:
-    # For monotone scalar functions over an interval [l, u], extrema occur at
-    # endpoints, so f(l) is the lower bound and f(u) is the upper bound.
-    # We then round outward to keep sound enclosures under floating-point math.
     lower = tuple(nextafter(func(bound), -inf) for bound in x.lower)
     upper = tuple(nextafter(func(bound), inf) for bound in x.upper)
     return IntervalTensor(lower, upper)
@@ -63,14 +60,48 @@ def _relu_forward(layer, x: IntervalTensor) -> IntervalTensor:
     return _apply_monotone_bounds(x, lambda value: max(0.0, value))
 
 
-def _sigmoid_scalar(value: float) -> float:
-    # Sigmoid is strictly increasing on R, so interval propagation can safely
-    # evaluate only the endpoints and preserve soundness with outward rounding.
-    return float(torch.sigmoid(torch.tensor(value, dtype=torch.float64)).item())
+def _softmax_component_bounds(index: int, lower: tuple[float, ...], upper: tuple[float, ...]) -> tuple[float, float]:
+    lower_num = float(torch.exp(torch.tensor(lower[index], dtype=torch.float64)).item())
+    lower_den = lower_num + sum(
+        float(torch.exp(torch.tensor(upper[j], dtype=torch.float64)).item())
+        for j in range(len(lower))
+        if j != index
+    )
+
+    upper_num = float(torch.exp(torch.tensor(upper[index], dtype=torch.float64)).item())
+    upper_den = upper_num + sum(
+        float(torch.exp(torch.tensor(lower[j], dtype=torch.float64)).item())
+        for j in range(len(lower))
+        if j != index
+    )
+
+    return nextafter(lower_num / lower_den, -inf), nextafter(upper_num / upper_den, inf)
 
 
-def _sigmoid_forward(layer, x: IntervalTensor) -> IntervalTensor:
-    return _apply_monotone_bounds(x, _sigmoid_scalar)
+def _softmax_forward(layer, x: IntervalTensor) -> IntervalTensor:
+    if len(x.shape) != 1:
+        raise NotImplementedError("Interval Softmax currently supports 1D vectors only.")
+
+    dim = layer.dim
+    n = len(x.lower)
+    if dim not in (-1, 0):
+        raise NotImplementedError(
+            f"Interval Softmax currently supports dim=-1/0 for 1D vectors only; got dim={dim}."
+        )
+    if n == 0:
+        raise ValueError("Softmax input interval must be non-empty.")
+
+    lower = tuple(float(v) for v in x.lower)
+    upper = tuple(float(v) for v in x.upper)
+
+    lower_out: list[float] = []
+    upper_out: list[float] = []
+    for index in range(n):
+        component_lower, component_upper = _softmax_component_bounds(index, lower, upper)
+        lower_out.append(component_lower)
+        upper_out.append(component_upper)
+
+    return IntervalTensor(tuple(lower_out), tuple(upper_out))
 
 
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
@@ -107,11 +138,10 @@ def interval_forward(module, x: IntervalTensor) -> IntervalTensor:
         return _linear_forward(module, x)
     if isinstance(module, nn.ReLU):
         return _relu_forward(module, x)
-    if isinstance(module, nn.Sigmoid):
-        return _sigmoid_forward(module, x)
+    if isinstance(module, nn.Softmax):
+        return _softmax_forward(module, x)
     raise NotImplementedError(
-        "Interval forward currently supports nn.Sequential, nn.Flatten, nn.Linear, nn.ReLU, and nn.Sigmoid only; "
-        f"got {type(module).__name__}."
+        f"Interval forward currently supports nn.Sequential, nn.Flatten, nn.Linear, nn.ReLU, and nn.Softmax only; got {type(module).__name__}."
     )
 
 

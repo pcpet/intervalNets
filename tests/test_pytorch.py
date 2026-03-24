@@ -1,3 +1,4 @@
+import math
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -124,8 +125,68 @@ def test_eval_overload_runs_interval_propagation() -> None:
     assert result.upper[0] >= 1.125
 
 
+
+def test_softmax_bounds_match_closed_form_in_two_dimensions() -> None:
+    softmax = nn.Softmax(dim=-1)
+    interval = IntervalTensor.from_bounds([-1.0, 0.25], [0.5, 1.75])
+
+    output = interval_forward(softmax, interval)
+
+    expected_lower_0 = math.exp(-1.0) / (math.exp(-1.0) + math.exp(1.75))
+    expected_upper_0 = math.exp(0.5) / (math.exp(0.5) + math.exp(0.25))
+    expected_lower_1 = math.exp(0.25) / (math.exp(0.25) + math.exp(0.5))
+    expected_upper_1 = math.exp(1.75) / (math.exp(1.75) + math.exp(-1.0))
+
+    assert output.lower[0] <= expected_lower_0
+    assert output.upper[0] >= expected_upper_0
+    assert output.lower[1] <= expected_lower_1
+    assert output.upper[1] >= expected_upper_1
+
+
+def test_softmax_encloses_all_corner_evaluations_in_three_dimensions() -> None:
+    softmax = nn.Softmax(dim=-1)
+    interval = IntervalTensor.from_bounds([-1.5, -0.25, 0.1], [0.5, 1.0, 1.5])
+
+    output = interval_forward(softmax, interval)
+
+    corners = [
+        (x0, x1, x2)
+        for x0 in (interval.lower[0], interval.upper[0])
+        for x1 in (interval.lower[1], interval.upper[1])
+        for x2 in (interval.lower[2], interval.upper[2])
+    ]
+    for corner in corners:
+        values = torch.tensor(corner, dtype=torch.float64)
+        eval_softmax = torch.softmax(values, dim=-1)
+        for idx, exact in enumerate(eval_softmax.tolist()):
+            assert output.lower[idx] <= exact
+            assert output.upper[idx] >= exact
+
+
+def test_softmax_component_bounds_are_probabilities() -> None:
+    softmax = nn.Softmax(dim=-1)
+    interval = IntervalTensor.from_bounds([-2.0, -1.0, 0.0, 0.5], [1.0, 1.5, 2.0, 3.0])
+
+    output = interval_forward(softmax, interval)
+
+    assert all(0.0 <= lower <= 1.0 for lower in output.lower)
+    assert all(0.0 <= upper <= 1.0 for upper in output.upper)
+    assert sum(output.lower) <= 1.0 <= sum(output.upper)
+
+
+def test_softmax_point_interval_is_outward_non_degenerate() -> None:
+    softmax = nn.Softmax(dim=-1)
+    interval = IntervalTensor.point([0.0, 1.0, -0.5])
+
+    output = interval_forward(softmax, interval)
+    exact = torch.softmax(torch.tensor([0.0, 1.0, -0.5], dtype=torch.float64), dim=-1).tolist()
+
+    for idx, exact_item in enumerate(exact):
+        assert output.lower[idx] < exact_item < output.upper[idx]
+
+
 def test_unsupported_activation_raises_not_implemented() -> None:
-    model = nn.Sequential(nn.Linear(2, 2), nn.Sigmoid())
+    model = nn.Sequential(nn.Linear(2, 2), nn.Tanh())
     interval = IntervalTensor.point([0.0, 1.0])
     with pytest.raises(NotImplementedError):
         _ = interval_forward(model, interval)
