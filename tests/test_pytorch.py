@@ -381,3 +381,150 @@ def test_sobolev_norm_refinement_tightens_interval() -> None:
     assert refined.lower >= coarse.lower
     assert refined.upper <= coarse.upper
     assert (refined.upper - refined.lower) <= (coarse.upper - coarse.lower)
+
+
+def test_sigmoid_interval_encloses_endpoint_images() -> None:
+    sigmoid = nn.Sigmoid()
+    interval = IntervalTensor.from_bounds([-3.0, -0.25, 2.0], [-1.0, 0.5, 4.0])
+
+    output = interval_forward(sigmoid, interval)
+    exact_lower = torch.sigmoid(torch.tensor(interval.lower, dtype=torch.float64)).tolist()
+    exact_upper = torch.sigmoid(torch.tensor(interval.upper, dtype=torch.float64)).tolist()
+
+    for idx in range(len(exact_lower)):
+        assert output.lower[idx] <= exact_lower[idx]
+        assert output.upper[idx] >= exact_upper[idx]
+
+
+def test_flatten_forwards_bounds_unchanged_for_flat_vectors() -> None:
+    flatten = nn.Flatten()
+    interval = IntervalTensor.from_bounds([-1.0, 2.0, 3.5], [0.0, 4.0, 5.5])
+
+    output = interval_forward(flatten, interval)
+
+    assert output.lower == interval.lower
+    assert output.upper == interval.upper
+
+
+def test_softmax_empty_vector_rejected() -> None:
+    softmax = nn.Softmax(dim=-1)
+    empty = IntervalTensor.from_bounds([], [])
+    with pytest.raises(ValueError):
+        _ = interval_forward(softmax, empty)
+
+
+def test_softmax_invalid_dim_rejected_for_vector_input() -> None:
+    softmax = nn.Softmax(dim=1)
+    interval = IntervalTensor.from_bounds([-1.0, 2.0], [1.0, 3.0])
+    with pytest.raises(NotImplementedError):
+        _ = interval_forward(softmax, interval)
+
+
+def test_enable_interval_eval_is_idempotent_and_preserves_standard_eval() -> None:
+    enable_interval_eval()
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(2, 1))
+    result = model.eval()
+    assert result is model
+
+
+def test_eval_interval_argument_requires_interval_tensor() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1))
+    with pytest.raises(TypeError):
+        _ = model.eval([0.0, 1.0])
+
+
+def test_lpnorm_rejects_invalid_parameters() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1))
+    domain = IntervalTensor.from_bounds([0.0], [1.0])
+
+    with pytest.raises(ValueError):
+        _ = model.lpnorm(domain, p=0.0, iterations=0)
+    with pytest.raises(ValueError):
+        _ = model.lpnorm(domain, p=float("nan"), iterations=0)
+    with pytest.raises(ValueError):
+        _ = model.lpnorm(domain, p=2.0, iterations=-1)
+
+
+def test_sobolev_norm_rejects_invalid_parameters() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1))
+    domain = IntervalTensor.from_bounds([0.0], [1.0])
+
+    with pytest.raises(ValueError):
+        _ = model.sobolev_norm(domain, p=0.0, iterations=0)
+    with pytest.raises(ValueError):
+        _ = model.sobolev_norm(domain, p=float("inf"), iterations=0)
+    with pytest.raises(ValueError):
+        _ = model.sobolev_norm(domain, p=2.0, iterations=-1)
+
+
+def test_lpnorm_requires_interval_tensor_domain() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1))
+    with pytest.raises(TypeError):
+        _ = model.lpnorm([0.0, 1.0], p=2.0, iterations=0)
+
+
+def test_sobolev_norm_requires_interval_tensor_domain() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1))
+    with pytest.raises(TypeError):
+        _ = model.sobolev_norm([0.0, 1.0], p=2.0, iterations=0)
+
+
+def test_eval_jacobian_requires_interval_tensor_domain() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1))
+    with pytest.raises(TypeError):
+        _ = model.eval_jacobian([0.0, 1.0])
+
+
+def test_softmax_jacobian_encloses_autograd_corner_gradients() -> None:
+    enable_interval_eval()
+    softmax = nn.Softmax(dim=-1)
+    domain = IntervalTensor.from_bounds([-1.0, 0.1, 1.5], [0.5, 1.0, 2.5])
+
+    jacobian = softmax.eval_jacobian(domain)
+
+    corners = [
+        torch.tensor(values, dtype=torch.float32)
+        for values in [
+            [domain.lower[0], domain.lower[1], domain.lower[2]],
+            [domain.lower[0], domain.lower[1], domain.upper[2]],
+            [domain.lower[0], domain.upper[1], domain.lower[2]],
+            [domain.lower[0], domain.upper[1], domain.upper[2]],
+            [domain.upper[0], domain.lower[1], domain.lower[2]],
+            [domain.upper[0], domain.lower[1], domain.upper[2]],
+            [domain.upper[0], domain.upper[1], domain.lower[2]],
+            [domain.upper[0], domain.upper[1], domain.upper[2]],
+        ]
+    ]
+    for point in corners:
+        point = point.clone().detach().requires_grad_(True)
+        output = softmax(point)
+        for row in range(3):
+            grad = torch.autograd.grad(output[row], point, retain_graph=True)[0]
+            for col in range(3):
+                exact = float(grad[col].item())
+                assert jacobian.lower[row][col] <= exact <= jacobian.upper[row][col]
+
+
+def test_sigmoid_jacobian_encloses_autograd_corner_gradients() -> None:
+    enable_interval_eval()
+    sigmoid = nn.Sigmoid()
+    domain = IntervalTensor.from_bounds([-10.0, -0.25], [0.5, 12.0])
+
+    jacobian = sigmoid.eval_jacobian(domain)
+
+    for x0 in (domain.lower[0], domain.upper[0]):
+        for x1 in (domain.lower[1], domain.upper[1]):
+            point = torch.tensor([x0, x1], dtype=torch.float32, requires_grad=True)
+            output = sigmoid(point)
+            for row in range(2):
+                grad = torch.autograd.grad(output[row], point, retain_graph=True)[0]
+                for col in range(2):
+                    exact = float(grad[col].item())
+                    assert jacobian.lower[row][col] <= exact <= jacobian.upper[row][col]
