@@ -23,9 +23,13 @@
 
 ### Option 1: install the package into your environment
 
-From the repository root:
+From the repository root (either approach works):
 
 ```bash
+# Option A: install dependencies directly
+pip install -r requirements.txt
+
+# Option B: install the package in editable mode
 pip install -e .
 ```
 
