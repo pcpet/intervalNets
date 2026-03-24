@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import exp, inf, log, nextafter
+from math import exp, inf, isfinite, log, nextafter
 from typing import Any
 
 from .interval import Interval
@@ -162,6 +162,104 @@ def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
     return IntervalTensor(lower, upper)
 
 
+def _interval_abs_bounds(value: Interval) -> Interval:
+    if isinstance(value.lower, tuple) or isinstance(value.upper, tuple):
+        raise ValueError("Expected a scalar interval.")
+    lower = float(value.lower)
+    upper = float(value.upper)
+    if lower <= 0.0 <= upper:
+        return Interval.from_bounds(0.0, max(abs(lower), abs(upper)))
+    candidates = (abs(lower), abs(upper))
+    return Interval.from_bounds(min(candidates), max(candidates))
+
+
+def _interval_pow_scalar(value: Interval, exponent: float) -> Interval:
+    if isinstance(value.lower, tuple) or isinstance(value.upper, tuple):
+        raise ValueError("Expected a scalar interval.")
+    if value.lower < 0.0:
+        raise ValueError("Power bounds currently require non-negative intervals.")
+    lower = float(value.lower) ** exponent
+    upper = float(value.upper) ** exponent
+    return Interval.from_bounds(lower, upper)
+
+
+def _box_volume(box: IntervalTensor) -> float:
+    if len(box.shape) != 1:
+        raise NotImplementedError("Lp integration currently supports 1D boxes only.")
+    volume = 1.0
+    for lower, upper in zip(box.lower, box.upper):
+        width = float(upper - lower)
+        if width < 0.0:
+            raise ValueError("Box widths must be non-negative.")
+        volume *= width
+    return volume
+
+
+def _lp_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval:
+    output = model.eval(box)
+    components = [Interval(lb, ub) for lb, ub in zip(output.lower, output.upper)]
+    total = Interval.point(0.0)
+    for component in components:
+        absolute = _interval_abs_bounds(component)
+        total = total + _interval_pow_scalar(absolute, p)
+    return total
+
+
+def _split_box(box: IntervalTensor) -> tuple[IntervalTensor, IntervalTensor]:
+    widths = [upper - lower for lower, upper in zip(box.lower, box.upper)]
+    split_dim = max(range(len(widths)), key=lambda idx: widths[idx])
+    midpoint = 0.5 * (box.lower[split_dim] + box.upper[split_dim])
+
+    lower_left = list(box.lower)
+    upper_left = list(box.upper)
+    lower_right = list(box.lower)
+    upper_right = list(box.upper)
+
+    upper_left[split_dim] = midpoint
+    lower_right[split_dim] = midpoint
+
+    return (
+        IntervalTensor.from_bounds(lower_left, upper_left),
+        IntervalTensor.from_bounds(lower_right, upper_right),
+    )
+
+
+def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int) -> Interval:
+    if not isinstance(domain, IntervalTensor):
+        raise TypeError("model.lpnorm(domain, p, iterations) requires an IntervalTensor domain.")
+    if len(domain.shape) != 1:
+        raise NotImplementedError("Lp integration currently supports flat input boxes only.")
+    if not isfinite(p) or p <= 0.0:
+        raise ValueError("p must be a positive finite real number.")
+    if iterations < 0:
+        raise ValueError("iterations must be non-negative.")
+
+    boxes = [domain]
+    for _ in range(iterations):
+        indicators: list[float] = []
+        for box in boxes:
+            integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
+            width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
+            indicators.append(width * _box_volume(box))
+        target = max(range(len(boxes)), key=lambda idx: indicators[idx])
+        selected = boxes.pop(target)
+        left, right = _split_box(selected)
+        boxes.extend([left, right])
+
+    integral = Interval.point(0.0)
+    for box in boxes:
+        integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
+        weighted = Interval.from_bounds(
+            float(integrand_bounds.lower) * _box_volume(box),
+            float(integrand_bounds.upper) * _box_volume(box),
+        )
+        integral = integral + weighted
+
+    non_negative = Interval.from_bounds(max(0.0, float(integral.lower)), max(0.0, float(integral.upper)))
+    exponent = 1.0 / p
+    return Interval.from_bounds(float(non_negative.lower) ** exponent, float(non_negative.upper) ** exponent)
+
+
 def interval_forward(module, x: IntervalTensor) -> IntervalTensor:
     _require_torch()
     if isinstance(module, nn.Sequential):
@@ -202,5 +300,10 @@ def enable_interval_eval() -> None:
             raise TypeError("model.eval(interval) requires an IntervalTensor input.")
         return interval_forward(self, interval)
 
+    def lpnorm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0):
+        _ORIGINAL_EVAL(self)
+        return _lpnorm_bounds(self, domain, p, iterations)
+
     nn.Module.eval = eval_with_interval
+    nn.Module.lpnorm = lpnorm_with_interval
     _PATCHED = True
