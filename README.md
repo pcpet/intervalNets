@@ -72,7 +72,11 @@ After that, `from intervalnets import ...` will work from the checkout as well.
 - PyTorch integration is optional and requires installing PyTorch separately,
 - the included notebook now auto-detects the repo root and adds `src/` to `sys.path` for convenience.
 
-For worked examples, see `notebooks/test_suite.ipynb`, which now includes four ReLU-specific notebook test cases with explicit `PASS` messages.
+For worked examples, see:
+
+- `notebooks/test_suite.ipynb` for quick feature checks and sanity tests,
+- `notebooks/reproduce_lp_w1p_experiments.ipynb` for reproducible certified
+  `L^p` and `W^{1,p}` experiments aligned with arXiv:2603.06431 (intentionally excluding `W^{2,p}`).
 
 ## Reference
 
