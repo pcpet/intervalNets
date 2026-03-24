@@ -249,8 +249,9 @@ def test_interval_add_encloses_branch_sum_corners() -> None:
         for x0 in (interval.lower[0], interval.upper[0])
         for x1 in (interval.lower[1], interval.upper[1])
     ]
+    eval_dtype = model.left[0].weight.dtype
     for corner in corners:
-        value = model(torch.tensor(corner, dtype=torch.float64)).detach().tolist()
+        value = model(torch.tensor(corner, dtype=eval_dtype)).detach().tolist()
         for idx, exact in enumerate(value):
             assert output.lower[idx] <= exact
             assert output.upper[idx] >= exact
@@ -279,8 +280,9 @@ def test_interval_cat_combines_branch_outputs() -> None:
         for x0 in (interval.lower[0], interval.upper[0])
         for x1 in (interval.lower[1], interval.upper[1])
     ]
+    eval_dtype = model.branches[0][0].weight.dtype
     for corner in corners:
-        value = model(torch.tensor(corner, dtype=torch.float64)).detach().tolist()
+        value = model(torch.tensor(corner, dtype=eval_dtype)).detach().tolist()
         for idx, exact in enumerate(value):
             assert output.lower[idx] <= exact
             assert output.upper[idx] >= exact
