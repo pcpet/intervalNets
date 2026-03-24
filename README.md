@@ -47,6 +47,7 @@ output = model.eval(interval)
 
 domain = IntervalTensor.from_bounds([0.0, 0.0], [1.0, 1.0])
 lp_bounds = model.lpnorm(domain, p=2.0, iterations=8)
+w1p_bounds = model.sobolev_norm(domain, p=2.0, iterations=8)
 ```
 
 ### Option 2: run directly from the repo without installing
