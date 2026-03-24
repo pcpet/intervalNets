@@ -614,3 +614,21 @@ def test_sigmoid_jacobian_encloses_autograd_corner_gradients() -> None:
                 for col in range(2):
                     exact = float(grad[col].item())
                     assert jacobian.lower[row][col] <= exact <= jacobian.upper[row][col]
+
+
+def test_tanh_jacobian_encloses_autograd_corner_gradients() -> None:
+    enable_interval_eval()
+    tanh = nn.Tanh()
+    domain = IntervalTensor.from_bounds([-2.0, -0.25], [0.5, 1.5])
+
+    jacobian = tanh.eval_jacobian(domain)
+
+    for x0 in (domain.lower[0], domain.upper[0]):
+        for x1 in (domain.lower[1], domain.upper[1]):
+            point = torch.tensor([x0, x1], dtype=torch.float32, requires_grad=True)
+            output = tanh(point)
+            for row in range(2):
+                grad = torch.autograd.grad(output[row], point, retain_graph=True)[0]
+                for col in range(2):
+                    exact = float(grad[col].item())
+                    assert jacobian.lower[row][col] <= exact <= jacobian.upper[row][col]

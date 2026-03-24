@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import exp, inf, isfinite, log, nextafter
+from math import exp, inf, isfinite, log, nextafter, tanh
 from typing import Any
 
 from .interval import Interval
@@ -369,6 +369,22 @@ def _interval_derivative_bounds_sigmoid(value: Interval) -> Interval:
     return Interval.from_bounds(minimum, maximum)
 
 
+def _interval_derivative_bounds_tanh(value: Interval) -> Interval:
+    lower = float(value.lower)
+    upper = float(value.upper)
+    tanh_lower = tanh(lower)
+    tanh_upper = tanh(upper)
+
+    derivative_lower_endpoint = 1.0 - tanh_lower * tanh_lower
+    derivative_upper_endpoint = 1.0 - tanh_upper * tanh_upper
+
+    maximum = max(derivative_lower_endpoint, derivative_upper_endpoint)
+    if lower <= 0.0 <= upper:
+        maximum = 1.0
+    minimum = min(derivative_lower_endpoint, derivative_upper_endpoint)
+    return Interval.from_bounds(minimum, maximum)
+
+
 def _matrix_multiply(left: list[list[Interval]], right: list[list[Interval]]) -> list[list[Interval]]:
     if not left or not right:
         return []
@@ -411,6 +427,13 @@ def _jacobian_for_layer(layer, pre_activation: IntervalTensor) -> list[list[Inte
         ]
         size = len(derivatives)
         return [[derivatives[row_idx] if row_idx == col_idx else Interval.point(0.0) for col_idx in range(size)] for row_idx in range(size)]
+    if isinstance(layer, nn.Tanh):
+        derivatives = [
+            _interval_derivative_bounds_tanh(Interval(pre_activation.lower[idx], pre_activation.upper[idx]))
+            for idx in range(len(pre_activation.lower))
+        ]
+        size = len(derivatives)
+        return [[derivatives[row_idx] if row_idx == col_idx else Interval.point(0.0) for col_idx in range(size)] for row_idx in range(size)]
     if isinstance(layer, nn.Softmax):
         softmax_bounds = _softmax_forward(layer, pre_activation)
         size = len(softmax_bounds.lower)
@@ -431,7 +454,7 @@ def _jacobian_for_layer(layer, pre_activation: IntervalTensor) -> list[list[Inte
             raise NotImplementedError("Interval Jacobians currently support flat vectors only.")
         return _identity_jacobian(len(pre_activation.lower))
     raise NotImplementedError(
-        f"Interval Jacobian currently supports nn.Linear, nn.ReLU, nn.Sigmoid, nn.Softmax, and nn.Flatten; got {type(layer).__name__}."
+        f"Interval Jacobian currently supports nn.Linear, nn.ReLU, nn.Sigmoid, nn.Tanh, nn.Softmax, and nn.Flatten; got {type(layer).__name__}."
     )
 
 
