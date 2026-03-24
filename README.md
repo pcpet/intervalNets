@@ -67,7 +67,7 @@ After that, `from intervalnets import ...` will work from the checkout as well.
 - PyTorch integration is optional and requires installing PyTorch separately,
 - the included notebook now auto-detects the repo root and adds `src/` to `sys.path` for convenience.
 
-For worked examples, see `notebooks/interval_linear_networks.ipynb`, which now includes four ReLU-specific notebook test cases with explicit `PASS` messages.
+For worked examples, see `notebooks/test_suite.ipynb`, which now includes four ReLU-specific notebook test cases with explicit `PASS` messages.
 
 ## Reference
 
