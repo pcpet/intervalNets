@@ -4,7 +4,8 @@ import pytest
 torch = pytest.importorskip("torch")
 from torch import nn
 
-from intervalnets import IntervalTensor, enable_interval_eval, interval_forward
+from intervalnets import Interval, IntervalTensor, enable_interval_eval, interval_forward
+from intervalnets.pytorch import _interval_pow_scalar
 
 
 def test_relu_negative_interval_rounds_outward_to_zero() -> None:
@@ -214,3 +215,85 @@ def test_unsupported_activation_raises_not_implemented() -> None:
     interval = IntervalTensor.point([0.0, 1.0])
     with pytest.raises(NotImplementedError):
         _ = interval_forward(model, interval)
+
+
+def test_lpnorm_zero_network_returns_zero_interval() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(2, 1))
+    with torch.no_grad():
+        model[0].weight.zero_()
+        model[0].bias.zero_()
+
+    domain = IntervalTensor.from_bounds([-1.0, -2.0], [3.0, 4.0])
+    bounds = model.lpnorm(domain, p=2.0, iterations=6)
+
+    assert bounds.lower <= 0.0 <= bounds.upper
+    assert bounds.upper < 1e-10
+
+
+def test_interval_pow_scalar_accepts_outward_rounded_near_zero_lower_bound() -> None:
+    near_zero = Interval.from_bounds(0.0, 2.0)
+
+    result = _interval_pow_scalar(near_zero, exponent=2.0)
+
+    assert result.lower <= 0.0 <= result.upper
+
+
+def test_interval_pow_scalar_handles_fractional_exponent_near_zero() -> None:
+    near_zero = Interval.from_bounds(0.0, 0.0)
+
+    result = _interval_pow_scalar(near_zero, exponent=0.5)
+
+    assert result.lower <= 0.0 <= result.upper
+
+
+def test_lpnorm_constant_network_matches_exact_value() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1))
+    with torch.no_grad():
+        model[0].weight.zero_()
+        model[0].bias.fill_(3.0)
+
+    domain = IntervalTensor.from_bounds([0.0], [2.0])
+    bounds = model.lpnorm(domain, p=2.0, iterations=4)
+    exact = (18.0) ** 0.5
+
+    assert bounds.lower <= exact <= bounds.upper
+    assert (bounds.upper - bounds.lower) < 1e-10
+
+
+def test_lpnorm_refinement_tightens_interval() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 8), nn.ReLU(), nn.Linear(8, 1))
+    torch.manual_seed(2)
+    for parameter in model.parameters():
+        nn.init.uniform_(parameter, a=-1.0, b=1.0)
+
+    domain = IntervalTensor.from_bounds([-1.0], [1.0])
+    coarse = model.lpnorm(domain, p=2.0, iterations=0)
+    refined = model.lpnorm(domain, p=2.0, iterations=8)
+
+    assert refined.lower >= coarse.lower
+    assert refined.upper <= coarse.upper
+    assert (refined.upper - refined.lower) <= (coarse.upper - coarse.lower)
+
+
+def test_lpnorm_contains_monte_carlo_estimate() -> None:
+    enable_interval_eval()
+    torch.manual_seed(7)
+    model = nn.Sequential(nn.Linear(2, 6), nn.ReLU(), nn.Linear(6, 1))
+
+    domain = IntervalTensor.from_bounds([-1.0, -0.5], [1.0, 1.5])
+    bounds = model.lpnorm(domain, p=2.0, iterations=10)
+
+    sample_count = 40000
+    with torch.no_grad():
+        samples = torch.rand(sample_count, 2, dtype=torch.float64)
+        samples[:, 0] = 2.0 * samples[:, 0] - 1.0
+        samples[:, 1] = 2.0 * samples[:, 1] + (-0.5)
+        values = model(samples.to(dtype=torch.float32)).to(dtype=torch.float64)
+        integrand = torch.abs(values.squeeze(-1)) ** 2.0
+        volume = (1.0 - (-1.0)) * (1.5 - (-0.5))
+        estimate = float((volume * torch.mean(integrand)).sqrt().item())
+
+    assert bounds.lower <= estimate <= bounds.upper
