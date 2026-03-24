@@ -4,7 +4,7 @@ import pytest
 torch = pytest.importorskip("torch")
 from torch import nn
 
-from intervalnets import Interval, IntervalTensor, enable_interval_eval, interval_forward
+from intervalnets import Interval, IntervalAdd, IntervalCat, IntervalTensor, enable_interval_eval, interval_forward
 from intervalnets.pytorch import _interval_pow_scalar
 
 
@@ -210,8 +210,94 @@ def test_softmax_remains_finite_for_large_magnitude_logits() -> None:
     assert output.upper[0] <= 1.0
 
 
+@pytest.mark.parametrize(
+    ("activation", "fn"),
+    [
+        (nn.Tanh(), lambda value: math.tanh(value)),
+        (nn.Softplus(beta=1.0, threshold=20.0), lambda value: math.log1p(math.exp(value))),
+        (nn.LeakyReLU(negative_slope=0.2), lambda value: value if value >= 0.0 else 0.2 * value),
+    ],
+)
+def test_added_monotone_activations_enclose_endpoint_images(activation, fn) -> None:
+    interval = IntervalTensor.from_bounds([-1.5, -0.25, 0.5], [0.2, 1.0, 2.0])
+
+    output = interval_forward(activation, interval)
+
+    for idx in range(len(interval.lower)):
+        lower_exact = fn(interval.lower[idx])
+        upper_exact = fn(interval.upper[idx])
+        assert output.lower[idx] <= lower_exact
+        assert output.upper[idx] >= upper_exact
+
+
+def test_interval_add_encloses_branch_sum_corners() -> None:
+    model = IntervalAdd(
+        nn.Sequential(nn.Linear(2, 2), nn.Tanh()),
+        nn.Sequential(nn.Linear(2, 2), nn.LeakyReLU(negative_slope=0.1)),
+    )
+    with torch.no_grad():
+        model.left[0].weight.copy_(torch.tensor([[1.0, -0.5], [0.5, 1.0]]))
+        model.left[0].bias.copy_(torch.tensor([0.2, -0.1]))
+        model.right[0].weight.copy_(torch.tensor([[0.25, 1.5], [-1.0, 0.5]]))
+        model.right[0].bias.copy_(torch.tensor([0.0, 0.3]))
+
+    interval = IntervalTensor.from_bounds([-1.0, 0.25], [0.5, 1.0])
+    output = interval_forward(model, interval)
+
+    corners = [
+        (x0, x1)
+        for x0 in (interval.lower[0], interval.upper[0])
+        for x1 in (interval.lower[1], interval.upper[1])
+    ]
+    eval_dtype = model.left[0].weight.dtype
+    for corner in corners:
+        value = model(torch.tensor(corner, dtype=eval_dtype)).detach().tolist()
+        for idx, exact in enumerate(value):
+            assert output.lower[idx] <= exact
+            assert output.upper[idx] >= exact
+
+
+def test_interval_cat_combines_branch_outputs() -> None:
+    model = IntervalCat(
+        nn.Sequential(nn.Linear(2, 1), nn.Softplus()),
+        nn.Sequential(nn.Linear(2, 2), nn.Tanh()),
+        dim=-1,
+    )
+    with torch.no_grad():
+        model.branches[0][0].weight.copy_(torch.tensor([[1.0, -1.0]]))
+        model.branches[0][0].bias.copy_(torch.tensor([0.1]))
+        model.branches[1][0].weight.copy_(torch.tensor([[0.5, 0.25], [-0.75, 1.25]]))
+        model.branches[1][0].bias.copy_(torch.tensor([0.0, -0.2]))
+
+    interval = IntervalTensor.from_bounds([-0.5, -1.0], [1.0, 0.75])
+    output = interval_forward(model, interval)
+
+    assert len(output.lower) == 3
+    assert len(output.upper) == 3
+
+    corners = [
+        (x0, x1)
+        for x0 in (interval.lower[0], interval.upper[0])
+        for x1 in (interval.lower[1], interval.upper[1])
+    ]
+    eval_dtype = model.branches[0][0].weight.dtype
+    for corner in corners:
+        value = model(torch.tensor(corner, dtype=eval_dtype)).detach().tolist()
+        for idx, exact in enumerate(value):
+            assert output.lower[idx] <= exact
+            assert output.upper[idx] >= exact
+
+
+def test_interval_cat_rejects_unsupported_dim() -> None:
+    model = IntervalCat(nn.Identity(), nn.Identity(), dim=1)
+    interval = IntervalTensor.from_bounds([0.0, 1.0], [0.5, 1.5])
+
+    with pytest.raises(NotImplementedError):
+        _ = interval_forward(model, interval)
+
+
 def test_unsupported_activation_raises_not_implemented() -> None:
-    model = nn.Sequential(nn.Linear(2, 2), nn.Tanh())
+    model = nn.Sequential(nn.Linear(2, 2), nn.ELU())
     interval = IntervalTensor.point([0.0, 1.0])
     with pytest.raises(NotImplementedError):
         _ = interval_forward(model, interval)
