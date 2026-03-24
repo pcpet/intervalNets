@@ -176,10 +176,14 @@ def _interval_abs_bounds(value: Interval) -> Interval:
 def _interval_pow_scalar(value: Interval, exponent: float) -> Interval:
     if isinstance(value.lower, tuple) or isinstance(value.upper, tuple):
         raise ValueError("Expected a scalar interval.")
-    if value.lower < 0.0:
-        raise ValueError("Power bounds currently require non-negative intervals.")
-    lower = float(value.lower) ** exponent
-    upper = float(value.upper) ** exponent
+    # Intervals produced by outward rounding can dip slightly below zero
+    # (e.g. lower = nextafter(0, -inf)) even when the exact quantity is
+    # mathematically non-negative. Clamp these artifacts to zero before
+    # exponentiation.
+    lower_bound = max(0.0, float(value.lower))
+    upper_bound = max(0.0, float(value.upper))
+    lower = lower_bound ** exponent
+    upper = upper_bound ** exponent
     return Interval.from_bounds(lower, upper)
 
 

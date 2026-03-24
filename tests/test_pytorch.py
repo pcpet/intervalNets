@@ -4,7 +4,8 @@ import pytest
 torch = pytest.importorskip("torch")
 from torch import nn
 
-from intervalnets import IntervalTensor, enable_interval_eval, interval_forward
+from intervalnets import Interval, IntervalTensor, enable_interval_eval, interval_forward
+from intervalnets.pytorch import _interval_pow_scalar
 
 
 def test_relu_negative_interval_rounds_outward_to_zero() -> None:
@@ -228,6 +229,14 @@ def test_lpnorm_zero_network_returns_zero_interval() -> None:
 
     assert bounds.lower <= 0.0 <= bounds.upper
     assert bounds.upper < 1e-10
+
+
+def test_interval_pow_scalar_accepts_outward_rounded_near_zero_lower_bound() -> None:
+    near_zero = Interval.from_bounds(0.0, 2.0)
+
+    result = _interval_pow_scalar(near_zero, exponent=2.0)
+
+    assert result.lower <= 0.0 <= result.upper
 
 
 def test_lpnorm_constant_network_matches_exact_value() -> None:
