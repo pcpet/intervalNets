@@ -89,6 +89,53 @@ def _sigmoid_forward(layer, x: IntervalTensor) -> IntervalTensor:
     return _apply_monotone_bounds(x, _sigmoid_scalar)
 
 
+def _tanh_forward(layer, x: IntervalTensor) -> IntervalTensor:
+    return _apply_monotone_bounds(x, lambda value: float(torch.tanh(torch.tensor(value, dtype=torch.float64)).item()))
+
+
+def _softplus_forward(layer, x: IntervalTensor) -> IntervalTensor:
+    beta = float(layer.beta)
+    threshold = float(layer.threshold)
+
+    def _softplus_scalar(value: float) -> float:
+        tensor = torch.tensor(value, dtype=torch.float64)
+        return float(torch.nn.functional.softplus(tensor, beta=beta, threshold=threshold).item())
+
+    return _apply_monotone_bounds(x, _softplus_scalar)
+
+
+def _leaky_relu_forward(layer, x: IntervalTensor) -> IntervalTensor:
+    slope = float(layer.negative_slope)
+    return _apply_monotone_bounds(x, lambda value: value if value >= 0.0 else slope * value)
+
+
+class IntervalAdd(nn.Module):
+    """Add outputs of two branches receiving the same input."""
+
+    def __init__(self, left: nn.Module, right: nn.Module) -> None:
+        super().__init__()
+        self.left = left
+        self.right = right
+
+    def forward(self, x):
+        return self.left(x) + self.right(x)
+
+
+class IntervalCat(nn.Module):
+    """Concatenate outputs of multiple branches receiving the same input."""
+
+    def __init__(self, *branches: nn.Module, dim: int = -1) -> None:
+        super().__init__()
+        if not branches:
+            raise ValueError("IntervalCat requires at least one branch.")
+        self.branches = nn.ModuleList(branches)
+        self.dim = dim
+
+    def forward(self, x):
+        outputs = [branch(x) for branch in self.branches]
+        return torch.cat(outputs, dim=self.dim)
+
+
 def _logsumexp(values: tuple[float, ...]) -> float:
     """Numerically stable log(sum(exp(values)))."""
     pivot = max(values)
@@ -139,6 +186,32 @@ def _softmax_forward(layer, x: IntervalTensor) -> IntervalTensor:
         upper_out.append(component_upper)
 
     return IntervalTensor(tuple(lower_out), tuple(upper_out))
+
+
+def _interval_add(left: IntervalTensor, right: IntervalTensor) -> IntervalTensor:
+    if left.shape != right.shape:
+        raise ValueError(f"IntervalAdd requires matching shapes, got {left.shape} and {right.shape}.")
+    lower = tuple(l + r for l, r in zip(left.lower, right.lower))
+    upper = tuple(l + r for l, r in zip(left.upper, right.upper))
+    return IntervalTensor.from_bounds(lower, upper)
+
+
+def _interval_cat(intervals: list[IntervalTensor], dim: int) -> IntervalTensor:
+    if not intervals:
+        raise ValueError("IntervalCat requires at least one interval input.")
+    if any(len(item.shape) != 1 for item in intervals):
+        raise NotImplementedError("IntervalCat currently supports flat vectors only.")
+
+    normalized_dim = dim if dim >= 0 else dim + 1
+    if normalized_dim != 0:
+        raise NotImplementedError(f"IntervalCat currently supports dim=0/-1 for 1D vectors only; got dim={dim}.")
+
+    lower: list[float] = []
+    upper: list[float] = []
+    for item in intervals:
+        lower.extend(float(value) for value in item.lower)
+        upper.extend(float(value) for value in item.upper)
+    return IntervalTensor.from_bounds(lower, upper)
 
 
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
@@ -452,10 +525,25 @@ def interval_forward(module, x: IntervalTensor) -> IntervalTensor:
         return _relu_forward(module, x)
     if isinstance(module, nn.Sigmoid):
         return _sigmoid_forward(module, x)
+    if isinstance(module, nn.Tanh):
+        return _tanh_forward(module, x)
+    if isinstance(module, nn.Softplus):
+        return _softplus_forward(module, x)
+    if isinstance(module, nn.LeakyReLU):
+        return _leaky_relu_forward(module, x)
     if isinstance(module, nn.Softmax):
         return _softmax_forward(module, x)
+    if isinstance(module, nn.Identity):
+        return IntervalTensor(tuple(x.lower), tuple(x.upper))
+    if isinstance(module, IntervalAdd):
+        left = interval_forward(module.left, x)
+        right = interval_forward(module.right, x)
+        return _interval_add(left, right)
+    if isinstance(module, IntervalCat):
+        parts = [interval_forward(branch, x) for branch in module.branches]
+        return _interval_cat(parts, module.dim)
     raise NotImplementedError(
-        f"Interval forward currently supports nn.Sequential, nn.Flatten, nn.Linear, nn.ReLU, nn.Sigmoid, and nn.Softmax only; got {type(module).__name__}."
+        f"Interval forward currently supports nn.Sequential, nn.Flatten, nn.Linear, nn.ReLU, nn.Sigmoid, nn.Tanh, nn.Softplus, nn.LeakyReLU, nn.Softmax, nn.Identity, IntervalAdd, and IntervalCat only; got {type(module).__name__}."
     )
 
 
