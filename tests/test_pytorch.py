@@ -185,6 +185,30 @@ def test_softmax_point_interval_is_outward_non_degenerate() -> None:
         assert output.lower[idx] < exact_item < output.upper[idx]
 
 
+def test_softmax_accepts_dim_none_for_legacy_1d_models() -> None:
+    softmax = nn.Softmax(dim=None)
+    interval = IntervalTensor.from_bounds([-0.5, 0.25, 1.0], [0.5, 1.25, 2.0])
+
+    output = interval_forward(softmax, interval)
+
+    assert len(output.lower) == 3
+    assert len(output.upper) == 3
+    assert all(0.0 <= lower <= 1.0 for lower in output.lower)
+    assert all(0.0 <= upper <= 1.0 for upper in output.upper)
+
+
+def test_softmax_remains_finite_for_large_magnitude_logits() -> None:
+    softmax = nn.Softmax(dim=-1)
+    interval = IntervalTensor.from_bounds([800.0, -900.0, -950.0], [900.0, -800.0, -850.0])
+
+    output = interval_forward(softmax, interval)
+
+    assert all(math.isfinite(value) for value in output.lower)
+    assert all(math.isfinite(value) for value in output.upper)
+    assert output.lower[0] > 0.999
+    assert output.upper[0] <= 1.0
+
+
 def test_unsupported_activation_raises_not_implemented() -> None:
     model = nn.Sequential(nn.Linear(2, 2), nn.Tanh())
     interval = IntervalTensor.point([0.0, 1.0])
