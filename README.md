@@ -15,7 +15,7 @@
 
 - outward rounding is applied to interval construction and arithmetic operations,
 - degenerate intervals `[x, x]` are expanded outward by one floating-point step,
-- interval propagation currently supports `nn.Sequential`, `nn.Flatten`, `nn.Linear`, `nn.ReLU`, `nn.Sigmoid`, and `nn.Softmax`,
+- interval propagation currently supports `nn.Sequential`, `nn.Flatten`, `nn.Linear`, `nn.ReLU`, `nn.Sigmoid`, `nn.Tanh`, `nn.Softplus`, `nn.LeakyReLU`, `nn.Softmax`, `nn.Identity`, plus `IntervalAdd`/`IntervalCat` branch combinators,
 - `model.eval(interval)`, `model.eval_jacobian(...)`, `model.lpnorm(...)`, and `model.sobolev_norm(...)` are attached through a single opt-in monkey patch (`enable_interval_eval()`),
 - `model.lpnorm(domain, p, iterations)` adaptively bisects the input box and returns an outward-rounded interval enclosure for the Lp norm.
 
