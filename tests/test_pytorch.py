@@ -297,3 +297,87 @@ def test_lpnorm_contains_monte_carlo_estimate() -> None:
         estimate = float((volume * torch.mean(integrand)).sqrt().item())
 
     assert bounds.lower <= estimate <= bounds.upper
+
+
+def test_eval_jacobian_linear_layer_matches_exact_weight_matrix() -> None:
+    enable_interval_eval()
+    layer = nn.Linear(2, 2)
+    with torch.no_grad():
+        layer.weight.copy_(torch.tensor([[2.0, -1.0], [0.5, 3.0]]))
+        layer.bias.copy_(torch.tensor([1.0, -2.0]))
+
+    domain = IntervalTensor.from_bounds([-1.0, -2.0], [2.0, 4.0])
+    jacobian = layer.eval_jacobian(domain)
+
+    expected = [[2.0, -1.0], [0.5, 3.0]]
+    for row_idx, row in enumerate(expected):
+        for col_idx, exact in enumerate(row):
+            assert jacobian.lower[row_idx][col_idx] <= exact <= jacobian.upper[row_idx][col_idx]
+
+
+def test_eval_jacobian_relu_derivative_crossing_zero_is_interval() -> None:
+    enable_interval_eval()
+    relu = nn.ReLU()
+    domain = IntervalTensor.from_bounds([-2.0, 0.25], [1.0, 2.5])
+
+    jacobian = relu.eval_jacobian(domain)
+
+    assert jacobian.lower[0][0] <= 0.0
+    assert jacobian.upper[0][0] >= 1.0
+    assert jacobian.lower[1][1] <= 1.0 <= jacobian.upper[1][1]
+    assert jacobian.lower[0][1] <= 0.0 <= jacobian.upper[0][1]
+    assert jacobian.lower[1][0] <= 0.0 <= jacobian.upper[1][0]
+
+
+def test_eval_jacobian_sequential_encloses_corner_gradients() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 2), nn.ReLU(), nn.Linear(2, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[2.0], [-1.5]]))
+        model[0].bias.copy_(torch.tensor([0.25, -0.5]))
+        model[2].weight.copy_(torch.tensor([[1.2, -0.7]]))
+        model[2].bias.copy_(torch.tensor([0.0]))
+
+    domain = IntervalTensor.from_bounds([-1.0], [1.0])
+    jacobian = model.eval_jacobian(domain)
+
+    slopes = []
+    for endpoint in (-1.0, 1.0):
+        point = torch.tensor([[endpoint]], dtype=torch.float64, requires_grad=True)
+        output = model(point.to(dtype=torch.float32)).to(dtype=torch.float64)
+        grad = torch.autograd.grad(output.squeeze(), point)[0].item()
+        slopes.append(grad)
+
+    assert jacobian.lower[0][0] <= min(slopes)
+    assert jacobian.upper[0][0] >= max(slopes)
+
+
+def test_sobolev_norm_constant_network_matches_closed_form() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1))
+    with torch.no_grad():
+        model[0].weight.zero_()
+        model[0].bias.fill_(3.0)
+
+    domain = IntervalTensor.from_bounds([0.0], [2.0])
+    bounds = model.sobolev_norm(domain, p=2.0, iterations=4)
+    exact = (18.0) ** 0.5
+
+    assert bounds.lower <= exact <= bounds.upper
+    assert (bounds.upper - bounds.lower) < 1e-10
+
+
+def test_sobolev_norm_refinement_tightens_interval() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 6), nn.ReLU(), nn.Linear(6, 1))
+    torch.manual_seed(13)
+    for parameter in model.parameters():
+        nn.init.uniform_(parameter, a=-1.0, b=1.0)
+
+    domain = IntervalTensor.from_bounds([-1.0], [1.0])
+    coarse = model.sobolev_norm(domain, p=2.0, iterations=0)
+    refined = model.sobolev_norm(domain, p=2.0, iterations=7)
+
+    assert refined.lower >= coarse.lower
+    assert refined.upper <= coarse.upper
+    assert (refined.upper - refined.lower) <= (coarse.upper - coarse.lower)

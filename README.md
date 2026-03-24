@@ -4,7 +4,9 @@
 
 1. an overloaded `model.eval(interval)` pathway (enabled via `enable_interval_eval()`) for interval
    propagation through neural networks with outward-rounded arithmetic, including roundoff-aware bounds;
-2. rigorous enclosure of Lebesgue/Lp norms over interval domains via `model.lpnorm(domain, p, iterations=...)`.
+2. rigorous enclosure of Lebesgue/Lp norms over interval domains via `model.lpnorm(domain, p, iterations=...)`;
+3. interval Jacobian enclosure via `model.eval_jacobian(domain)` and Sobolev-style norms via
+   `model.sobolev_norm(domain, p, iterations=...)`.
    The current implementation follows the same interval-enclosure + adaptive-refinement strategy outlined in
    the preprint *Certified and accurate computation of function space norms of deep neural networks*
    (arXiv:2603.06431).
@@ -14,7 +16,7 @@
 - outward rounding is applied to interval construction and arithmetic operations,
 - degenerate intervals `[x, x]` are expanded outward by one floating-point step,
 - interval propagation currently supports `nn.Sequential`, `nn.Flatten`, `nn.Linear`, `nn.ReLU`, `nn.Sigmoid`, and `nn.Softmax`,
-- `model.eval(interval)` and `model.lpnorm(...)` are both attached through a single opt-in monkey patch (`enable_interval_eval()`),
+- `model.eval(interval)`, `model.eval_jacobian(...)`, `model.lpnorm(...)`, and `model.sobolev_norm(...)` are attached through a single opt-in monkey patch (`enable_interval_eval()`),
 - `model.lpnorm(domain, p, iterations)` adaptively bisects the input box and returns an outward-rounded interval enclosure for the Lp norm.
 
 ## Quick start
