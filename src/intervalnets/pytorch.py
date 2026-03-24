@@ -46,7 +46,19 @@ def _require_torch() -> None:
         raise ImportError("PyTorch is required for interval neural network evaluation.")
 
 
-def _scalar_interval_from_weight(weight: float, value: Interval) -> Interval:
+def _scalar_interval_from_weight(weight: Any, value: Interval) -> Interval:
+    if torch is not None and isinstance(weight, torch.Tensor):
+        scalar = weight.detach().cpu()
+        if scalar.numel() != 1:
+            raise ValueError("Expected a scalar weight tensor.")
+        coefficient = float(scalar.item())
+        if scalar.dtype in {torch.float16, torch.bfloat16, torch.float32}:
+            negative_inf = torch.tensor(float("-inf"), dtype=scalar.dtype)
+            positive_inf = torch.tensor(float("inf"), dtype=scalar.dtype)
+            lower = float(torch.nextafter(scalar, negative_inf).item())
+            upper = float(torch.nextafter(scalar, positive_inf).item())
+            return Interval.from_bounds(lower, upper) * value
+        return Interval.point(coefficient) * value
     return Interval.point(weight) * value
 
 
@@ -105,8 +117,8 @@ def _softmax_forward(layer, x: IntervalTensor) -> IntervalTensor:
 
 
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
-    weight = layer.weight.detach().cpu().tolist()
-    bias = layer.bias.detach().cpu().tolist() if layer.bias is not None else None
+    weight = layer.weight.detach().cpu()
+    bias = layer.bias.detach().cpu() if layer.bias is not None else None
     x_lower = list(x.lower)
     x_upper = list(x.upper)
     input_intervals = [Interval(lb, ub) for lb, ub in zip(x_lower, x_upper)]
@@ -115,9 +127,9 @@ def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
     for row_index, row in enumerate(weight):
         accumulator = Interval.point(0.0)
         for coefficient, input_interval in zip(row, input_intervals):
-            accumulator = accumulator + _scalar_interval_from_weight(float(coefficient), input_interval)
+            accumulator = accumulator + _scalar_interval_from_weight(coefficient, input_interval)
         if bias is not None:
-            accumulator = accumulator + Interval.point(float(bias[row_index]))
+            accumulator = accumulator + _scalar_interval_from_weight(bias[row_index], Interval.point(1.0))
         outputs.append(accumulator)
 
     lower = tuple(item.lower for item in outputs)
