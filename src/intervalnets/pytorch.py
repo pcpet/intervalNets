@@ -63,6 +63,9 @@ def _scalar_interval_from_weight(weight: Any, value: Interval) -> Interval:
 
 
 def _apply_monotone_bounds(x: IntervalTensor, func) -> IntervalTensor:
+    # For monotone activations f, interval images satisfy
+    # f([l, u]) = [f(l), f(u)].
+    # Therefore, evaluating only endpoints is sound and complete.
     lower = tuple(nextafter(func(bound), -inf) for bound in x.lower)
     upper = tuple(nextafter(func(bound), inf) for bound in x.upper)
     return IntervalTensor(lower, upper)
@@ -70,6 +73,20 @@ def _apply_monotone_bounds(x: IntervalTensor, func) -> IntervalTensor:
 
 def _relu_forward(layer, x: IntervalTensor) -> IntervalTensor:
     return _apply_monotone_bounds(x, lambda value: max(0.0, value))
+
+
+def _sigmoid_scalar(value: float) -> float:
+    """Compute sigmoid(value) for scalar intervals.
+
+    Sigmoid is strictly increasing on R, so interval propagation can evaluate
+    the lower endpoint for the lower bound and the upper endpoint for the
+    upper bound before outward rounding is applied.
+    """
+    return float(torch.sigmoid(torch.tensor(value, dtype=torch.float64)).item())
+
+
+def _sigmoid_forward(layer, x: IntervalTensor) -> IntervalTensor:
+    return _apply_monotone_bounds(x, _sigmoid_scalar)
 
 
 def _softmax_component_bounds(index: int, lower: tuple[float, ...], upper: tuple[float, ...]) -> tuple[float, float]:
@@ -150,10 +167,12 @@ def interval_forward(module, x: IntervalTensor) -> IntervalTensor:
         return _linear_forward(module, x)
     if isinstance(module, nn.ReLU):
         return _relu_forward(module, x)
+    if isinstance(module, nn.Sigmoid):
+        return _sigmoid_forward(module, x)
     if isinstance(module, nn.Softmax):
         return _softmax_forward(module, x)
     raise NotImplementedError(
-        f"Interval forward currently supports nn.Sequential, nn.Flatten, nn.Linear, nn.ReLU, and nn.Softmax only; got {type(module).__name__}."
+        f"Interval forward currently supports nn.Sequential, nn.Flatten, nn.Linear, nn.ReLU, nn.Sigmoid, and nn.Softmax only; got {type(module).__name__}."
     )
 
 
