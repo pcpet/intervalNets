@@ -264,6 +264,179 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int) -> 
     return _interval_pow_scalar(non_negative, exponent)
 
 
+def _identity_jacobian(size: int) -> list[list[Interval]]:
+    rows: list[list[Interval]] = []
+    for row_idx in range(size):
+        row: list[Interval] = []
+        for col_idx in range(size):
+            row.append(Interval.point(1.0 if row_idx == col_idx else 0.0))
+        rows.append(row)
+    return rows
+
+
+def _interval_derivative_bounds_relu(value: Interval) -> Interval:
+    lower = float(value.lower)
+    upper = float(value.upper)
+    if upper <= 0.0:
+        return Interval.point(0.0)
+    if lower >= 0.0:
+        return Interval.point(1.0)
+    return Interval.from_bounds(0.0, 1.0)
+
+
+def _interval_derivative_bounds_sigmoid(value: Interval) -> Interval:
+    sigmoid_bounds = _apply_monotone_bounds(IntervalTensor((value.lower,), (value.upper,)), _sigmoid_scalar)
+    sigma_lower = float(sigmoid_bounds.lower[0])
+    sigma_upper = float(sigmoid_bounds.upper[0])
+    candidate_values = [sigma_lower * (1.0 - sigma_lower), sigma_upper * (1.0 - sigma_upper)]
+    maximum = max(candidate_values)
+    if sigma_lower <= 0.5 <= sigma_upper:
+        maximum = max(maximum, 0.25)
+    minimum = min(candidate_values)
+    return Interval.from_bounds(minimum, maximum)
+
+
+def _matrix_multiply(left: list[list[Interval]], right: list[list[Interval]]) -> list[list[Interval]]:
+    if not left or not right:
+        return []
+    left_width = len(left[0])
+    right_height = len(right)
+    if left_width != right_height:
+        raise ValueError("Jacobian dimensions are incompatible for multiplication.")
+
+    right_width = len(right[0])
+    output: list[list[Interval]] = []
+    for row in left:
+        output_row: list[Interval] = []
+        for col_idx in range(right_width):
+            accumulator = Interval.point(0.0)
+            for shared_idx in range(left_width):
+                accumulator = accumulator + row[shared_idx] * right[shared_idx][col_idx]
+            output_row.append(accumulator)
+        output.append(output_row)
+    return output
+
+
+def _jacobian_for_layer(layer, pre_activation: IntervalTensor) -> list[list[Interval]]:
+    if isinstance(layer, nn.Linear):
+        weight = layer.weight.detach().cpu()
+        return [
+            [_scalar_interval_from_weight(weight[row_idx, col_idx], Interval.point(1.0)) for col_idx in range(weight.shape[1])]
+            for row_idx in range(weight.shape[0])
+        ]
+    if isinstance(layer, nn.ReLU):
+        derivatives = [
+            _interval_derivative_bounds_relu(Interval(pre_activation.lower[idx], pre_activation.upper[idx]))
+            for idx in range(len(pre_activation.lower))
+        ]
+        size = len(derivatives)
+        return [[derivatives[row_idx] if row_idx == col_idx else Interval.point(0.0) for col_idx in range(size)] for row_idx in range(size)]
+    if isinstance(layer, nn.Sigmoid):
+        derivatives = [
+            _interval_derivative_bounds_sigmoid(Interval(pre_activation.lower[idx], pre_activation.upper[idx]))
+            for idx in range(len(pre_activation.lower))
+        ]
+        size = len(derivatives)
+        return [[derivatives[row_idx] if row_idx == col_idx else Interval.point(0.0) for col_idx in range(size)] for row_idx in range(size)]
+    if isinstance(layer, nn.Softmax):
+        softmax_bounds = _softmax_forward(layer, pre_activation)
+        size = len(softmax_bounds.lower)
+        matrix: list[list[Interval]] = []
+        for row_idx in range(size):
+            row: list[Interval] = []
+            s_i = Interval(softmax_bounds.lower[row_idx], softmax_bounds.upper[row_idx])
+            for col_idx in range(size):
+                s_j = Interval(softmax_bounds.lower[col_idx], softmax_bounds.upper[col_idx])
+                if row_idx == col_idx:
+                    row.append(s_i * (Interval.point(1.0) - s_j))
+                else:
+                    row.append(-(s_i * s_j))
+            matrix.append(row)
+        return matrix
+    if isinstance(layer, nn.Flatten):
+        if len(pre_activation.shape) != 1:
+            raise NotImplementedError("Interval Jacobians currently support flat vectors only.")
+        return _identity_jacobian(len(pre_activation.lower))
+    raise NotImplementedError(
+        f"Interval Jacobian currently supports nn.Linear, nn.ReLU, nn.Sigmoid, nn.Softmax, and nn.Flatten; got {type(layer).__name__}."
+    )
+
+
+def _eval_jacobian_bounds(model, domain: IntervalTensor) -> IntervalTensor:
+    if not isinstance(domain, IntervalTensor):
+        raise TypeError("model.eval_jacobian(domain) requires an IntervalTensor domain.")
+    if len(domain.shape) != 1:
+        raise NotImplementedError("Interval Jacobian evaluation currently supports flat input boxes only.")
+
+    if isinstance(model, nn.Sequential):
+        current_interval = domain
+        current_jacobian = _identity_jacobian(len(domain.lower))
+        for child in model:
+            local_jacobian = _jacobian_for_layer(child, current_interval)
+            current_jacobian = _matrix_multiply(local_jacobian, current_jacobian)
+            current_interval = interval_forward(child, current_interval)
+    else:
+        local_jacobian = _jacobian_for_layer(model, domain)
+        current_jacobian = local_jacobian
+
+    lower = tuple(tuple(entry.lower for entry in row) for row in current_jacobian)
+    upper = tuple(tuple(entry.upper for entry in row) for row in current_jacobian)
+    return IntervalTensor.from_bounds(lower, upper)
+
+
+def _sobolev_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval:
+    output = model.eval(box)
+    jacobian = model.eval_jacobian(box)
+    total = Interval.point(0.0)
+
+    for lower, upper in zip(output.lower, output.upper):
+        component = Interval(lower, upper)
+        total = total + _interval_pow_scalar(_interval_abs_bounds(component), p)
+
+    for row_lower, row_upper in zip(jacobian.lower, jacobian.upper):
+        for entry_lower, entry_upper in zip(row_lower, row_upper):
+            derivative_component = Interval(entry_lower, entry_upper)
+            total = total + _interval_pow_scalar(_interval_abs_bounds(derivative_component), p)
+
+    return total
+
+
+def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: int) -> Interval:
+    if not isinstance(domain, IntervalTensor):
+        raise TypeError("model.sobolev_norm(domain, p, iterations) requires an IntervalTensor domain.")
+    if len(domain.shape) != 1:
+        raise NotImplementedError("Sobolev integration currently supports flat input boxes only.")
+    if not isfinite(p) or p <= 0.0:
+        raise ValueError("p must be a positive finite real number.")
+    if iterations < 0:
+        raise ValueError("iterations must be non-negative.")
+
+    boxes = [domain]
+    for _ in range(iterations):
+        indicators: list[float] = []
+        for box in boxes:
+            integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p)
+            width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
+            indicators.append(width * _box_volume(box))
+        target = max(range(len(boxes)), key=lambda idx: indicators[idx])
+        selected = boxes.pop(target)
+        left, right = _split_box(selected)
+        boxes.extend([left, right])
+
+    integral = Interval.point(0.0)
+    for box in boxes:
+        integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p)
+        weighted = Interval.from_bounds(
+            float(integrand_bounds.lower) * _box_volume(box),
+            float(integrand_bounds.upper) * _box_volume(box),
+        )
+        integral = integral + weighted
+
+    non_negative = Interval.from_bounds(max(0.0, float(integral.lower)), max(0.0, float(integral.upper)))
+    exponent = 1.0 / p
+    return _interval_pow_scalar(non_negative, exponent)
+
+
 def interval_forward(module, x: IntervalTensor) -> IntervalTensor:
     _require_torch()
     if isinstance(module, nn.Sequential):
@@ -308,6 +481,16 @@ def enable_interval_eval() -> None:
         _ORIGINAL_EVAL(self)
         return _lpnorm_bounds(self, domain, p, iterations)
 
+    def eval_jacobian_with_interval(self, domain: IntervalTensor):
+        _ORIGINAL_EVAL(self)
+        return _eval_jacobian_bounds(self, domain)
+
+    def sobolev_norm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0):
+        _ORIGINAL_EVAL(self)
+        return _sobolev_norm_bounds(self, domain, p, iterations)
+
     nn.Module.eval = eval_with_interval
     nn.Module.lpnorm = lpnorm_with_interval
+    nn.Module.eval_jacobian = eval_jacobian_with_interval
+    nn.Module.sobolev_norm = sobolev_norm_with_interval
     _PATCHED = True
