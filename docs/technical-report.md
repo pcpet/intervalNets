@@ -1,11 +1,11 @@
-# intervalNets White Paper
+# intervalNets Technical Report
 
 **Repository:** intervalNets  
 **Date:** 2026-03-24
 
 ## Executive Summary
 
-intervalNets provides interval arithmetic and interval-aware neural-network evaluation with outward rounding. The repository combines a compact mathematical core (`interval.py`) with a PyTorch integration layer (`pytorch.py`) that overloads model evaluation on interval inputs and adds certified bounds for Jacobians, \(L^p\) norms, and Sobolev-style norms. This document focuses on those two files.
+intervalNets provides interval arithmetic and interval-aware neural-network evaluation with outward rounding. The repository combines a compact mathematical core (`interval.py`) with a PyTorch integration layer (`pytorch.py`) that overloads model evaluation on interval inputs and adds certified bounds for Jacobians, $L^p$ norms, and Sobolev-style norms. This document focuses on those two files.
 
 ## Repository Overview
 
@@ -33,7 +33,7 @@ The architectural pattern is: **core numeric enclosure logic first**, then **fra
 - `_map_unary(value, op)`: recursively applies unary operators over nested tuple leaves.
 - `_map_binary(left, right, op)`: recursively applies binary operators with shape checks.
 - `outward_lower(value)`, `outward_upper(value)`: outward rounding wrappers using `nextafter` toward `-inf` and `+inf`.
-- `_validate_bounds(lower, upper)`: validates shape compatibility and \(\ell \le u\) constraints.
+- `_validate_bounds(lower, upper)`: validates shape compatibility and $\ell \le u$ constraints.
 - `_contains(lower, upper, value)`: recursive membership test.
 - `_shape(value)`: computes recursive tuple shape.
 - `_neg(value)`: recursive negation.
@@ -104,26 +104,25 @@ The architectural pattern is: **core numeric enclosure logic first**, then **fra
 
 ### 5) Mathematical Interpretation
 
-- A closed interval is represented as \([\ell, u]\) with \(\ell \le u\).
-- Outward rounding ensures computed interval \(I_{fp}\) encloses real arithmetic result \(I_{\mathbb{R}}\):
-  \[
+- A closed interval is represented as $[\ell, u]$ with $\ell \le u$.
+- Outward rounding ensures computed interval $I_{fp}$ encloses real arithmetic result $I_{\mathbb{R}}$:
+  $$
   I_{\mathbb{R}} \subseteq I_{fp}.
-  \]
+$$
 - Addition/subtraction follow endpoint rules:
-  \[
+  $$
   [a,b] + [c,d] = [a+c,\, b+d],\quad
   [a,b] - [c,d] = [a-d,\, b-c],
-  \]
+$$
   then each endpoint is rounded outward.
 - Scalar multiplication uses endpoint products:
-  \[
+  $$
   [a,b]\cdot[c,d] = [\min(ac,ad,bc,bd),\,\max(ac,ad,bc,bd)].
-  \]
-- Division is transformed to multiplication by reciprocal interval when \(0\notin[c,d]\):
-  \[
+$$
+- Division is transformed to multiplication by reciprocal interval when $0\notin[c,d]$:
+  $$
   [a,b]/[c,d] = [a,b]\cdot[1/d,\,1/c].
-  \]
-
+$$
 ### 6) Implementation Notes
 
 - Nested tuple support is recursive and shape-strict; mixed tuple/scalar paths are rejected.
@@ -137,7 +136,7 @@ The architectural pattern is: **core numeric enclosure logic first**, then **fra
 
 ### 1) Purpose
 
-`pytorch.py` bridges the pure interval core to PyTorch modules. It introduces `IntervalTensor`, interval forward propagation for supported layers, Jacobian interval bounds, and adaptive interval integration for \(L^p\) and Sobolev norms. It monkey-patches `nn.Module` to expose `model.eval(interval)`, `model.lpnorm(...)`, `model.eval_jacobian(...)`, and `model.sobolev_norm(...)`.
+`pytorch.py` bridges the pure interval core to PyTorch modules. It introduces `IntervalTensor`, interval forward propagation for supported layers, Jacobian interval bounds, and adaptive interval integration for $L^p$ and Sobolev norms. It monkey-patches `nn.Module` to expose `model.eval(interval)`, `model.lpnorm(...)`, `model.eval_jacobian(...)`, and `model.sobolev_norm(...)`.
 
 ### 2) Structured Code Breakdown
 
@@ -228,23 +227,23 @@ Core orchestration and helpers include:
 ### 5) Mathematical Interpretation
 
 - Monotone activation propagation uses
-  \[
+  $$
   f([\ell,u]) = [f(\ell), f(u)]
-  \]
-  for increasing \(f\), followed by outward rounding.
+$$
+  for increasing $f$, followed by outward rounding.
 - Linear layer propagation encloses
-  \[
+  $$
   y_i = \sum_j w_{ij}x_j + b_i
-  \]
+$$
   by replacing scalars and inputs with intervals and applying interval arithmetic.
-- Softmax component bounds compute exact box extrema by adversarial endpoint assignment per component \(i\):
-  \[
+- Softmax component bounds compute exact box extrema by adversarial endpoint assignment per component $i$:
+  $$
   \sigma_i(x)=\frac{e^{x_i}}{\sum_j e^{x_j}}.
-  \]
-- \(L^p\)-norm enclosure integrates interval bounds of \(\|f(x)\|_p^p\) over a box domain and applies
-  \[
+$$
+- $L^p$-norm enclosure integrates interval bounds of $\|f(x)\|_p^p$ over a box domain and applies
+  $$
   \|f\|_{L^p} = \left(\int |f(x)|^p\,dx\right)^{1/p}.
-  \]
+$$
 - Sobolev-style enclosure similarly accumulates powers of function outputs and Jacobian entries before integration.
 
 ### 6) Implementation Notes
