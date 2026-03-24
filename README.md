@@ -1,6 +1,6 @@
 # intervalNets
 
-`intervalNets` is a small PyTorch-first prototype focused on two core capabilities:
+`intervalNets` is a robust PyTorch-first toolkit focused on three core capabilities:
 
 1. an overloaded `model.eval(interval)` pathway (enabled via `enable_interval_eval()`) for interval
    propagation through neural networks with outward-rounded arithmetic, including roundoff-aware bounds;
