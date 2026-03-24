@@ -78,10 +78,6 @@ For worked examples, see:
 - `notebooks/reproduce_lp_w1p_experiments.ipynb` for reproducible certified
   `L^p` and `W^{1,p}` experiments aligned with arXiv:2603.06431 (intentionally excluding `W^{2,p}`).
 
-## Documentation
-
-- API guide: `docs/API.md`
-
 ## Reference
 
 - Johannes Gründler, Moritz Maibaum, Philipp Petersen,
