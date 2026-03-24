@@ -1,0 +1,3 @@
+# Core dependency for interval evaluation with neural networks
+# (mirrors the optional `torch` extra in pyproject.toml).
+torch>=2.0
