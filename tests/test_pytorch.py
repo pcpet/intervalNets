@@ -239,6 +239,14 @@ def test_interval_pow_scalar_accepts_outward_rounded_near_zero_lower_bound() -> 
     assert result.lower <= 0.0 <= result.upper
 
 
+def test_interval_pow_scalar_handles_fractional_exponent_near_zero() -> None:
+    near_zero = Interval.from_bounds(0.0, 0.0)
+
+    result = _interval_pow_scalar(near_zero, exponent=0.5)
+
+    assert result.lower <= 0.0 <= result.upper
+
+
 def test_lpnorm_constant_network_matches_exact_value() -> None:
     enable_interval_eval()
     model = nn.Sequential(nn.Linear(1, 1))

@@ -261,7 +261,7 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int) -> 
 
     non_negative = Interval.from_bounds(max(0.0, float(integral.lower)), max(0.0, float(integral.upper)))
     exponent = 1.0 / p
-    return Interval.from_bounds(float(non_negative.lower) ** exponent, float(non_negative.upper) ** exponent)
+    return _interval_pow_scalar(non_negative, exponent)
 
 
 def interval_forward(module, x: IntervalTensor) -> IntervalTensor:
