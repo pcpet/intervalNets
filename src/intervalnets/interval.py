@@ -78,6 +78,43 @@ def _neg(value: Data) -> Data:
     return _map_unary(value, lambda item: -item)
 
 
+def _mul_bounds(
+    left_lower: Data,
+    left_upper: Data,
+    right_lower: Data,
+    right_upper: Data,
+) -> tuple[Data, Data]:
+    if all(
+        isinstance(item, tuple)
+        for item in (left_lower, left_upper, right_lower, right_upper)
+    ):
+        if not (
+            len(left_lower) == len(left_upper) == len(right_lower) == len(right_upper)
+        ):
+            raise ValueError("Mismatched interval shapes.")
+        nested_bounds = tuple(
+            _mul_bounds(ll, lu, rl, ru)
+            for ll, lu, rl, ru in zip(left_lower, left_upper, right_lower, right_upper)
+        )
+        return (
+            tuple(lower for lower, _ in nested_bounds),
+            tuple(upper for _, upper in nested_bounds),
+        )
+    if any(
+        isinstance(item, tuple)
+        for item in (left_lower, left_upper, right_lower, right_upper)
+    ):
+        raise ValueError("Mismatched interval shapes.")
+
+    candidates = (
+        left_lower * right_lower,
+        left_lower * right_upper,
+        left_upper * right_lower,
+        left_upper * right_upper,
+    )
+    return nextafter(min(candidates), -inf), nextafter(max(candidates), inf)
+
+
 @dataclass(frozen=True)
 class Interval:
     """Closed interval with outward-rounded arithmetic."""
@@ -134,25 +171,13 @@ class Interval:
 
     def __mul__(self, other: Any) -> "Interval":
         other_interval = other if isinstance(other, Interval) else Interval.point(other)
-        if isinstance(self.lower, tuple) or isinstance(other_interval.lower, tuple):
-            lower = _map_binary(
-                self.lower,
-                other_interval.lower,
-                lambda left, right: nextafter(left * right, -inf),
-            )
-            upper = _map_binary(
-                self.upper,
-                other_interval.upper,
-                lambda left, right: nextafter(left * right, inf),
-            )
-            return Interval(lower, upper)
-        candidates = (
-            self.lower * other_interval.lower,
-            self.lower * other_interval.upper,
-            self.upper * other_interval.lower,
-            self.upper * other_interval.upper,
+        lower, upper = _mul_bounds(
+            self.lower,
+            self.upper,
+            other_interval.lower,
+            other_interval.upper,
         )
-        return Interval(nextafter(min(candidates), -inf), nextafter(max(candidates), inf))
+        return Interval(lower, upper)
 
     def __rmul__(self, other: Any) -> "Interval":
         return self * other
