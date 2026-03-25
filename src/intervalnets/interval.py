@@ -135,15 +135,21 @@ class Interval:
     def __mul__(self, other: Any) -> "Interval":
         other_interval = other if isinstance(other, Interval) else Interval.point(other)
         if isinstance(self.lower, tuple) or isinstance(other_interval.lower, tuple):
+            lower_candidates = (
+                _map_binary(self.lower, other_interval.lower, lambda left, right: left * right),
+                _map_binary(self.lower, other_interval.upper, lambda left, right: left * right),
+                _map_binary(self.upper, other_interval.lower, lambda left, right: left * right),
+                _map_binary(self.upper, other_interval.upper, lambda left, right: left * right),
+            )
             lower = _map_binary(
-                self.lower,
-                other_interval.lower,
-                lambda left, right: nextafter(left * right, -inf),
+                _map_binary(lower_candidates[0], lower_candidates[1], min),
+                _map_binary(lower_candidates[2], lower_candidates[3], min),
+                lambda left, right: nextafter(min(left, right), -inf),
             )
             upper = _map_binary(
-                self.upper,
-                other_interval.upper,
-                lambda left, right: nextafter(left * right, inf),
+                _map_binary(lower_candidates[0], lower_candidates[1], max),
+                _map_binary(lower_candidates[2], lower_candidates[3], max),
+                lambda left, right: nextafter(max(left, right), inf),
             )
             return Interval(lower, upper)
         candidates = (
