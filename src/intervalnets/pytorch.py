@@ -46,17 +46,38 @@ def _require_torch() -> None:
         raise ImportError("PyTorch is required for interval neural network evaluation.")
 
 
-def _scalar_interval_from_weight(weight: Any, value: Interval) -> Interval:
+def _pad_outward(value: float, direction: float, steps: int = 1, include_float32: bool = False) -> float:
+    """Move a scalar bound outward by a small, controlled amount."""
+    out = float(value)
+    for _ in range(max(1, steps)):
+        out = nextafter(out, direction)
+
+    if include_float32 and torch is not None:
+        base32 = torch.tensor(value, dtype=torch.float32)
+        target32 = torch.tensor(float("-inf") if direction < 0 else float("inf"), dtype=torch.float32)
+        neighbor32 = float(torch.nextafter(base32, target32).item())
+        if direction < 0 and neighbor32 < out:
+            out = neighbor32
+        if direction > 0 and neighbor32 > out:
+            out = neighbor32
+
+    return out
+
+
+def _scalar_interval_from_weight(weight: Any, value: Interval, widen_float32: bool = True) -> Interval:
     if torch is not None and isinstance(weight, torch.Tensor):
         scalar = weight.detach().cpu()
         if scalar.numel() != 1:
             raise ValueError("Expected a scalar weight tensor.")
         coefficient = float(scalar.item())
-        if scalar.dtype in {torch.float16, torch.bfloat16, torch.float32}:
-            negative_inf = torch.tensor(float("-inf"), dtype=scalar.dtype)
-            positive_inf = torch.tensor(float("inf"), dtype=scalar.dtype)
-            lower = float(torch.nextafter(scalar, negative_inf).item())
-            upper = float(torch.nextafter(scalar, positive_inf).item())
+        if (
+            widen_float32
+            and scalar.dtype in {torch.float16, torch.bfloat16, torch.float32}
+            and coefficient != 0.0
+            and not coefficient.is_integer()
+        ):
+            lower = _pad_outward(coefficient, -inf, include_float32=True)
+            upper = _pad_outward(coefficient, inf, include_float32=True)
             return Interval.from_bounds(lower, upper) * value
         return Interval.point(coefficient) * value
     return Interval.point(weight) * value
@@ -66,8 +87,8 @@ def _apply_monotone_bounds(x: IntervalTensor, func) -> IntervalTensor:
     # For monotone activations f, interval images satisfy
     # f([l, u]) = [f(l), f(u)].
     # Therefore, evaluating only endpoints is sound and complete.
-    lower = tuple(nextafter(func(bound), -inf) for bound in x.lower)
-    upper = tuple(nextafter(func(bound), inf) for bound in x.upper)
+    lower = tuple(_pad_outward(func(bound), -inf, include_float32=True) for bound in x.lower)
+    upper = tuple(_pad_outward(func(bound), inf, include_float32=True) for bound in x.upper)
     return IntervalTensor(lower, upper)
 
 
@@ -156,7 +177,12 @@ def _softmax_component_bounds(index: int, lower: tuple[float, ...], upper: tuple
 
     lower_value = exp(lower_log_ratio)
     upper_value = exp(upper_log_ratio)
-    return nextafter(lower_value, -inf), nextafter(upper_value, inf)
+
+    # Apply two outward steps to absorb log/exp rounding, then clamp to
+    # the probabilistic range [0, 1].
+    lower_out = nextafter(nextafter(lower_value, -inf), -inf)
+    upper_out = nextafter(nextafter(upper_value, inf), inf)
+    return max(0.0, lower_out), min(1.0, upper_out)
 
 
 def _softmax_forward(layer, x: IntervalTensor) -> IntervalTensor:
@@ -227,7 +253,7 @@ def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
         for coefficient, input_interval in zip(row, input_intervals):
             accumulator = accumulator + _scalar_interval_from_weight(coefficient, input_interval)
         if bias is not None:
-            accumulator = accumulator + _scalar_interval_from_weight(bias[row_index], Interval.point(1.0))
+            accumulator = accumulator + _scalar_interval_from_weight(bias[row_index], Interval.point(1.0), widen_float32=True)
         outputs.append(accumulator)
 
     lower = tuple(item.lower for item in outputs)
@@ -415,7 +441,9 @@ def _interval_derivative_bounds_tanh(value: Interval) -> Interval:
     if lower <= 0.0 <= upper:
         maximum = 1.0
     minimum = min(derivative_lower_endpoint, derivative_upper_endpoint)
-    return Interval.from_bounds(minimum, maximum)
+    lower_out = _pad_outward(minimum, -inf, include_float32=True)
+    upper_out = _pad_outward(maximum, inf, include_float32=True)
+    return Interval.from_bounds(lower_out, upper_out)
 
 
 def _matrix_multiply(left: list[list[Interval]], right: list[list[Interval]]) -> list[list[Interval]]:
