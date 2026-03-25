@@ -110,13 +110,17 @@ Runs each branch on the same input interval and concatenates outputs.
 
 ## Certified norm computation details
 
-`model.lpnorm(...)` and `model.sobolev_norm(...)` use adaptive box subdivision:
+`model.lpnorm(..., theta=0.5)` and `model.sobolev_norm(..., theta=0.5)` use adaptive box subdivision with Dörfler-type marking:
 
 1. Start from one domain box.
-2. Repeatedly split the box with largest uncertainty indicator
-   (`integrand interval width × box volume`) for `iterations` rounds.
-3. Accumulate interval integral bounds over the resulting partition.
-4. Clamp tiny negative roundoff artifacts to zero before taking the `1/p` power.
+2. Compute one indicator per box
+   (`integrand interval width × box volume`).
+3. Mark a minimal set of boxes whose indicator sum is at least
+   `theta × (sum of all indicators)` (Dörfler bulk criterion).
+4. Split every marked box by bisecting its widest coordinate.
+5. Repeat for `iterations` rounds.
+6. Accumulate interval integral bounds over the resulting partition.
+7. Clamp tiny negative roundoff artifacts to zero before taking the `1/p` power.
 
 Important constraints:
 
@@ -124,6 +128,7 @@ Important constraints:
 - Domain must be a flat vector box (1D tuple structure).
 - `p` must be finite and strictly positive.
 - `iterations` must be non-negative.
+- `theta` must satisfy `0 < theta <= 1` (default: `0.5`).
 
 ## Jacobian enclosure details
 
