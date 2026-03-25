@@ -364,6 +364,30 @@ def test_lpnorm_refinement_tightens_interval() -> None:
     assert (refined.upper - refined.lower) <= (coarse.upper - coarse.lower)
 
 
+def test_lpnorm_accepts_dorfler_theta_parameter() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 4), nn.ReLU(), nn.Linear(4, 1))
+    torch.manual_seed(17)
+    for parameter in model.parameters():
+        nn.init.uniform_(parameter, a=-1.0, b=1.0)
+
+    domain = IntervalTensor.from_bounds([-1.0], [1.0])
+    bounds = model.lpnorm(domain, p=2.0, iterations=4, theta=0.5)
+
+    assert bounds.lower <= bounds.upper
+
+
+def test_lpnorm_rejects_invalid_dorfler_theta() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1))
+    domain = IntervalTensor.from_bounds([0.0], [1.0])
+
+    with pytest.raises(ValueError):
+        _ = model.lpnorm(domain, p=2.0, iterations=1, theta=0.0)
+    with pytest.raises(ValueError):
+        _ = model.lpnorm(domain, p=2.0, iterations=1, theta=1.5)
+
+
 def test_lpnorm_contains_monte_carlo_estimate() -> None:
     enable_interval_eval()
     torch.manual_seed(7)
@@ -467,6 +491,30 @@ def test_sobolev_norm_refinement_tightens_interval() -> None:
     assert refined.lower >= coarse.lower
     assert refined.upper <= coarse.upper
     assert (refined.upper - refined.lower) <= (coarse.upper - coarse.lower)
+
+
+def test_sobolev_norm_accepts_dorfler_theta_parameter() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 5), nn.ReLU(), nn.Linear(5, 1))
+    torch.manual_seed(29)
+    for parameter in model.parameters():
+        nn.init.uniform_(parameter, a=-1.0, b=1.0)
+
+    domain = IntervalTensor.from_bounds([-1.0], [1.0])
+    bounds = model.sobolev_norm(domain, p=2.0, iterations=3, theta=0.5)
+
+    assert bounds.lower <= bounds.upper
+
+
+def test_sobolev_norm_rejects_invalid_dorfler_theta() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1))
+    domain = IntervalTensor.from_bounds([0.0], [1.0])
+
+    with pytest.raises(ValueError):
+        _ = model.sobolev_norm(domain, p=2.0, iterations=1, theta=0.0)
+    with pytest.raises(ValueError):
+        _ = model.sobolev_norm(domain, p=2.0, iterations=1, theta=1.1)
 
 
 def test_sigmoid_interval_encloses_endpoint_images() -> None:
