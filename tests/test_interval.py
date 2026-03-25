@@ -23,6 +23,14 @@ def test_interval_multiplication_handles_sign_changes() -> None:
     assert product.upper >= 15.0
 
 
+def test_interval_vector_multiplication_handles_sign_changes_per_entry() -> None:
+    a = Interval.from_bounds([-2.0, 1.0], [3.0, 2.0])
+    b = Interval.from_bounds([-4.0, -5.0], [5.0, 10.0])
+    product = a * b
+    assert product.contains([-12.0, -10.0])
+    assert product.contains([15.0, 20.0])
+
+
 def test_interval_division_rejects_zero_crossing_denominator() -> None:
     numerator = Interval.from_bounds(1.0, 2.0)
     denominator = Interval.from_bounds(-1.0, 1.0)
