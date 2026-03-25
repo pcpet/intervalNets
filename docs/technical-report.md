@@ -106,23 +106,23 @@ The architectural pattern is: **core numeric enclosure logic first**, then **fra
 
 - A closed interval is represented as $[\ell, u]$ with $\ell \le u$.
 - Outward rounding ensures computed interval $I_{fp}$ encloses real arithmetic result $I_{\mathbb{R}}$:
-  $$
+  $
   I_{\mathbb{R}} \subseteq I_{fp}.
-$$
+$
 - Addition/subtraction follow endpoint rules:
-  $$
+  $
   [a,b] + [c,d] = [a+c,\, b+d],\quad
   [a,b] - [c,d] = [a-d,\, b-c],
-$$
+$
   then each endpoint is rounded outward.
 - Scalar multiplication uses endpoint products:
-  $$
+  $
   [a,b]\cdot[c,d] = [\min(ac,ad,bc,bd),\,\max(ac,ad,bc,bd)].
-$$
+$
 - Division is transformed to multiplication by reciprocal interval when $0\notin[c,d]$:
-  $$
+  $
   [a,b]/[c,d] = [a,b]\cdot[1/d,\,1/c].
-$$
+$
 ### 6) Implementation Notes
 
 - Nested tuple support is recursive and shape-strict; mixed tuple/scalar paths are rejected.
@@ -227,23 +227,23 @@ Core orchestration and helpers include:
 ### 5) Mathematical Interpretation
 
 - Monotone activation propagation uses
-  $$
+  $
   f([\ell,u]) = [f(\ell), f(u)]
-$$
+$
   for increasing $f$, followed by outward rounding.
 - Linear layer propagation encloses
-  $$
+  $
   y_i = \sum_j w_{ij}x_j + b_i
-$$
+$
   by replacing scalars and inputs with intervals and applying interval arithmetic.
 - Softmax component bounds compute exact box extrema by adversarial endpoint assignment per component $i$:
-  $$
+  $
   \sigma_i(x)=\frac{e^{x_i}}{\sum_j e^{x_j}}.
-$$
+$
 - $L^p$-norm enclosure integrates interval bounds of $\|f(x)\|_p^p$ over a box domain and applies
-  $$
+  $
   \|f\|_{L^p} = \left(\int |f(x)|^p\,dx\right)^{1/p}.
-$$
+$
 - Sobolev-style enclosure similarly accumulates powers of function outputs and Jacobian entries before integration.
 
 ### 6) Implementation Notes
