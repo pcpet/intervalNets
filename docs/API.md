@@ -110,7 +110,7 @@ Runs each branch on the same input interval and concatenates outputs.
 
 ## Certified norm computation details
 
-`model.lpnorm(..., theta=0.25)` and `model.sobolev_norm(..., theta=0.25)` use adaptive box subdivision with Dörfler-type marking:
+`model.lpnorm(..., theta=0.5)` and `model.sobolev_norm(..., theta=0.5)` use adaptive box subdivision with Dörfler-type marking:
 
 1. Start from one domain box.
 2. Compute one indicator per box
@@ -128,7 +128,7 @@ Important constraints:
 - Domain must be a flat vector box (1D tuple structure).
 - `p` must be finite and strictly positive.
 - `iterations` must be non-negative.
-- `theta` must satisfy `0 < theta <= 1` (default: `0.25`).
+- `theta` must satisfy `0 < theta <= 1` (default: `0.5`).
 
 ## Jacobian enclosure details
 

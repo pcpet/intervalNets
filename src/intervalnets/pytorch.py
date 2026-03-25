@@ -628,7 +628,7 @@ def enable_interval_eval() -> None:
             raise TypeError("model.eval(interval) requires an IntervalTensor input.")
         return interval_forward(self, interval)
 
-    def lpnorm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.25):
+    def lpnorm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.5):
         _ORIGINAL_EVAL(self)
         return _lpnorm_bounds(self, domain, p, iterations, theta)
 
@@ -636,7 +636,7 @@ def enable_interval_eval() -> None:
         _ORIGINAL_EVAL(self)
         return _eval_jacobian_bounds(self, domain)
 
-    def sobolev_norm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.25):
+    def sobolev_norm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.5):
         _ORIGINAL_EVAL(self)
         return _sobolev_norm_bounds(self, domain, p, iterations, theta)
 
