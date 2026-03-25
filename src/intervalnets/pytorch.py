@@ -301,7 +301,33 @@ def _split_box(box: IntervalTensor) -> tuple[IntervalTensor, IntervalTensor]:
     )
 
 
-def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int) -> Interval:
+def _validate_dorfler_theta(theta: float) -> None:
+    if not isfinite(theta) or theta <= 0.0 or theta > 1.0:
+        raise ValueError("theta must be a finite real number in the interval (0, 1].")
+
+
+def _dorfler_marking(indicators: list[float], theta: float) -> list[int]:
+    if not indicators:
+        raise ValueError("Indicators must be non-empty for Dörfler marking.")
+
+    total = sum(indicators)
+    if total <= 0.0:
+        return [max(range(len(indicators)), key=lambda idx: indicators[idx])]
+
+    threshold = theta * total
+    ranked_indices = sorted(range(len(indicators)), key=lambda idx: indicators[idx], reverse=True)
+
+    marked: list[int] = []
+    accumulated = 0.0
+    for idx in ranked_indices:
+        marked.append(idx)
+        accumulated += indicators[idx]
+        if accumulated >= threshold:
+            break
+    return marked
+
+
+def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, theta: float) -> Interval:
     if not isinstance(domain, IntervalTensor):
         raise TypeError("model.lpnorm(domain, p, iterations) requires an IntervalTensor domain.")
     if len(domain.shape) != 1:
@@ -310,6 +336,7 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int) -> 
         raise ValueError("p must be a positive finite real number.")
     if iterations < 0:
         raise ValueError("iterations must be non-negative.")
+    _validate_dorfler_theta(theta)
 
     boxes = [domain]
     for _ in range(iterations):
@@ -318,10 +345,16 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int) -> 
             integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
             indicators.append(width * _box_volume(box))
-        target = max(range(len(boxes)), key=lambda idx: indicators[idx])
-        selected = boxes.pop(target)
-        left, right = _split_box(selected)
-        boxes.extend([left, right])
+
+        marked_indices = set(_dorfler_marking(indicators, theta))
+        refined_boxes: list[IntervalTensor] = []
+        for idx, box in enumerate(boxes):
+            if idx in marked_indices:
+                left, right = _split_box(box)
+                refined_boxes.extend([left, right])
+            else:
+                refined_boxes.append(box)
+        boxes = refined_boxes
 
     integral = Interval.point(0.0)
     for box in boxes:
@@ -497,7 +530,7 @@ def _sobolev_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Int
     return total
 
 
-def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: int) -> Interval:
+def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: int, theta: float) -> Interval:
     if not isinstance(domain, IntervalTensor):
         raise TypeError("model.sobolev_norm(domain, p, iterations) requires an IntervalTensor domain.")
     if len(domain.shape) != 1:
@@ -506,6 +539,7 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
         raise ValueError("p must be a positive finite real number.")
     if iterations < 0:
         raise ValueError("iterations must be non-negative.")
+    _validate_dorfler_theta(theta)
 
     boxes = [domain]
     for _ in range(iterations):
@@ -514,10 +548,16 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
             integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p)
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
             indicators.append(width * _box_volume(box))
-        target = max(range(len(boxes)), key=lambda idx: indicators[idx])
-        selected = boxes.pop(target)
-        left, right = _split_box(selected)
-        boxes.extend([left, right])
+
+        marked_indices = set(_dorfler_marking(indicators, theta))
+        refined_boxes: list[IntervalTensor] = []
+        for idx, box in enumerate(boxes):
+            if idx in marked_indices:
+                left, right = _split_box(box)
+                refined_boxes.extend([left, right])
+            else:
+                refined_boxes.append(box)
+        boxes = refined_boxes
 
     integral = Interval.point(0.0)
     for box in boxes:
@@ -588,17 +628,17 @@ def enable_interval_eval() -> None:
             raise TypeError("model.eval(interval) requires an IntervalTensor input.")
         return interval_forward(self, interval)
 
-    def lpnorm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0):
+    def lpnorm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.25):
         _ORIGINAL_EVAL(self)
-        return _lpnorm_bounds(self, domain, p, iterations)
+        return _lpnorm_bounds(self, domain, p, iterations, theta)
 
     def eval_jacobian_with_interval(self, domain: IntervalTensor):
         _ORIGINAL_EVAL(self)
         return _eval_jacobian_bounds(self, domain)
 
-    def sobolev_norm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0):
+    def sobolev_norm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.25):
         _ORIGINAL_EVAL(self)
-        return _sobolev_norm_bounds(self, domain, p, iterations)
+        return _sobolev_norm_bounds(self, domain, p, iterations, theta)
 
     nn.Module.eval = eval_with_interval
     nn.Module.lpnorm = lpnorm_with_interval
