@@ -132,11 +132,11 @@ class Interval:
     @classmethod
     def point(cls, value: Any) -> "Interval":
         data = _to_data(value)
-        return cls(outward_lower(data), outward_upper(data))
+        return cls(data, data)
 
     @classmethod
     def from_bounds(cls, lower: Any, upper: Any) -> "Interval":
-        return cls(outward_lower(lower), outward_upper(upper))
+        return cls(lower, upper)
 
     @property
     def shape(self) -> tuple[int, ...]:
