@@ -90,12 +90,3 @@ For worked examples, see:
 ## Authors and acknowledgements
 
 `intervalNets` was created by **Moritz Maibaum** and **Philipp Petersen**, with development support from **OpenAI Codex**.
-
-## Release checklist (recommended before first public release)
-
-- add a `LICENSE` file and corresponding metadata in `pyproject.toml`,
-- add `project.urls` entries (repository, issue tracker, documentation),
-- add `classifiers`/`keywords` metadata for PyPI discovery,
-- ensure changelog/release notes exist (`CHANGELOG.md`),
-- verify packaging artifacts with `python -m build` and `twine check dist/*`,
-- run the full test suite (`pytest`) in a clean environment before tagging.
