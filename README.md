@@ -21,6 +21,8 @@
   `model.sobolev_norm(domain, p, iterations, theta=0.5)` use
   Dörfler-type bulk marking (with uncertainty indicators) and adaptive
   bisection to return outward-rounded certified norm enclosures.
+  For domains with at least two input dimensions, refinement chooses
+  split directions anisotropically by minimizing post-split indicator mass.
 
 ## Quick start
 
