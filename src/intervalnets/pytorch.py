@@ -298,19 +298,20 @@ def _box_volume(box: IntervalTensor) -> float:
     return volume
 
 
+def _abs_power_bounds_from_scalar_bounds(lower: float, upper: float, p: float) -> Interval:
+    absolute = _interval_abs_bounds(Interval(lower, upper))
+    return _interval_pow_scalar(absolute, p)
+
+
 def _lp_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval:
     output = model.eval(box)
-    components = [Interval(lb, ub) for lb, ub in zip(output.lower, output.upper)]
     total = Interval.point(0.0)
-    for component in components:
-        absolute = _interval_abs_bounds(component)
-        total = total + _interval_pow_scalar(absolute, p)
+    for lower, upper in zip(output.lower, output.upper):
+        total = total + _abs_power_bounds_from_scalar_bounds(float(lower), float(upper), p)
     return total
 
 
-def _split_box(box: IntervalTensor) -> tuple[IntervalTensor, IntervalTensor]:
-    widths = [upper - lower for lower, upper in zip(box.lower, box.upper)]
-    split_dim = max(range(len(widths)), key=lambda idx: widths[idx])
+def _split_box_along_dimension(box: IntervalTensor, split_dim: int) -> tuple[IntervalTensor, IntervalTensor]:
     midpoint = 0.5 * (box.lower[split_dim] + box.upper[split_dim])
 
     lower_left = list(box.lower)
@@ -325,6 +326,12 @@ def _split_box(box: IntervalTensor) -> tuple[IntervalTensor, IntervalTensor]:
         IntervalTensor.from_bounds(lower_left, upper_left),
         IntervalTensor.from_bounds(lower_right, upper_right),
     )
+
+
+def _split_box(box: IntervalTensor) -> tuple[IntervalTensor, IntervalTensor]:
+    widths = [upper - lower for lower, upper in zip(box.lower, box.upper)]
+    split_dim = max(range(len(widths)), key=lambda idx: widths[idx])
+    return _split_box_along_dimension(box, split_dim)
 
 
 def _validate_dorfler_theta(theta: float) -> None:
@@ -353,6 +360,84 @@ def _dorfler_marking(indicators: list[float], theta: float) -> list[int]:
     return marked
 
 
+
+
+@dataclass(frozen=True)
+class _AdaptiveBoxData:
+    box: IntervalTensor
+    volume: float
+    integrand_bounds: Interval
+    indicator: float
+
+
+def _build_box_data(box: IntervalTensor, integrand_evaluator) -> _AdaptiveBoxData:
+    volume = _box_volume(box)
+    integrand_bounds = integrand_evaluator(box)
+    indicator = (float(integrand_bounds.upper) - float(integrand_bounds.lower)) * volume
+    return _AdaptiveBoxData(
+        box=box,
+        volume=volume,
+        integrand_bounds=integrand_bounds,
+        indicator=indicator,
+    )
+
+
+def _split_box_anisotropic(data: _AdaptiveBoxData, integrand_evaluator) -> tuple[_AdaptiveBoxData, _AdaptiveBoxData]:
+    widths = [float(upper - lower) for lower, upper in zip(data.box.lower, data.box.upper)]
+    candidate_dims = [idx for idx, width in enumerate(widths) if width > 0.0]
+    if not candidate_dims or data.indicator <= 0.0:
+        left, right = _split_box(data.box)
+        return _build_box_data(left, integrand_evaluator), _build_box_data(right, integrand_evaluator)
+
+    best_left: _AdaptiveBoxData | None = None
+    best_right: _AdaptiveBoxData | None = None
+    best_sum = inf
+    for dim in candidate_dims:
+        left_box, right_box = _split_box_along_dimension(data.box, dim)
+        left_data = _build_box_data(left_box, integrand_evaluator)
+        right_data = _build_box_data(right_box, integrand_evaluator)
+        candidate_sum = left_data.indicator + right_data.indicator
+        if candidate_sum < best_sum:
+            best_sum = candidate_sum
+            best_left = left_data
+            best_right = right_data
+
+    if best_left is None or best_right is None:
+        left, right = _split_box(data.box)
+        return _build_box_data(left, integrand_evaluator), _build_box_data(right, integrand_evaluator)
+    return best_left, best_right
+
+
+def _adaptive_integral_bounds(domain: IntervalTensor, iterations: int, theta: float, integrand_evaluator) -> Interval:
+    boxes = [_build_box_data(domain, integrand_evaluator)]
+    for _ in range(iterations):
+        indicators = [data.indicator for data in boxes]
+
+        marked_indices = set(_dorfler_marking(indicators, theta))
+        refined_boxes: list[_AdaptiveBoxData] = []
+        for idx, data in enumerate(boxes):
+            if idx in marked_indices:
+                if len(data.box.lower) > 1:
+                    left_data, right_data = _split_box_anisotropic(data, integrand_evaluator)
+                    refined_boxes.append(left_data)
+                    refined_boxes.append(right_data)
+                else:
+                    left, right = _split_box(data.box)
+                    refined_boxes.append(_build_box_data(left, integrand_evaluator))
+                    refined_boxes.append(_build_box_data(right, integrand_evaluator))
+            else:
+                refined_boxes.append(data)
+        boxes = refined_boxes
+
+    integral = Interval.point(0.0)
+    for data in boxes:
+        weighted = Interval.from_bounds(
+            float(data.integrand_bounds.lower) * data.volume,
+            float(data.integrand_bounds.upper) * data.volume,
+        )
+        integral = integral + weighted
+    return integral
+
 def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, theta: float) -> Interval:
     if not isinstance(domain, IntervalTensor):
         raise TypeError("model.lpnorm(domain, p, iterations) requires an IntervalTensor domain.")
@@ -364,32 +449,12 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
 
-    boxes = [domain]
-    for _ in range(iterations):
-        indicators: list[float] = []
-        for box in boxes:
-            integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
-            width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
-            indicators.append(width * _box_volume(box))
-
-        marked_indices = set(_dorfler_marking(indicators, theta))
-        refined_boxes: list[IntervalTensor] = []
-        for idx, box in enumerate(boxes):
-            if idx in marked_indices:
-                left, right = _split_box(box)
-                refined_boxes.extend([left, right])
-            else:
-                refined_boxes.append(box)
-        boxes = refined_boxes
-
-    integral = Interval.point(0.0)
-    for box in boxes:
-        integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
-        weighted = Interval.from_bounds(
-            float(integrand_bounds.lower) * _box_volume(box),
-            float(integrand_bounds.upper) * _box_volume(box),
-        )
-        integral = integral + weighted
+    integral = _adaptive_integral_bounds(
+        domain,
+        iterations,
+        theta,
+        lambda box: _lp_pointwise_power_bounds(model, box, p),
+    )
 
     non_negative = Interval.from_bounds(max(0.0, float(integral.lower)), max(0.0, float(integral.upper)))
     exponent = 1.0 / p
@@ -547,13 +612,11 @@ def _sobolev_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Int
     total = Interval.point(0.0)
 
     for lower, upper in zip(output.lower, output.upper):
-        component = Interval(lower, upper)
-        total = total + _interval_pow_scalar(_interval_abs_bounds(component), p)
+        total = total + _abs_power_bounds_from_scalar_bounds(float(lower), float(upper), p)
 
     for row_lower, row_upper in zip(jacobian.lower, jacobian.upper):
         for entry_lower, entry_upper in zip(row_lower, row_upper):
-            derivative_component = Interval(entry_lower, entry_upper)
-            total = total + _interval_pow_scalar(_interval_abs_bounds(derivative_component), p)
+            total = total + _abs_power_bounds_from_scalar_bounds(float(entry_lower), float(entry_upper), p)
 
     return total
 
@@ -569,32 +632,12 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
 
-    boxes = [domain]
-    for _ in range(iterations):
-        indicators: list[float] = []
-        for box in boxes:
-            integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p)
-            width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
-            indicators.append(width * _box_volume(box))
-
-        marked_indices = set(_dorfler_marking(indicators, theta))
-        refined_boxes: list[IntervalTensor] = []
-        for idx, box in enumerate(boxes):
-            if idx in marked_indices:
-                left, right = _split_box(box)
-                refined_boxes.extend([left, right])
-            else:
-                refined_boxes.append(box)
-        boxes = refined_boxes
-
-    integral = Interval.point(0.0)
-    for box in boxes:
-        integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p)
-        weighted = Interval.from_bounds(
-            float(integrand_bounds.lower) * _box_volume(box),
-            float(integrand_bounds.upper) * _box_volume(box),
-        )
-        integral = integral + weighted
+    integral = _adaptive_integral_bounds(
+        domain,
+        iterations,
+        theta,
+        lambda box: _sobolev_pointwise_power_bounds(model, box, p),
+    )
 
     non_negative = Interval.from_bounds(max(0.0, float(integral.lower)), max(0.0, float(integral.upper)))
     exponent = 1.0 / p

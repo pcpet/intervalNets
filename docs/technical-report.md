@@ -168,7 +168,9 @@ Core orchestration and helpers include:
 - `_scalar_interval_from_weight`: robustly encloses scalar coefficients, including explicit `torch.nextafter` for low-precision dtypes.
 - `_apply_monotone_bounds`: endpoint-only propagation for monotone activations.
 - `_interval_abs_bounds` and `_interval_pow_scalar`: scalar interval transformations used in integral bounds.
-- `_split_box`: adaptive refinement by bisecting widest coordinate.
+- `_split_box`: widest-axis bisection helper.
+- `_split_box_anisotropic`: for dimension >= 2, tries all split axes and picks the axis minimizing summed child indicators.
+- `_adaptive_integral_bounds`: shared adaptive loop for Lp/Sobolev integrals with cached box indicators.
 
 #### Important imports and dependencies
 
@@ -213,7 +215,7 @@ Core orchestration and helpers include:
 - (i) `interval_forward` delegates monotone activations to dedicated helpers.
 - (j) `interval_forward` delegates Softmax to specialized bound logic.
 - (k) branch combinators (`IntervalAdd`, `IntervalCat`) route to structural interval helpers.
-- (l) `_lpnorm_bounds` repeatedly uses `_split_box` and `_box_volume` for adaptive refinement.
+- (l) `_lpnorm_bounds` delegates to `_adaptive_integral_bounds`, which uses `_split_box` in 1D and `_split_box_anisotropic` in 2D+.
 - (m) Jacobian/Sobolev flows rely on `_jacobian_for_layer` (and then aggregation).
 - (n) `_linear_forward` uses `_scalar_interval_from_weight` per coefficient/bias term.
 - (o) activation helpers share `_apply_monotone_bounds` when monotonicity applies.
