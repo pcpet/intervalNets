@@ -388,6 +388,22 @@ def test_lpnorm_rejects_invalid_dorfler_theta() -> None:
         _ = model.lpnorm(domain, p=2.0, iterations=1, theta=1.5)
 
 
+def test_lpnorm_refinement_tightens_interval_in_three_dimensions() -> None:
+    enable_interval_eval()
+    torch.manual_seed(123)
+    model = nn.Sequential(nn.Linear(3, 10), nn.ReLU(), nn.Linear(10, 1))
+    for parameter in model.parameters():
+        nn.init.uniform_(parameter, a=-1.0, b=1.0)
+
+    domain = IntervalTensor.from_bounds([-1.0, -0.5, 0.0], [1.0, 1.5, 2.0])
+    coarse = model.lpnorm(domain, p=2.0, iterations=0)
+    refined = model.lpnorm(domain, p=2.0, iterations=4)
+
+    assert refined.lower >= coarse.lower
+    assert refined.upper <= coarse.upper
+    assert (refined.upper - refined.lower) <= (coarse.upper - coarse.lower)
+
+
 def test_lpnorm_contains_monte_carlo_estimate() -> None:
     enable_interval_eval()
     torch.manual_seed(7)
