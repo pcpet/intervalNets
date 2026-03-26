@@ -353,6 +353,51 @@ def _dorfler_marking(indicators: list[float], theta: float) -> list[int]:
     return marked
 
 
+
+
+@dataclass(frozen=True)
+class _AdaptiveBoxData:
+    box: IntervalTensor
+    volume: float
+    integrand_bounds: Interval
+
+
+def _build_box_data(box: IntervalTensor, integrand_evaluator) -> _AdaptiveBoxData:
+    return _AdaptiveBoxData(
+        box=box,
+        volume=_box_volume(box),
+        integrand_bounds=integrand_evaluator(box),
+    )
+
+
+def _adaptive_integral_bounds(domain: IntervalTensor, iterations: int, theta: float, integrand_evaluator) -> Interval:
+    boxes = [_build_box_data(domain, integrand_evaluator)]
+    for _ in range(iterations):
+        indicators = [
+            (float(data.integrand_bounds.upper) - float(data.integrand_bounds.lower)) * data.volume
+            for data in boxes
+        ]
+
+        marked_indices = set(_dorfler_marking(indicators, theta))
+        refined_boxes: list[_AdaptiveBoxData] = []
+        for idx, data in enumerate(boxes):
+            if idx in marked_indices:
+                left, right = _split_box(data.box)
+                refined_boxes.append(_build_box_data(left, integrand_evaluator))
+                refined_boxes.append(_build_box_data(right, integrand_evaluator))
+            else:
+                refined_boxes.append(data)
+        boxes = refined_boxes
+
+    integral = Interval.point(0.0)
+    for data in boxes:
+        weighted = Interval.from_bounds(
+            float(data.integrand_bounds.lower) * data.volume,
+            float(data.integrand_bounds.upper) * data.volume,
+        )
+        integral = integral + weighted
+    return integral
+
 def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, theta: float) -> Interval:
     if not isinstance(domain, IntervalTensor):
         raise TypeError("model.lpnorm(domain, p, iterations) requires an IntervalTensor domain.")
@@ -364,32 +409,12 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
 
-    boxes = [domain]
-    for _ in range(iterations):
-        indicators: list[float] = []
-        for box in boxes:
-            integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
-            width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
-            indicators.append(width * _box_volume(box))
-
-        marked_indices = set(_dorfler_marking(indicators, theta))
-        refined_boxes: list[IntervalTensor] = []
-        for idx, box in enumerate(boxes):
-            if idx in marked_indices:
-                left, right = _split_box(box)
-                refined_boxes.extend([left, right])
-            else:
-                refined_boxes.append(box)
-        boxes = refined_boxes
-
-    integral = Interval.point(0.0)
-    for box in boxes:
-        integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
-        weighted = Interval.from_bounds(
-            float(integrand_bounds.lower) * _box_volume(box),
-            float(integrand_bounds.upper) * _box_volume(box),
-        )
-        integral = integral + weighted
+    integral = _adaptive_integral_bounds(
+        domain,
+        iterations,
+        theta,
+        lambda box: _lp_pointwise_power_bounds(model, box, p),
+    )
 
     non_negative = Interval.from_bounds(max(0.0, float(integral.lower)), max(0.0, float(integral.upper)))
     exponent = 1.0 / p
@@ -569,32 +594,12 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
 
-    boxes = [domain]
-    for _ in range(iterations):
-        indicators: list[float] = []
-        for box in boxes:
-            integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p)
-            width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
-            indicators.append(width * _box_volume(box))
-
-        marked_indices = set(_dorfler_marking(indicators, theta))
-        refined_boxes: list[IntervalTensor] = []
-        for idx, box in enumerate(boxes):
-            if idx in marked_indices:
-                left, right = _split_box(box)
-                refined_boxes.extend([left, right])
-            else:
-                refined_boxes.append(box)
-        boxes = refined_boxes
-
-    integral = Interval.point(0.0)
-    for box in boxes:
-        integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p)
-        weighted = Interval.from_bounds(
-            float(integrand_bounds.lower) * _box_volume(box),
-            float(integrand_bounds.upper) * _box_volume(box),
-        )
-        integral = integral + weighted
+    integral = _adaptive_integral_bounds(
+        domain,
+        iterations,
+        theta,
+        lambda box: _sobolev_pointwise_power_bounds(model, box, p),
+    )
 
     non_negative = Interval.from_bounds(max(0.0, float(integral.lower)), max(0.0, float(integral.upper)))
     exponent = 1.0 / p
