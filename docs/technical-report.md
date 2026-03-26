@@ -115,10 +115,11 @@ $
   [a,b] - [c,d] = [a-d,\, b-c],
 $
   then each endpoint is rounded outward.
-- Scalar multiplication uses endpoint products:
+- Interval multiplication is defined by combining endpoint products and taking extrema:
   $
   [a,b]\cdot[c,d] = [\min(ac,ad,bc,bd),\,\max(ac,ad,bc,bd)].
 $
+- Intuition: each factor can attain either endpoint, so the true product set is enclosed by the smallest and largest corner products. For tuple-valued intervals in this codebase, the same scalar rule is applied elementwise after shape checks.
 - Division is transformed to multiplication by reciprocal interval when $0\notin[c,d]$:
   $
   [a,b]/[c,d] = [a,b]\cdot[1/d,\,1/c].
