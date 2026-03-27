@@ -491,6 +491,14 @@ def _matrix_multiply(left: list[list[Interval]], right: list[list[Interval]]) ->
         raise ValueError("Jacobian dimensions are incompatible for multiplication.")
 
     right_width = len(right[0])
+
+    diagonal_left = _extract_diagonal_if_pure(left)
+    if diagonal_left is not None:
+        return _left_diagonal_multiply(diagonal_left, right)
+
+    if _is_identity_matrix(right):
+        return [[Interval.from_bounds(float(item.lower), float(item.upper)) for item in row] for row in left]
+
     output: list[list[Interval]] = []
     for row in left:
         output_row: list[Interval] = []
@@ -513,6 +521,71 @@ def _matrix_multiply(left: list[list[Interval]], right: list[list[Interval]]) ->
             output_row.append(Interval.from_bounds(lower_acc, upper_acc))
         output.append(output_row)
     return output
+
+
+def _extract_diagonal_if_pure(matrix: list[list[Interval]]) -> list[Interval] | None:
+    if not matrix:
+        return []
+    rows = len(matrix)
+    cols = len(matrix[0])
+    if rows != cols:
+        return None
+    diagonal: list[Interval] = []
+    for row_idx, row in enumerate(matrix):
+        if len(row) != cols:
+            return None
+        diagonal.append(row[row_idx])
+        for col_idx, entry in enumerate(row):
+            if row_idx == col_idx:
+                continue
+            if float(entry.lower) != 0.0 or float(entry.upper) != 0.0:
+                return None
+    return diagonal
+
+
+def _left_diagonal_multiply(diagonal: list[Interval], right: list[list[Interval]]) -> list[list[Interval]]:
+    if len(diagonal) != len(right):
+        raise ValueError("Jacobian dimensions are incompatible for multiplication.")
+    if not right:
+        return []
+
+    output: list[list[Interval]] = []
+    for row_idx, scale_interval in enumerate(diagonal):
+        row = right[row_idx]
+        output_row: list[Interval] = []
+        for entry in row:
+            candidates = (
+                float(scale_interval.lower) * float(entry.lower),
+                float(scale_interval.lower) * float(entry.upper),
+                float(scale_interval.upper) * float(entry.lower),
+                float(scale_interval.upper) * float(entry.upper),
+            )
+            output_row.append(
+                Interval.from_bounds(nextafter(min(candidates), -inf), nextafter(max(candidates), inf))
+            )
+        output.append(output_row)
+    return output
+
+
+def _is_identity_matrix(matrix: list[list[Interval]]) -> bool:
+    if not matrix:
+        return True
+    rows = len(matrix)
+    cols = len(matrix[0])
+    if rows != cols:
+        return False
+    for row_idx, row in enumerate(matrix):
+        if len(row) != cols:
+            return False
+        for col_idx, entry in enumerate(row):
+            lower = float(entry.lower)
+            upper = float(entry.upper)
+            if row_idx == col_idx:
+                if lower != 1.0 or upper != 1.0:
+                    return False
+            elif lower != 0.0 or upper != 0.0:
+                return False
+    return True
 
 
 def _jacobian_for_layer(layer, pre_activation: IntervalTensor) -> list[list[Interval]]:
