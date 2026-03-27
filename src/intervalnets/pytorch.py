@@ -270,8 +270,10 @@ def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
                 coeff_upper * input_lower,
                 coeff_upper * input_upper,
             )
-            lower_acc = nextafter(lower_acc + min(candidates), -inf)
-            upper_acc = nextafter(upper_acc + max(candidates), inf)
+            term_lower = nextafter(min(candidates), -inf)
+            term_upper = nextafter(max(candidates), inf)
+            lower_acc = nextafter(lower_acc + term_lower, -inf)
+            upper_acc = nextafter(upper_acc + term_upper, inf)
 
         if bias is not None:
             bias_lower, bias_upper = _scalar_weight_bounds(bias[row_index], widen_float32=True)
