@@ -377,6 +377,19 @@ def test_lpnorm_accepts_dorfler_theta_parameter() -> None:
     assert bounds.lower <= bounds.upper
 
 
+def test_lpnorm_accepts_split_topk_and_batch_size_parameters() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(2, 4), nn.ReLU(), nn.Linear(4, 1))
+    torch.manual_seed(99)
+    for parameter in model.parameters():
+        nn.init.uniform_(parameter, a=-1.0, b=1.0)
+
+    domain = IntervalTensor.from_bounds([-1.0, -0.5], [1.0, 1.5])
+    bounds = model.lpnorm(domain, p=2.0, iterations=3, theta=0.5, split_topk=1, batch_size=8)
+
+    assert bounds.lower <= bounds.upper
+
+
 def test_lpnorm_rejects_invalid_dorfler_theta() -> None:
     enable_interval_eval()
     model = nn.Sequential(nn.Linear(1, 1))
@@ -386,6 +399,17 @@ def test_lpnorm_rejects_invalid_dorfler_theta() -> None:
         _ = model.lpnorm(domain, p=2.0, iterations=1, theta=0.0)
     with pytest.raises(ValueError):
         _ = model.lpnorm(domain, p=2.0, iterations=1, theta=1.5)
+
+
+def test_lpnorm_rejects_invalid_split_topk_and_batch_size() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1))
+    domain = IntervalTensor.from_bounds([0.0], [1.0])
+
+    with pytest.raises(ValueError):
+        _ = model.lpnorm(domain, p=2.0, iterations=1, split_topk=0)
+    with pytest.raises(ValueError):
+        _ = model.lpnorm(domain, p=2.0, iterations=1, batch_size=0)
 
 
 def test_lpnorm_refinement_tightens_interval_in_three_dimensions() -> None:
@@ -522,6 +546,19 @@ def test_sobolev_norm_accepts_dorfler_theta_parameter() -> None:
     assert bounds.lower <= bounds.upper
 
 
+def test_sobolev_norm_accepts_split_topk_and_batch_size_parameters() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(2, 5), nn.ReLU(), nn.Linear(5, 1))
+    torch.manual_seed(29)
+    for parameter in model.parameters():
+        nn.init.uniform_(parameter, a=-1.0, b=1.0)
+
+    domain = IntervalTensor.from_bounds([-1.0, -0.25], [1.0, 1.0])
+    bounds = model.sobolev_norm(domain, p=2.0, iterations=2, theta=0.5, split_topk=1, batch_size=8)
+
+    assert bounds.lower <= bounds.upper
+
+
 def test_sobolev_norm_rejects_invalid_dorfler_theta() -> None:
     enable_interval_eval()
     model = nn.Sequential(nn.Linear(1, 1))
@@ -531,6 +568,17 @@ def test_sobolev_norm_rejects_invalid_dorfler_theta() -> None:
         _ = model.sobolev_norm(domain, p=2.0, iterations=1, theta=0.0)
     with pytest.raises(ValueError):
         _ = model.sobolev_norm(domain, p=2.0, iterations=1, theta=1.1)
+
+
+def test_sobolev_norm_rejects_invalid_split_topk_and_batch_size() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1))
+    domain = IntervalTensor.from_bounds([0.0], [1.0])
+
+    with pytest.raises(ValueError):
+        _ = model.sobolev_norm(domain, p=2.0, iterations=1, split_topk=0)
+    with pytest.raises(ValueError):
+        _ = model.sobolev_norm(domain, p=2.0, iterations=1, batch_size=0)
 
 
 def test_sigmoid_interval_encloses_endpoint_images() -> None:

@@ -64,11 +64,11 @@ After this, every `torch.nn.Module` gets:
   - Standard PyTorch eval mode behavior (unchanged).
 - `model.eval(interval: IntervalTensor)`
   - Interval forward propagation.
-- `model.lpnorm(domain: IntervalTensor, p: float, iterations: int = 0)`
+- `model.lpnorm(domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.5, split_topk: int = 2, batch_size: int = 64)`
   - Outward-rounded enclosure of the model `L^p` norm on a box domain.
 - `model.eval_jacobian(domain: IntervalTensor)`
   - Interval enclosure of Jacobian matrix entries over the domain.
-- `model.sobolev_norm(domain: IntervalTensor, p: float, iterations: int = 0)`
+- `model.sobolev_norm(domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.5, split_topk: int = 2, batch_size: int = 64)`
   - Enclosure of a first-order Sobolev-style norm (`|f|^p + |Df|^p`) over the domain.
 
 > Note: these methods are attached by monkey-patching `torch.nn.Module`. If patching is not desired in your application architecture, call `interval_forward(...)` directly for pure forward enclosure and avoid the norm/Jacobian helpers.
@@ -117,7 +117,10 @@ Runs each branch on the same input interval and concatenates outputs.
    (`integrand interval width × box volume`).
 3. Mark a minimal set of boxes whose indicator sum is at least
    `theta × (sum of all indicators)` (Dörfler bulk criterion).
-4. Split every marked box by bisecting its widest coordinate.
+4. Split every marked box:
+   - in 1D: bisect along the only axis,
+   - in 2D and higher: anisotropically score candidate split axes and split along the best one.
+   - candidate-axis scoring is width-preselected; `split_topk` controls the number of scored axes.
 5. Repeat for `iterations` rounds.
 6. Accumulate interval integral bounds over the resulting partition.
 7. Clamp tiny negative roundoff artifacts to zero before taking the `1/p` power.
@@ -129,6 +132,8 @@ Important constraints:
 - `p` must be finite and strictly positive.
 - `iterations` must be non-negative.
 - `theta` must satisfy `0 < theta <= 1` (default: `0.5`).
+- `split_topk` must be a positive integer (default: `2`).
+- `batch_size` must be a positive integer (default: `64`).
 
 ## Jacobian enclosure details
 

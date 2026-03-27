@@ -382,20 +382,39 @@ def _build_box_data(box: IntervalTensor, integrand_evaluator) -> _AdaptiveBoxDat
     )
 
 
-def _split_box_anisotropic(data: _AdaptiveBoxData, integrand_evaluator) -> tuple[_AdaptiveBoxData, _AdaptiveBoxData]:
+def _build_box_data_batch(boxes: list[IntervalTensor], integrand_evaluator, batch_size: int) -> list[_AdaptiveBoxData]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer.")
+    data: list[_AdaptiveBoxData] = []
+    for start in range(0, len(boxes), batch_size):
+        chunk = boxes[start : start + batch_size]
+        data.extend(_build_box_data(box, integrand_evaluator) for box in chunk)
+    return data
+
+
+def _split_box_anisotropic(
+    data: _AdaptiveBoxData,
+    integrand_evaluator,
+    split_topk: int,
+    batch_size: int,
+) -> tuple[_AdaptiveBoxData, _AdaptiveBoxData]:
+    if split_topk <= 0:
+        raise ValueError("split_topk must be a positive integer.")
     widths = [float(upper - lower) for lower, upper in zip(data.box.lower, data.box.upper)]
     candidate_dims = [idx for idx, width in enumerate(widths) if width > 0.0]
     if not candidate_dims or data.indicator <= 0.0:
         left, right = _split_box(data.box)
         return _build_box_data(left, integrand_evaluator), _build_box_data(right, integrand_evaluator)
 
+    if len(candidate_dims) > split_topk:
+        candidate_dims = sorted(candidate_dims, key=lambda idx: widths[idx], reverse=True)[:split_topk]
+
     best_left: _AdaptiveBoxData | None = None
     best_right: _AdaptiveBoxData | None = None
     best_sum = inf
     for dim in candidate_dims:
         left_box, right_box = _split_box_along_dimension(data.box, dim)
-        left_data = _build_box_data(left_box, integrand_evaluator)
-        right_data = _build_box_data(right_box, integrand_evaluator)
+        left_data, right_data = _build_box_data_batch([left_box, right_box], integrand_evaluator, batch_size)
         candidate_sum = left_data.indicator + right_data.indicator
         if candidate_sum < best_sum:
             best_sum = candidate_sum
@@ -404,12 +423,20 @@ def _split_box_anisotropic(data: _AdaptiveBoxData, integrand_evaluator) -> tuple
 
     if best_left is None or best_right is None:
         left, right = _split_box(data.box)
-        return _build_box_data(left, integrand_evaluator), _build_box_data(right, integrand_evaluator)
+        left_data, right_data = _build_box_data_batch([left, right], integrand_evaluator, batch_size)
+        return left_data, right_data
     return best_left, best_right
 
 
-def _adaptive_integral_bounds(domain: IntervalTensor, iterations: int, theta: float, integrand_evaluator) -> Interval:
-    boxes = [_build_box_data(domain, integrand_evaluator)]
+def _adaptive_integral_bounds(
+    domain: IntervalTensor,
+    iterations: int,
+    theta: float,
+    integrand_evaluator,
+    split_topk: int,
+    batch_size: int,
+) -> Interval:
+    boxes = _build_box_data_batch([domain], integrand_evaluator, batch_size)
     for _ in range(iterations):
         indicators = [data.indicator for data in boxes]
 
@@ -418,13 +445,14 @@ def _adaptive_integral_bounds(domain: IntervalTensor, iterations: int, theta: fl
         for idx, data in enumerate(boxes):
             if idx in marked_indices:
                 if len(data.box.lower) > 1:
-                    left_data, right_data = _split_box_anisotropic(data, integrand_evaluator)
+                    left_data, right_data = _split_box_anisotropic(data, integrand_evaluator, split_topk, batch_size)
                     refined_boxes.append(left_data)
                     refined_boxes.append(right_data)
                 else:
                     left, right = _split_box(data.box)
-                    refined_boxes.append(_build_box_data(left, integrand_evaluator))
-                    refined_boxes.append(_build_box_data(right, integrand_evaluator))
+                    left_data, right_data = _build_box_data_batch([left, right], integrand_evaluator, batch_size)
+                    refined_boxes.append(left_data)
+                    refined_boxes.append(right_data)
             else:
                 refined_boxes.append(data)
         boxes = refined_boxes
@@ -438,7 +466,15 @@ def _adaptive_integral_bounds(domain: IntervalTensor, iterations: int, theta: fl
         integral = integral + weighted
     return integral
 
-def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, theta: float) -> Interval:
+def _lpnorm_bounds(
+    model,
+    domain: IntervalTensor,
+    p: float,
+    iterations: int,
+    theta: float,
+    split_topk: int,
+    batch_size: int,
+) -> Interval:
     if not isinstance(domain, IntervalTensor):
         raise TypeError("model.lpnorm(domain, p, iterations) requires an IntervalTensor domain.")
     if len(domain.shape) != 1:
@@ -448,12 +484,18 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
     if iterations < 0:
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
+    if split_topk <= 0:
+        raise ValueError("split_topk must be a positive integer.")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer.")
 
     integral = _adaptive_integral_bounds(
         domain,
         iterations,
         theta,
         lambda box: _lp_pointwise_power_bounds(model, box, p),
+        split_topk,
+        batch_size,
     )
 
     non_negative = Interval.from_bounds(max(0.0, float(integral.lower)), max(0.0, float(integral.upper)))
@@ -606,6 +648,16 @@ def _eval_jacobian_bounds(model, domain: IntervalTensor) -> IntervalTensor:
     return IntervalTensor.from_bounds(lower, upper)
 
 
+def _eval_jacobian_bounds_batched(model, boxes: list[IntervalTensor], batch_size: int) -> list[IntervalTensor]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer.")
+    jacobians: list[IntervalTensor] = []
+    for start in range(0, len(boxes), batch_size):
+        chunk = boxes[start : start + batch_size]
+        jacobians.extend(_eval_jacobian_bounds(model, box) for box in chunk)
+    return jacobians
+
+
 def _sobolev_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval:
     output = model.eval(box)
     jacobian = model.eval_jacobian(box)
@@ -621,7 +673,30 @@ def _sobolev_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Int
     return total
 
 
-def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: int, theta: float) -> Interval:
+def _sobolev_pointwise_power_bounds_batched(model, boxes: list[IntervalTensor], p: float, batch_size: int) -> list[Interval]:
+    outputs = [model.eval(box) for box in boxes]
+    jacobians = _eval_jacobian_bounds_batched(model, boxes, batch_size)
+    results: list[Interval] = []
+    for output, jacobian in zip(outputs, jacobians):
+        total = Interval.point(0.0)
+        for lower, upper in zip(output.lower, output.upper):
+            total = total + _abs_power_bounds_from_scalar_bounds(float(lower), float(upper), p)
+        for row_lower, row_upper in zip(jacobian.lower, jacobian.upper):
+            for entry_lower, entry_upper in zip(row_lower, row_upper):
+                total = total + _abs_power_bounds_from_scalar_bounds(float(entry_lower), float(entry_upper), p)
+        results.append(total)
+    return results
+
+
+def _sobolev_norm_bounds(
+    model,
+    domain: IntervalTensor,
+    p: float,
+    iterations: int,
+    theta: float,
+    split_topk: int,
+    batch_size: int,
+) -> Interval:
     if not isinstance(domain, IntervalTensor):
         raise TypeError("model.sobolev_norm(domain, p, iterations) requires an IntervalTensor domain.")
     if len(domain.shape) != 1:
@@ -631,12 +706,18 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
     if iterations < 0:
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
+    if split_topk <= 0:
+        raise ValueError("split_topk must be a positive integer.")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer.")
 
     integral = _adaptive_integral_bounds(
         domain,
         iterations,
         theta,
         lambda box: _sobolev_pointwise_power_bounds(model, box, p),
+        split_topk,
+        batch_size,
     )
 
     non_negative = Interval.from_bounds(max(0.0, float(integral.lower)), max(0.0, float(integral.upper)))
@@ -699,17 +780,33 @@ def enable_interval_eval() -> None:
             raise TypeError("model.eval(interval) requires an IntervalTensor input.")
         return interval_forward(self, interval)
 
-    def lpnorm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.5):
+    def lpnorm_with_interval(
+        self,
+        domain: IntervalTensor,
+        p: float,
+        iterations: int = 0,
+        theta: float = 0.5,
+        split_topk: int = 2,
+        batch_size: int = 64,
+    ):
         _ORIGINAL_EVAL(self)
-        return _lpnorm_bounds(self, domain, p, iterations, theta)
+        return _lpnorm_bounds(self, domain, p, iterations, theta, split_topk, batch_size)
 
     def eval_jacobian_with_interval(self, domain: IntervalTensor):
         _ORIGINAL_EVAL(self)
         return _eval_jacobian_bounds(self, domain)
 
-    def sobolev_norm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.5):
+    def sobolev_norm_with_interval(
+        self,
+        domain: IntervalTensor,
+        p: float,
+        iterations: int = 0,
+        theta: float = 0.5,
+        split_topk: int = 2,
+        batch_size: int = 64,
+    ):
         _ORIGINAL_EVAL(self)
-        return _sobolev_norm_bounds(self, domain, p, iterations, theta)
+        return _sobolev_norm_bounds(self, domain, p, iterations, theta, split_topk, batch_size)
 
     nn.Module.eval = eval_with_interval
     nn.Module.lpnorm = lpnorm_with_interval
