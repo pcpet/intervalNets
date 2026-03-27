@@ -5,7 +5,7 @@ torch = pytest.importorskip("torch")
 from torch import nn
 
 from intervalnets import Interval, IntervalAdd, IntervalCat, IntervalTensor, enable_interval_eval, interval_forward
-from intervalnets.pytorch import _interval_pow_scalar
+from intervalnets.pytorch import _adaptive_integral_bounds, _build_box_data_batch, _dorfler_marking, _interval_pow_scalar, _split_box
 
 
 def test_relu_negative_interval_rounds_outward_to_zero() -> None:
@@ -302,6 +302,82 @@ def test_unsupported_activation_raises_not_implemented() -> None:
     with pytest.raises(NotImplementedError):
         _ = interval_forward(model, interval)
 
+
+
+
+def _adaptive_integral_bounds_baseline(
+    domain: IntervalTensor,
+    iterations: int,
+    theta: float,
+    integrand_evaluator,
+    batch_size: int,
+) -> Interval:
+    boxes = _build_box_data_batch([domain], integrand_evaluator, {}, batch_size)
+    for _ in range(iterations):
+        indicators = [data.indicator for data in boxes]
+        marked_indices = set(_dorfler_marking(indicators, theta))
+        refined_boxes = []
+        for idx, data in enumerate(boxes):
+            if idx in marked_indices:
+                left, right = _split_box(data.box)
+                refined_boxes.extend(_build_box_data_batch([left, right], integrand_evaluator, {}, batch_size))
+            else:
+                refined_boxes.append(data)
+        boxes = refined_boxes
+
+    integral = Interval.point(0.0)
+    for data in boxes:
+        weighted = Interval.from_bounds(
+            float(data.integrand_bounds.lower) * data.volume,
+            float(data.integrand_bounds.upper) * data.volume,
+        )
+        integral = integral + weighted
+    return integral
+
+
+def test_adaptive_integral_bounds_ignores_split_topk_value() -> None:
+    domain = IntervalTensor.from_bounds([-1.0, -0.5], [2.0, 1.5])
+
+    def integrand(box: IntervalTensor) -> Interval:
+        lower = sum(value * value for value in box.lower)
+        upper = sum(value * value for value in box.upper) + 1.0
+        return Interval.from_bounds(lower, upper)
+
+    tight = _adaptive_integral_bounds(domain, iterations=3, theta=0.5, integrand_evaluator=integrand, split_topk=1, batch_size=8)
+    wide = _adaptive_integral_bounds(domain, iterations=3, theta=0.5, integrand_evaluator=integrand, split_topk=8, batch_size=8)
+
+    assert tight.lower == wide.lower
+    assert tight.upper == wide.upper
+
+
+def test_adaptive_integral_bounds_reuses_unrefined_box_cache_between_iterations() -> None:
+    domain = IntervalTensor.from_bounds([-1.0, -1.0], [1.0, 1.0])
+    calls = 0
+
+    def integrand(box: IntervalTensor) -> Interval:
+        nonlocal calls
+        calls += 1
+        width_sum = sum(upper - lower for lower, upper in zip(box.lower, box.upper))
+        return Interval.from_bounds(0.0, width_sum)
+
+    _ = _adaptive_integral_bounds(domain, iterations=2, theta=0.5, integrand_evaluator=integrand, split_topk=4, batch_size=8)
+
+    assert calls == 5
+
+
+def test_adaptive_integral_bounds_matches_widest_axis_baseline_bounds() -> None:
+    domain = IntervalTensor.from_bounds([-1.0, -0.5], [1.0, 2.5])
+
+    def integrand(box: IntervalTensor) -> Interval:
+        linear_lower = 0.5 * box.lower[0] - 1.25 * box.upper[1]
+        linear_upper = 0.5 * box.upper[0] - 1.25 * box.lower[1]
+        return Interval.from_bounds(linear_lower - 0.1, linear_upper + 0.2)
+
+    cached = _adaptive_integral_bounds(domain, iterations=4, theta=0.6, integrand_evaluator=integrand, split_topk=3, batch_size=2)
+    baseline = _adaptive_integral_bounds_baseline(domain, iterations=4, theta=0.6, integrand_evaluator=integrand, batch_size=2)
+
+    assert cached.lower == baseline.lower
+    assert cached.upper == baseline.upper
 
 def test_lpnorm_zero_network_returns_zero_interval() -> None:
     enable_interval_eval()

@@ -370,9 +370,16 @@ class _AdaptiveBoxData:
     indicator: float
 
 
-def _build_box_data(box: IntervalTensor, integrand_evaluator) -> _AdaptiveBoxData:
+def _build_box_data(
+    box: IntervalTensor,
+    integrand_evaluator,
+    bounds_cache: dict[IntervalTensor, Interval],
+) -> _AdaptiveBoxData:
     volume = _box_volume(box)
-    integrand_bounds = integrand_evaluator(box)
+    integrand_bounds = bounds_cache.get(box)
+    if integrand_bounds is None:
+        integrand_bounds = integrand_evaluator(box)
+        bounds_cache[box] = integrand_bounds
     indicator = (float(integrand_bounds.upper) - float(integrand_bounds.lower)) * volume
     return _AdaptiveBoxData(
         box=box,
@@ -382,50 +389,19 @@ def _build_box_data(box: IntervalTensor, integrand_evaluator) -> _AdaptiveBoxDat
     )
 
 
-def _build_box_data_batch(boxes: list[IntervalTensor], integrand_evaluator, batch_size: int) -> list[_AdaptiveBoxData]:
+def _build_box_data_batch(
+    boxes: list[IntervalTensor],
+    integrand_evaluator,
+    bounds_cache: dict[IntervalTensor, Interval],
+    batch_size: int,
+) -> list[_AdaptiveBoxData]:
     if batch_size <= 0:
         raise ValueError("batch_size must be a positive integer.")
     data: list[_AdaptiveBoxData] = []
     for start in range(0, len(boxes), batch_size):
         chunk = boxes[start : start + batch_size]
-        data.extend(_build_box_data(box, integrand_evaluator) for box in chunk)
+        data.extend(_build_box_data(box, integrand_evaluator, bounds_cache) for box in chunk)
     return data
-
-
-def _split_box_anisotropic(
-    data: _AdaptiveBoxData,
-    integrand_evaluator,
-    split_topk: int,
-    batch_size: int,
-) -> tuple[_AdaptiveBoxData, _AdaptiveBoxData]:
-    if split_topk <= 0:
-        raise ValueError("split_topk must be a positive integer.")
-    widths = [float(upper - lower) for lower, upper in zip(data.box.lower, data.box.upper)]
-    candidate_dims = [idx for idx, width in enumerate(widths) if width > 0.0]
-    if not candidate_dims or data.indicator <= 0.0:
-        left, right = _split_box(data.box)
-        return _build_box_data(left, integrand_evaluator), _build_box_data(right, integrand_evaluator)
-
-    if len(candidate_dims) > split_topk:
-        candidate_dims = sorted(candidate_dims, key=lambda idx: widths[idx], reverse=True)[:split_topk]
-
-    best_left: _AdaptiveBoxData | None = None
-    best_right: _AdaptiveBoxData | None = None
-    best_sum = inf
-    for dim in candidate_dims:
-        left_box, right_box = _split_box_along_dimension(data.box, dim)
-        left_data, right_data = _build_box_data_batch([left_box, right_box], integrand_evaluator, batch_size)
-        candidate_sum = left_data.indicator + right_data.indicator
-        if candidate_sum < best_sum:
-            best_sum = candidate_sum
-            best_left = left_data
-            best_right = right_data
-
-    if best_left is None or best_right is None:
-        left, right = _split_box(data.box)
-        left_data, right_data = _build_box_data_batch([left, right], integrand_evaluator, batch_size)
-        return left_data, right_data
-    return best_left, best_right
 
 
 def _adaptive_integral_bounds(
@@ -436,7 +412,9 @@ def _adaptive_integral_bounds(
     split_topk: int,
     batch_size: int,
 ) -> Interval:
-    boxes = _build_box_data_batch([domain], integrand_evaluator, batch_size)
+    del split_topk
+    bounds_cache: dict[IntervalTensor, Interval] = {}
+    boxes = _build_box_data_batch([domain], integrand_evaluator, bounds_cache, batch_size)
     for _ in range(iterations):
         indicators = [data.indicator for data in boxes]
 
@@ -444,15 +422,10 @@ def _adaptive_integral_bounds(
         refined_boxes: list[_AdaptiveBoxData] = []
         for idx, data in enumerate(boxes):
             if idx in marked_indices:
-                if len(data.box.lower) > 1:
-                    left_data, right_data = _split_box_anisotropic(data, integrand_evaluator, split_topk, batch_size)
-                    refined_boxes.append(left_data)
-                    refined_boxes.append(right_data)
-                else:
-                    left, right = _split_box(data.box)
-                    left_data, right_data = _build_box_data_batch([left, right], integrand_evaluator, batch_size)
-                    refined_boxes.append(left_data)
-                    refined_boxes.append(right_data)
+                left, right = _split_box(data.box)
+                left_data, right_data = _build_box_data_batch([left, right], integrand_evaluator, bounds_cache, batch_size)
+                refined_boxes.append(left_data)
+                refined_boxes.append(right_data)
             else:
                 refined_boxes.append(data)
         boxes = refined_boxes
