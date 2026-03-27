@@ -64,7 +64,7 @@ def _pad_outward(value: float, direction: float, steps: int = 1, include_float32
     return out
 
 
-def _scalar_interval_from_weight(weight: Any, value: Interval, widen_float32: bool = True) -> Interval:
+def _scalar_weight_bounds(weight: Any, widen_float32: bool = True) -> tuple[float, float]:
     if torch is not None and isinstance(weight, torch.Tensor):
         scalar = weight.detach().cpu()
         if scalar.numel() != 1:
@@ -76,11 +76,19 @@ def _scalar_interval_from_weight(weight: Any, value: Interval, widen_float32: bo
             and coefficient != 0.0
             and not coefficient.is_integer()
         ):
-            lower = _pad_outward(coefficient, -inf, include_float32=True)
-            upper = _pad_outward(coefficient, inf, include_float32=True)
-            return Interval.from_bounds(lower, upper) * value
-        return Interval.point(coefficient) * value
-    return Interval.point(weight) * value
+            return (
+                _pad_outward(coefficient, -inf, include_float32=True),
+                _pad_outward(coefficient, inf, include_float32=True),
+            )
+        return coefficient, coefficient
+
+    coefficient = float(weight)
+    return coefficient, coefficient
+
+
+def _scalar_interval_from_weight(weight: Any, value: Interval, widen_float32: bool = True) -> Interval:
+    lower, upper = _scalar_weight_bounds(weight, widen_float32=widen_float32)
+    return Interval.from_bounds(lower, upper) * value
 
 
 def _apply_monotone_bounds(x: IntervalTensor, func) -> IntervalTensor:
@@ -243,22 +251,37 @@ def _interval_cat(intervals: list[IntervalTensor], dim: int) -> IntervalTensor:
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
     weight = layer.weight.detach().cpu()
     bias = layer.bias.detach().cpu() if layer.bias is not None else None
-    x_lower = list(x.lower)
-    x_upper = list(x.upper)
-    input_intervals = [Interval(lb, ub) for lb, ub in zip(x_lower, x_upper)]
 
-    outputs: list[Interval] = []
+    x_lower = tuple(float(v) for v in x.lower)
+    x_upper = tuple(float(v) for v in x.upper)
+
+    lower_out: list[float] = []
+    upper_out: list[float] = []
     for row_index, row in enumerate(weight):
-        accumulator = Interval.point(0.0)
-        for coefficient, input_interval in zip(row, input_intervals):
-            accumulator = accumulator + _scalar_interval_from_weight(coefficient, input_interval)
-        if bias is not None:
-            accumulator = accumulator + _scalar_interval_from_weight(bias[row_index], Interval.point(1.0), widen_float32=True)
-        outputs.append(accumulator)
+        lower_acc = 0.0
+        upper_acc = 0.0
+        for col_index, coefficient in enumerate(row):
+            coeff_lower, coeff_upper = _scalar_weight_bounds(coefficient, widen_float32=True)
+            input_lower = x_lower[col_index]
+            input_upper = x_upper[col_index]
+            candidates = (
+                coeff_lower * input_lower,
+                coeff_lower * input_upper,
+                coeff_upper * input_lower,
+                coeff_upper * input_upper,
+            )
+            lower_acc = nextafter(lower_acc + min(candidates), -inf)
+            upper_acc = nextafter(upper_acc + max(candidates), inf)
 
-    lower = tuple(item.lower for item in outputs)
-    upper = tuple(item.upper for item in outputs)
-    return IntervalTensor(lower, upper)
+        if bias is not None:
+            bias_lower, bias_upper = _scalar_weight_bounds(bias[row_index], widen_float32=True)
+            lower_acc = nextafter(lower_acc + bias_lower, -inf)
+            upper_acc = nextafter(upper_acc + bias_upper, inf)
+
+        lower_out.append(lower_acc)
+        upper_out.append(upper_acc)
+
+    return IntervalTensor(tuple(lower_out), tuple(upper_out))
 
 
 def _interval_abs_bounds(value: Interval) -> Interval:
@@ -364,30 +387,31 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
 
-    boxes = [domain]
+    boxes: list[tuple[IntervalTensor, float]] = [(domain, _box_volume(domain))]
     for _ in range(iterations):
         indicators: list[float] = []
-        for box in boxes:
+        for box, box_volume in boxes:
             integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
-            indicators.append(width * _box_volume(box))
+            indicators.append(width * box_volume)
 
         marked_indices = set(_dorfler_marking(indicators, theta))
-        refined_boxes: list[IntervalTensor] = []
-        for idx, box in enumerate(boxes):
+        refined_boxes: list[tuple[IntervalTensor, float]] = []
+        for idx, (box, box_volume) in enumerate(boxes):
             if idx in marked_indices:
                 left, right = _split_box(box)
-                refined_boxes.extend([left, right])
+                child_volume = 0.5 * box_volume
+                refined_boxes.extend([(left, child_volume), (right, child_volume)])
             else:
-                refined_boxes.append(box)
+                refined_boxes.append((box, box_volume))
         boxes = refined_boxes
 
     integral = Interval.point(0.0)
-    for box in boxes:
+    for box, box_volume in boxes:
         integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
         weighted = Interval.from_bounds(
-            float(integrand_bounds.lower) * _box_volume(box),
-            float(integrand_bounds.upper) * _box_volume(box),
+            float(integrand_bounds.lower) * box_volume,
+            float(integrand_bounds.upper) * box_volume,
         )
         integral = integral + weighted
 
