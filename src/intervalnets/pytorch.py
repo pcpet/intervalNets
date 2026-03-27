@@ -64,7 +64,7 @@ def _pad_outward(value: float, direction: float, steps: int = 1, include_float32
     return out
 
 
-def _scalar_interval_from_weight(weight: Any, value: Interval, widen_float32: bool = True) -> Interval:
+def _scalar_weight_bounds(weight: Any, widen_float32: bool = True) -> tuple[float, float]:
     if torch is not None and isinstance(weight, torch.Tensor):
         scalar = weight.detach().cpu()
         if scalar.numel() != 1:
@@ -76,11 +76,19 @@ def _scalar_interval_from_weight(weight: Any, value: Interval, widen_float32: bo
             and coefficient != 0.0
             and not coefficient.is_integer()
         ):
-            lower = _pad_outward(coefficient, -inf, include_float32=True)
-            upper = _pad_outward(coefficient, inf, include_float32=True)
-            return Interval.from_bounds(lower, upper) * value
-        return Interval.point(coefficient) * value
-    return Interval.point(weight) * value
+            return (
+                _pad_outward(coefficient, -inf, include_float32=True),
+                _pad_outward(coefficient, inf, include_float32=True),
+            )
+        return coefficient, coefficient
+
+    coefficient = float(weight)
+    return coefficient, coefficient
+
+
+def _scalar_interval_from_weight(weight: Any, value: Interval, widen_float32: bool = True) -> Interval:
+    lower, upper = _scalar_weight_bounds(weight, widen_float32=widen_float32)
+    return Interval.from_bounds(lower, upper) * value
 
 
 def _apply_monotone_bounds(x: IntervalTensor, func) -> IntervalTensor:
@@ -243,22 +251,37 @@ def _interval_cat(intervals: list[IntervalTensor], dim: int) -> IntervalTensor:
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
     weight = layer.weight.detach().cpu()
     bias = layer.bias.detach().cpu() if layer.bias is not None else None
-    x_lower = list(x.lower)
-    x_upper = list(x.upper)
-    input_intervals = [Interval(lb, ub) for lb, ub in zip(x_lower, x_upper)]
 
-    outputs: list[Interval] = []
+    x_lower = tuple(float(v) for v in x.lower)
+    x_upper = tuple(float(v) for v in x.upper)
+
+    lower_out: list[float] = []
+    upper_out: list[float] = []
     for row_index, row in enumerate(weight):
-        accumulator = Interval.point(0.0)
-        for coefficient, input_interval in zip(row, input_intervals):
-            accumulator = accumulator + _scalar_interval_from_weight(coefficient, input_interval)
-        if bias is not None:
-            accumulator = accumulator + _scalar_interval_from_weight(bias[row_index], Interval.point(1.0), widen_float32=True)
-        outputs.append(accumulator)
+        lower_acc = 0.0
+        upper_acc = 0.0
+        for col_index, coefficient in enumerate(row):
+            coeff_lower, coeff_upper = _scalar_weight_bounds(coefficient, widen_float32=True)
+            input_lower = x_lower[col_index]
+            input_upper = x_upper[col_index]
+            candidates = (
+                coeff_lower * input_lower,
+                coeff_lower * input_upper,
+                coeff_upper * input_lower,
+                coeff_upper * input_upper,
+            )
+            lower_acc = nextafter(lower_acc + min(candidates), -inf)
+            upper_acc = nextafter(upper_acc + max(candidates), inf)
 
-    lower = tuple(item.lower for item in outputs)
-    upper = tuple(item.upper for item in outputs)
-    return IntervalTensor(lower, upper)
+        if bias is not None:
+            bias_lower, bias_upper = _scalar_weight_bounds(bias[row_index], widen_float32=True)
+            lower_acc = nextafter(lower_acc + bias_lower, -inf)
+            upper_acc = nextafter(upper_acc + bias_upper, inf)
+
+        lower_out.append(lower_acc)
+        upper_out.append(upper_acc)
+
+    return IntervalTensor(tuple(lower_out), tuple(upper_out))
 
 
 def _interval_abs_bounds(value: Interval) -> Interval:
@@ -284,6 +307,18 @@ def _interval_pow_scalar(value: Interval, exponent: float) -> Interval:
     lower = lower_bound ** exponent
     upper = upper_bound ** exponent
     return Interval.from_bounds(lower, upper)
+
+
+def _abs_pow_bounds_from_scalars(lower: float, upper: float, exponent: float) -> tuple[float, float]:
+    if lower <= 0.0 <= upper:
+        abs_lower = 0.0
+        abs_upper = max(abs(lower), abs(upper))
+    else:
+        abs_candidates = (abs(lower), abs(upper))
+        abs_lower = min(abs_candidates)
+        abs_upper = max(abs_candidates)
+
+    return abs_lower ** exponent, abs_upper ** exponent
 
 
 def _box_volume(box: IntervalTensor) -> float:
@@ -364,30 +399,31 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
 
-    boxes = [domain]
+    boxes: list[tuple[IntervalTensor, float]] = [(domain, _box_volume(domain))]
     for _ in range(iterations):
         indicators: list[float] = []
-        for box in boxes:
+        for box, box_volume in boxes:
             integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
-            indicators.append(width * _box_volume(box))
+            indicators.append(width * box_volume)
 
         marked_indices = set(_dorfler_marking(indicators, theta))
-        refined_boxes: list[IntervalTensor] = []
-        for idx, box in enumerate(boxes):
+        refined_boxes: list[tuple[IntervalTensor, float]] = []
+        for idx, (box, box_volume) in enumerate(boxes):
             if idx in marked_indices:
                 left, right = _split_box(box)
-                refined_boxes.extend([left, right])
+                child_volume = 0.5 * box_volume
+                refined_boxes.extend([(left, child_volume), (right, child_volume)])
             else:
-                refined_boxes.append(box)
+                refined_boxes.append((box, box_volume))
         boxes = refined_boxes
 
     integral = Interval.point(0.0)
-    for box in boxes:
+    for box, box_volume in boxes:
         integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
         weighted = Interval.from_bounds(
-            float(integrand_bounds.lower) * _box_volume(box),
-            float(integrand_bounds.upper) * _box_volume(box),
+            float(integrand_bounds.lower) * box_volume,
+            float(integrand_bounds.upper) * box_volume,
         )
         integral = integral + weighted
 
@@ -455,23 +491,111 @@ def _matrix_multiply(left: list[list[Interval]], right: list[list[Interval]]) ->
         raise ValueError("Jacobian dimensions are incompatible for multiplication.")
 
     right_width = len(right[0])
+
+    diagonal_left = _extract_diagonal_if_pure(left)
+    if diagonal_left is not None:
+        return _left_diagonal_multiply(diagonal_left, right)
+
+    if _is_identity_matrix(right):
+        return [[Interval.from_bounds(float(item.lower), float(item.upper)) for item in row] for row in left]
+
     output: list[list[Interval]] = []
     for row in left:
         output_row: list[Interval] = []
         for col_idx in range(right_width):
-            accumulator = Interval.point(0.0)
+            lower_acc = 0.0
+            upper_acc = 0.0
             for shared_idx in range(left_width):
-                accumulator = accumulator + row[shared_idx] * right[shared_idx][col_idx]
-            output_row.append(accumulator)
+                left_interval = row[shared_idx]
+                right_interval = right[shared_idx][col_idx]
+                candidates = (
+                    float(left_interval.lower) * float(right_interval.lower),
+                    float(left_interval.lower) * float(right_interval.upper),
+                    float(left_interval.upper) * float(right_interval.lower),
+                    float(left_interval.upper) * float(right_interval.upper),
+                )
+                term_lower = nextafter(min(candidates), -inf)
+                term_upper = nextafter(max(candidates), inf)
+                lower_acc = nextafter(lower_acc + term_lower, -inf)
+                upper_acc = nextafter(upper_acc + term_upper, inf)
+            output_row.append(Interval.from_bounds(lower_acc, upper_acc))
         output.append(output_row)
     return output
+
+
+def _extract_diagonal_if_pure(matrix: list[list[Interval]]) -> list[Interval] | None:
+    if not matrix:
+        return []
+    rows = len(matrix)
+    cols = len(matrix[0])
+    if rows != cols:
+        return None
+    diagonal: list[Interval] = []
+    for row_idx, row in enumerate(matrix):
+        if len(row) != cols:
+            return None
+        diagonal.append(row[row_idx])
+        for col_idx, entry in enumerate(row):
+            if row_idx == col_idx:
+                continue
+            if float(entry.lower) != 0.0 or float(entry.upper) != 0.0:
+                return None
+    return diagonal
+
+
+def _left_diagonal_multiply(diagonal: list[Interval], right: list[list[Interval]]) -> list[list[Interval]]:
+    if len(diagonal) != len(right):
+        raise ValueError("Jacobian dimensions are incompatible for multiplication.")
+    if not right:
+        return []
+
+    output: list[list[Interval]] = []
+    for row_idx, scale_interval in enumerate(diagonal):
+        row = right[row_idx]
+        output_row: list[Interval] = []
+        for entry in row:
+            candidates = (
+                float(scale_interval.lower) * float(entry.lower),
+                float(scale_interval.lower) * float(entry.upper),
+                float(scale_interval.upper) * float(entry.lower),
+                float(scale_interval.upper) * float(entry.upper),
+            )
+            output_row.append(
+                Interval.from_bounds(nextafter(min(candidates), -inf), nextafter(max(candidates), inf))
+            )
+        output.append(output_row)
+    return output
+
+
+def _is_identity_matrix(matrix: list[list[Interval]]) -> bool:
+    if not matrix:
+        return True
+    rows = len(matrix)
+    cols = len(matrix[0])
+    if rows != cols:
+        return False
+    for row_idx, row in enumerate(matrix):
+        if len(row) != cols:
+            return False
+        for col_idx, entry in enumerate(row):
+            lower = float(entry.lower)
+            upper = float(entry.upper)
+            if row_idx == col_idx:
+                if lower != 1.0 or upper != 1.0:
+                    return False
+            elif lower != 0.0 or upper != 0.0:
+                return False
+    return True
 
 
 def _jacobian_for_layer(layer, pre_activation: IntervalTensor) -> list[list[Interval]]:
     if isinstance(layer, nn.Linear):
         weight = layer.weight.detach().cpu()
         return [
-            [_scalar_interval_from_weight(weight[row_idx, col_idx], Interval.point(1.0)) for col_idx in range(weight.shape[1])]
+            [
+                Interval.from_bounds(*_scalar_weight_bounds(weight[row_idx, col_idx], widen_float32=True))
+                for col_idx in range(weight.shape[1])
+            ]
             for row_idx in range(weight.shape[0])
         ]
     if isinstance(layer, nn.ReLU):
@@ -544,18 +668,21 @@ def _eval_jacobian_bounds(model, domain: IntervalTensor) -> IntervalTensor:
 def _sobolev_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval:
     output = model.eval(box)
     jacobian = model.eval_jacobian(box)
-    total = Interval.point(0.0)
 
+    lower_acc = 0.0
+    upper_acc = 0.0
     for lower, upper in zip(output.lower, output.upper):
-        component = Interval(lower, upper)
-        total = total + _interval_pow_scalar(_interval_abs_bounds(component), p)
+        term_lower, term_upper = _abs_pow_bounds_from_scalars(float(lower), float(upper), p)
+        lower_acc = nextafter(lower_acc + term_lower, -inf)
+        upper_acc = nextafter(upper_acc + term_upper, inf)
 
     for row_lower, row_upper in zip(jacobian.lower, jacobian.upper):
         for entry_lower, entry_upper in zip(row_lower, row_upper):
-            derivative_component = Interval(entry_lower, entry_upper)
-            total = total + _interval_pow_scalar(_interval_abs_bounds(derivative_component), p)
+            term_lower, term_upper = _abs_pow_bounds_from_scalars(float(entry_lower), float(entry_upper), p)
+            lower_acc = nextafter(lower_acc + term_lower, -inf)
+            upper_acc = nextafter(upper_acc + term_upper, inf)
 
-    return total
+    return Interval.from_bounds(lower_acc, upper_acc)
 
 
 def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: int, theta: float) -> Interval:
@@ -569,30 +696,31 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
 
-    boxes = [domain]
+    boxes: list[tuple[IntervalTensor, float]] = [(domain, _box_volume(domain))]
     for _ in range(iterations):
         indicators: list[float] = []
-        for box in boxes:
+        for box, box_volume in boxes:
             integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p)
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
-            indicators.append(width * _box_volume(box))
+            indicators.append(width * box_volume)
 
         marked_indices = set(_dorfler_marking(indicators, theta))
-        refined_boxes: list[IntervalTensor] = []
-        for idx, box in enumerate(boxes):
+        refined_boxes: list[tuple[IntervalTensor, float]] = []
+        for idx, (box, box_volume) in enumerate(boxes):
             if idx in marked_indices:
                 left, right = _split_box(box)
-                refined_boxes.extend([left, right])
+                child_volume = 0.5 * box_volume
+                refined_boxes.extend([(left, child_volume), (right, child_volume)])
             else:
-                refined_boxes.append(box)
+                refined_boxes.append((box, box_volume))
         boxes = refined_boxes
 
     integral = Interval.point(0.0)
-    for box in boxes:
+    for box, box_volume in boxes:
         integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p)
         weighted = Interval.from_bounds(
-            float(integrand_bounds.lower) * _box_volume(box),
-            float(integrand_bounds.upper) * _box_volume(box),
+            float(integrand_bounds.lower) * box_volume,
+            float(integrand_bounds.upper) * box_volume,
         )
         integral = integral + weighted
 
