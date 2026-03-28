@@ -536,12 +536,10 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
     if iterations < 0:
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
+    effective_theta = theta if len(domain.lower) <= 1 else max(theta, 0.9)
 
     boxes = [domain]
-    # Width-only splitting is used here intentionally. The static weighted
-    # heuristic can repeatedly refine one coordinate in higher dimensions and
-    # fail to reduce dominant enclosure error contributors.
-    split_weights = None
+    split_weights = _precompute_split_weights(model, domain) if len(domain.lower) > 1 else None
     integrand_cache: dict[tuple[tuple[float, ...], tuple[float, ...]], Interval] = {}
     volume_cache: dict[tuple[tuple[float, ...], tuple[float, ...]], float] = {}
 
@@ -574,7 +572,7 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
             indicators.append(width * _cached_volume(box))
 
-        marked_indices = set(_dorfler_marking(indicators, theta))
+        marked_indices = set(_dorfler_marking(indicators, effective_theta))
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
@@ -810,12 +808,10 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
     if iterations < 0:
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
+    effective_theta = theta if len(domain.lower) <= 1 else max(theta, 0.9)
 
     boxes = [domain]
-    # Width-only splitting is used here intentionally. The static weighted
-    # heuristic can repeatedly refine one coordinate in higher dimensions and
-    # fail to reduce dominant enclosure error contributors.
-    split_weights = None
+    split_weights = _precompute_split_weights(model, domain) if len(domain.lower) > 1 else None
     integrand_cache: dict[tuple[tuple[float, ...], tuple[float, ...]], Interval] = {}
     volume_cache: dict[tuple[tuple[float, ...], tuple[float, ...]], float] = {}
 
@@ -848,7 +844,7 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
             indicators.append(width * _cached_volume(box))
 
-        marked_indices = set(_dorfler_marking(indicators, theta))
+        marked_indices = set(_dorfler_marking(indicators, effective_theta))
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
