@@ -411,6 +411,22 @@ def test_lpnorm_constant_network_matches_exact_value() -> None:
     assert (bounds.upper - bounds.lower) < 1e-10
 
 
+def test_lpnorm_constant_network_3d_remains_nontrivial_and_tight() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(3, 1))
+    with torch.no_grad():
+        model[0].weight.zero_()
+        model[0].bias.fill_(0.64)
+
+    domain = IntervalTensor.from_bounds([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0])
+    bounds = model.lpnorm(domain, p=2.0, iterations=4)
+    exact = (8.0 * (0.64**2)) ** 0.5
+
+    assert bounds.lower > 0.0
+    assert bounds.lower <= exact <= bounds.upper
+    assert (bounds.upper - bounds.lower) < 1e-6
+
+
 def test_lpnorm_refinement_tightens_interval() -> None:
     enable_interval_eval()
     model = nn.Sequential(nn.Linear(1, 8), nn.ReLU(), nn.Linear(8, 1))

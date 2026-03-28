@@ -103,6 +103,11 @@ def _widen_weight_bounds(weight):
     return lower, upper, widened
 
 
+
+
+def _needs_float32_padding_scalar(value: float) -> bool:
+    return isfinite(value) and value != 0.0 and not float(value).is_integer()
+
 def _weight_needs_widening(weight) -> bool:
     if weight.dtype not in {torch.float16, torch.bfloat16, torch.float32}:
         return False
@@ -113,7 +118,7 @@ def _weight_needs_widening(weight) -> bool:
     return bool(torch.any(finite & nonzero & non_integer))
 
 
-def _scalar_interval_from_weight(weight: Any, value: Interval, widen_float32: bool = True) -> Interval:
+def _scalar_interval_from_weight(weight: Any, value: Interval, widen_float32: bool = False) -> Interval:
     if torch is not None and isinstance(weight, torch.Tensor):
         scalar = weight.detach().cpu()
         if scalar.numel() != 1:
@@ -136,7 +141,7 @@ def _apply_monotone_bounds(x: IntervalTensor, func) -> IntervalTensor:
     # For monotone activations f, interval images satisfy
     # f([l, u]) = [f(l), f(u)].
     # Therefore, evaluating only endpoints is sound and complete.
-    include_float32 = len(x.lower) == 1
+    include_float32 = True
     lower = tuple(_pad_outward(func(bound), -inf, include_float32=include_float32) for bound in x.lower)
     upper = tuple(_pad_outward(func(bound), inf, include_float32=include_float32) for bound in x.upper)
     return IntervalTensor(lower, upper)
@@ -147,7 +152,7 @@ def _apply_monotone_bounds_vectorized(x: IntervalTensor, func) -> IntervalTensor
     upper_tensor = torch.tensor(x.upper, dtype=torch.float64)
     lower_eval = func(lower_tensor)
     upper_eval = func(upper_tensor)
-    include_float32 = len(x.lower) == 1
+    include_float32 = True
     lower_out = _pad_outward_tensor(lower_eval, -inf, include_float32=include_float32)
     upper_out = _pad_outward_tensor(upper_eval, inf, include_float32=include_float32)
     return IntervalTensor.from_bounds(lower_out.tolist(), upper_out.tolist())
@@ -307,18 +312,11 @@ def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
     # Perform outward-rounded accumulation per term to preserve enclosure
     # soundness, while avoiding Interval object churn in inner loops.
     weight = layer.weight.detach().cpu()
-    weight_widened = _weight_needs_widening(weight)
+    # Coefficients stored in model parameters are exact constants for the
+    # interval problem; do not widen them into uncertainty intervals.
     weight_lower = None
     weight_upper = None
-    if weight_widened:
-        weight_lower, weight_upper, _ = _widen_weight_bounds(weight)
     bias = layer.bias.detach().cpu() if layer.bias is not None else None
-    bias_lower = None
-    bias_upper = None
-    bias_widened = bool(bias is not None and _weight_needs_widening(bias))
-    if bias is not None:
-        if bias_widened:
-            bias_lower, bias_upper, _ = _widen_weight_bounds(bias)
 
     x_lower = [float(value) for value in x.lower]
     x_upper = [float(value) for value in x.upper]
@@ -328,6 +326,7 @@ def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
     for row_idx in range(weight.shape[0]):
         acc_lower = 0.0
         acc_upper = 0.0
+        acc_include_float32 = False
 
         for col_idx in range(weight.shape[1]):
             coefficient = float(weight[row_idx, col_idx])
@@ -336,29 +335,30 @@ def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
             left = x_lower[col_idx]
             right = x_upper[col_idx]
 
+            term_include_float32 = any(
+                _needs_float32_padding_scalar(value)
+                for value in (coef_lower, coef_upper)
+            )
             candidates = (
                 coef_lower * left,
                 coef_lower * right,
                 coef_upper * left,
                 coef_upper * right,
             )
-            product_lower = nextafter(min(candidates), -inf)
-            product_upper = nextafter(max(candidates), inf)
-            acc_lower = nextafter(acc_lower + product_lower, -inf)
-            acc_upper = nextafter(acc_upper + product_upper, inf)
+            product_lower = _pad_outward(min(candidates), -inf, include_float32=term_include_float32)
+            product_upper = _pad_outward(max(candidates), inf, include_float32=term_include_float32)
+            acc_include_float32 = acc_include_float32 or term_include_float32
+            acc_lower = _pad_outward(acc_lower + product_lower, -inf, include_float32=acc_include_float32)
+            acc_upper = _pad_outward(acc_upper + product_upper, inf, include_float32=acc_include_float32)
 
         if bias is not None:
-            if bias_lower is not None and bias_upper is not None:
-                acc_lower = nextafter(acc_lower + float(bias_lower[row_idx]), -inf)
-                acc_upper = nextafter(acc_upper + float(bias_upper[row_idx]), inf)
-            else:
-                bias_value = float(bias[row_idx])
-                acc_lower = nextafter(acc_lower + bias_value, -inf)
-                acc_upper = nextafter(acc_upper + bias_value, inf)
+            bias_value = float(bias[row_idx])
+            acc_include_float32 = acc_include_float32 or _needs_float32_padding_scalar(bias_value)
+            acc_lower = _pad_outward(acc_lower + bias_value, -inf, include_float32=acc_include_float32)
+            acc_upper = _pad_outward(acc_upper + bias_value, inf, include_float32=acc_include_float32)
 
-        include_float32 = weight_widened or bias_widened
-        out_lower.append(_pad_outward(acc_lower, -inf, include_float32=include_float32))
-        out_upper.append(_pad_outward(acc_upper, inf, include_float32=include_float32))
+        out_lower.append(_pad_outward(acc_lower, -inf, include_float32=acc_include_float32))
+        out_upper.append(_pad_outward(acc_upper, inf, include_float32=acc_include_float32))
 
     return IntervalTensor.from_bounds(out_lower, out_upper)
 
@@ -519,7 +519,10 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
     _validate_dorfler_theta(theta)
 
     boxes = [domain]
-    split_weights = _precompute_split_weights(model, domain) if len(domain.lower) > 1 else None
+    # Width-only splitting is used here intentionally. The static weighted
+    # heuristic can repeatedly refine one coordinate in higher dimensions and
+    # fail to reduce dominant enclosure error contributors.
+    split_weights = None
     integrand_cache: dict[tuple[tuple[float, ...], tuple[float, ...]], Interval] = {}
     volume_cache: dict[tuple[tuple[float, ...], tuple[float, ...]], float] = {}
 
@@ -751,7 +754,10 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
     _validate_dorfler_theta(theta)
 
     boxes = [domain]
-    split_weights = _precompute_split_weights(model, domain) if len(domain.lower) > 1 else None
+    # Width-only splitting is used here intentionally. The static weighted
+    # heuristic can repeatedly refine one coordinate in higher dimensions and
+    # fail to reduce dominant enclosure error contributors.
+    split_weights = None
     integrand_cache: dict[tuple[tuple[float, ...], tuple[float, ...]], Interval] = {}
     volume_cache: dict[tuple[tuple[float, ...], tuple[float, ...]], float] = {}
 
