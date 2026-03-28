@@ -453,26 +453,33 @@ def _matrix_multiply(left: list[list[Interval]], right: list[list[Interval]]) ->
     if left_width != right_height:
         raise ValueError("Jacobian dimensions are incompatible for multiplication.")
 
-    right_width = len(right[0])
-    output: list[list[Interval]] = []
-    for row in left:
-        output_row: list[Interval] = []
-        for col_idx in range(right_width):
-            accumulator = Interval.point(0.0)
-            for shared_idx in range(left_width):
-                accumulator = accumulator + row[shared_idx] * right[shared_idx][col_idx]
-            output_row.append(accumulator)
-        output.append(output_row)
-    return output
+    left_mid = torch.tensor([[float(entry.midpoint) for entry in row] for row in left], dtype=torch.float64)
+    left_rad = torch.tensor([[float(entry.radius) for entry in row] for row in left], dtype=torch.float64)
+    right_mid = torch.tensor([[float(entry.midpoint) for entry in row] for row in right], dtype=torch.float64)
+    right_rad = torch.tensor([[float(entry.radius) for entry in row] for row in right], dtype=torch.float64)
+
+    output_mid = left_mid.matmul(right_mid)
+    output_rad = (
+        left_mid.abs().matmul(right_rad)
+        + left_rad.matmul(right_mid.abs())
+        + left_rad.matmul(right_rad)
+    )
+
+    lower = torch.nextafter(output_mid - output_rad, torch.full_like(output_mid, float("-inf")))
+    upper = torch.nextafter(output_mid + output_rad, torch.full_like(output_mid, float("inf")))
+    lower_rows = lower.tolist()
+    upper_rows = upper.tolist()
+    return [
+        [Interval.from_bounds(lower_rows[row_idx][col_idx], upper_rows[row_idx][col_idx]) for col_idx in range(len(lower_rows[row_idx]))]
+        for row_idx in range(len(lower_rows))
+    ]
 
 
 def _jacobian_for_layer(layer, pre_activation: IntervalTensor) -> list[list[Interval]]:
     if isinstance(layer, nn.Linear):
         weight = layer.weight.detach().cpu()
-        return [
-            [_scalar_interval_from_weight(weight[row_idx, col_idx], Interval.point(1.0)) for col_idx in range(weight.shape[1])]
-            for row_idx in range(weight.shape[0])
-        ]
+        matrix = weight.to(torch.float64).tolist()
+        return [[Interval.point(value) for value in row] for row in matrix]
     if isinstance(layer, nn.ReLU):
         derivatives = [
             _interval_derivative_bounds_relu(Interval(pre_activation.lower[idx], pre_activation.upper[idx]))
