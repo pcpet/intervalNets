@@ -5,7 +5,7 @@ torch = pytest.importorskip("torch")
 from torch import nn
 
 from intervalnets import Interval, IntervalAdd, IntervalCat, IntervalTensor, enable_interval_eval, interval_forward
-from intervalnets.pytorch import _interval_pow_scalar
+from intervalnets.pytorch import _interval_pow_scalar, _split_box
 
 
 def test_relu_negative_interval_rounds_outward_to_zero() -> None:
@@ -80,6 +80,55 @@ def test_linear_interval_matches_expected_affine_bounds() -> None:
     ]
     assert output.lower[0] <= min(candidates)
     assert output.upper[0] >= max(candidates)
+
+
+def test_linear_interval_randomized_corner_enclosure_stress() -> None:
+    torch.manual_seed(123)
+    for _ in range(200):
+        layer = nn.Linear(2, 2)
+        with torch.no_grad():
+            layer.weight.uniform_(-3.0, 3.0)
+            layer.bias.uniform_(-1.0, 1.0)
+
+        lower = torch.empty(2).uniform_(-2.0, 1.0)
+        width = torch.empty(2).uniform_(0.0, 3.0)
+        upper = lower + width
+
+        interval = IntervalTensor.from_bounds(lower.tolist(), upper.tolist())
+        output = interval_forward(layer, interval)
+
+        corners = [
+            (x0, x1)
+            for x0 in (interval.lower[0], interval.upper[0])
+            for x1 in (interval.lower[1], interval.upper[1])
+        ]
+        eval_dtype = layer.weight.dtype
+        for corner in corners:
+            exact = layer(torch.tensor(corner, dtype=eval_dtype)).detach().tolist()
+            for idx, value in enumerate(exact):
+                assert output.lower[idx] <= value <= output.upper[idx]
+
+
+def test_split_box_uses_weighted_direction_for_multidimensional_domains() -> None:
+    box = IntervalTensor.from_bounds([0.0, 0.0], [4.0, 1.0])
+    left, right = _split_box(box, split_weights=(0.1, 10.0))
+
+    # split should occur along dim=1 (second component), not widest dim=0
+    assert left.upper[0] == box.upper[0]
+    assert right.lower[0] == box.lower[0]
+    assert left.upper[1] == 0.5
+    assert right.lower[1] == 0.5
+
+
+def test_split_box_falls_back_to_widest_direction_when_weighted_scores_vanish() -> None:
+    box = IntervalTensor.from_bounds([0.0, 0.0, 0.0], [4.0, 3.0, 2.0])
+    left, right = _split_box(box, split_weights=(0.0, 0.0, 0.0))
+
+    # With all weighted scores zero, fallback should match widest-axis splitting (dim=0).
+    assert left.upper[0] == 2.0
+    assert right.lower[0] == 2.0
+    assert left.upper[1] == box.upper[1]
+    assert left.upper[2] == box.upper[2]
 
 
 def test_zero_network_contains_zero_with_rounding_margin() -> None:
@@ -230,6 +279,20 @@ def test_added_monotone_activations_enclose_endpoint_images(activation, fn) -> N
         assert output.upper[idx] >= upper_exact
 
 
+def test_sigmoid_float32_padding_is_restricted_to_univariate_inputs() -> None:
+    sigmoid = nn.Sigmoid()
+    univariate = IntervalTensor.from_bounds([0.1], [0.1])
+    multivariate = IntervalTensor.from_bounds([0.1, 0.1], [0.1, 0.1])
+
+    one_d = interval_forward(sigmoid, univariate)
+    two_d = interval_forward(sigmoid, multivariate)
+
+    width_one_d = one_d.upper[0] - one_d.lower[0]
+    width_two_d = two_d.upper[0] - two_d.lower[0]
+
+    assert width_one_d >= width_two_d
+
+
 def test_interval_add_encloses_branch_sum_corners() -> None:
     model = IntervalAdd(
         nn.Sequential(nn.Linear(2, 2), nn.Tanh()),
@@ -346,6 +409,22 @@ def test_lpnorm_constant_network_matches_exact_value() -> None:
 
     assert bounds.lower <= exact <= bounds.upper
     assert (bounds.upper - bounds.lower) < 1e-10
+
+
+def test_lpnorm_constant_network_3d_remains_nontrivial_and_tight() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(3, 1))
+    with torch.no_grad():
+        model[0].weight.zero_()
+        model[0].bias.fill_(0.64)
+
+    domain = IntervalTensor.from_bounds([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0])
+    bounds = model.lpnorm(domain, p=2.0, iterations=4)
+    exact = (8.0 * (0.64**2)) ** 0.5
+
+    assert bounds.lower > 0.0
+    assert bounds.lower <= exact <= bounds.upper
+    assert (bounds.upper - bounds.lower) < 2e-6
 
 
 def test_lpnorm_refinement_tightens_interval() -> None:
