@@ -427,6 +427,9 @@ def _lp_pointwise_power_bounds(
     for component in components:
         absolute = _interval_abs_bounds(component)
         total = total + _interval_pow_scalar(absolute, p)
+    if len(components) == 1 and len(box.lower) > 1:
+        certified_lower = _scalar_output_certified_lower_power(model, box, p, input_lipschitz_weights)
+        total = Interval.from_bounds(max(float(total.lower), certified_lower), float(total.upper))
     return total
 
 
@@ -571,7 +574,7 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
             indicators.append(width * _cached_volume(box))
 
-        marked_indices = set(_dorfler_marking(indicators, theta))
+        marked_indices = set(_dorfler_marking(indicators, effective_theta))
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
@@ -748,6 +751,10 @@ def _sobolev_pointwise_power_bounds(
 ) -> Interval:
     output = model.eval(box)
     jacobian = model.eval_jacobian(box)
+    if len(box.lower) <= 1:
+        output = model.eval(box)
+    else:
+        output = _mean_value_output_bounds(model, box, jacobian=jacobian)
     total = Interval.point(0.0)
 
     for lower, upper in zip(output.lower, output.upper):
@@ -758,6 +765,10 @@ def _sobolev_pointwise_power_bounds(
         for entry_lower, entry_upper in zip(row_lower, row_upper):
             derivative_component = Interval(entry_lower, entry_upper)
             total = total + _interval_pow_scalar(_interval_abs_bounds(derivative_component), p)
+
+    if len(output.lower) == 1 and len(box.lower) > 1:
+        certified_lower = _scalar_output_certified_lower_power(model, box, p, input_lipschitz_weights)
+        total = Interval.from_bounds(max(float(total.lower), certified_lower), float(total.upper))
 
     return total
 
@@ -806,7 +817,7 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
             indicators.append(width * _cached_volume(box))
 
-        marked_indices = set(_dorfler_marking(indicators, theta))
+        marked_indices = set(_dorfler_marking(indicators, effective_theta))
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
