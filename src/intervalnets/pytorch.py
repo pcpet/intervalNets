@@ -239,28 +239,25 @@ def _interval_cat(intervals: list[IntervalTensor], dim: int) -> IntervalTensor:
 
 
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
-    weight = layer.weight.detach().cpu()
-    bias = layer.bias.detach().cpu() if layer.bias is not None else None
-    x_mid = [float(value) for value in x.midpoint]
-    x_rad = [float(value) for value in x.radius]
-    abs_weight = weight.abs()
+    weight = layer.weight.detach().cpu().to(torch.float64)
+    bias = layer.bias.detach().cpu().to(torch.float64) if layer.bias is not None else None
+    x_mid = torch.tensor(x.midpoint, dtype=torch.float64)
+    x_rad = torch.tensor(x.radius, dtype=torch.float64)
 
-    output_mid: list[float] = []
-    output_rad: list[float] = []
-    for row_index, row in enumerate(weight):
-        midpoint_sum = 0.0
-        radius_sum = 0.0
-        for col_index, coefficient in enumerate(row):
-            coef = float(coefficient.item())
-            midpoint_sum += coef * x_mid[col_index]
-            radius_sum += float(abs_weight[row_index, col_index].item()) * x_rad[col_index]
-        if bias is not None:
-            midpoint_sum += float(bias[row_index].item())
+    # Inflate the incoming radius so [x_mid - x_rad, x_mid + x_rad] is a
+    # directed-rounded enclosure before the linear map.
+    x_upper = torch.nextafter(x_mid + x_rad, torch.full_like(x_mid, float("inf")))
+    x_lower = torch.nextafter(x_mid - x_rad, torch.full_like(x_mid, float("-inf")))
+    x_rad_enclosed = torch.maximum(x_upper - x_mid, x_mid - x_lower)
 
-        output_mid.append(midpoint_sum)
-        output_rad.append(_pad_outward(radius_sum, inf, include_float32=True))
+    output_mid_tensor = weight.matmul(x_mid)
+    if bias is not None:
+        output_mid_tensor = output_mid_tensor + bias
+    output_rad_tensor = weight.abs().matmul(x_rad_enclosed)
 
-    return IntervalTensor.from_mid_rad(tuple(output_mid), tuple(output_rad))
+    lower_tensor = torch.nextafter(output_mid_tensor - output_rad_tensor, torch.full_like(output_mid_tensor, float("-inf")))
+    upper_tensor = torch.nextafter(output_mid_tensor + output_rad_tensor, torch.full_like(output_mid_tensor, float("inf")))
+    return IntervalTensor.from_bounds(tuple(float(value) for value in lower_tensor.tolist()), tuple(float(value) for value in upper_tensor.tolist()))
 
 
 def _interval_abs_bounds(value: Interval) -> Interval:
