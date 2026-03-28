@@ -103,6 +103,16 @@ def _widen_weight_bounds(weight):
     return lower, upper, widened
 
 
+def _weight_needs_widening(weight) -> bool:
+    if weight.dtype not in {torch.float16, torch.bfloat16, torch.float32}:
+        return False
+    coefficients = weight.detach().cpu().to(dtype=torch.float64)
+    finite = torch.isfinite(coefficients)
+    nonzero = coefficients != 0.0
+    non_integer = coefficients != torch.trunc(coefficients)
+    return bool(torch.any(finite & nonzero & non_integer))
+
+
 def _scalar_interval_from_weight(weight: Any, value: Interval, widen_float32: bool = True) -> Interval:
     if torch is not None and isinstance(weight, torch.Tensor):
         scalar = weight.detach().cpu()
@@ -292,33 +302,63 @@ def _interval_cat(intervals: list[IntervalTensor], dim: int) -> IntervalTensor:
 
 
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
-    # Keep accumulation in interval arithmetic form (outward rounding at each
-    # multiplication/addition) to preserve enclosure soundness.
+    # Perform outward-rounded accumulation per term to preserve enclosure
+    # soundness, while avoiding Interval object churn in inner loops.
     weight = layer.weight.detach().cpu()
-    _, _, weight_widened = _widen_weight_bounds(weight)
+    weight_widened = _weight_needs_widening(weight)
+    weight_lower = None
+    weight_upper = None
+    if weight_widened:
+        weight_lower, weight_upper, _ = _widen_weight_bounds(weight)
     bias = layer.bias.detach().cpu() if layer.bias is not None else None
-    bias_widened = False
-    input_intervals = [Interval(lb, ub) for lb, ub in zip(x.lower, x.upper)]
+    bias_lower = None
+    bias_upper = None
+    bias_widened = bool(bias is not None and _weight_needs_widening(bias))
+    if bias is not None:
+        if bias_widened:
+            bias_lower, bias_upper, _ = _widen_weight_bounds(bias)
 
-    outputs: list[Interval] = []
-    for row_index, row in enumerate(weight):
-        accumulator = Interval.point(0.0)
-        for coefficient, input_interval in zip(row, input_intervals):
-            accumulator = accumulator + _scalar_interval_from_weight(coefficient, input_interval)
-        if bias is not None:
-            if row_index == 0:
-                _, _, bias_widened = _widen_weight_bounds(bias)
-            accumulator = accumulator + _scalar_interval_from_weight(
-                bias[row_index],
-                Interval.point(1.0),
-                widen_float32=True,
+    x_lower = [float(value) for value in x.lower]
+    x_upper = [float(value) for value in x.upper]
+
+    out_lower: list[float] = []
+    out_upper: list[float] = []
+    for row_idx in range(weight.shape[0]):
+        acc_lower = 0.0
+        acc_upper = 0.0
+
+        for col_idx in range(weight.shape[1]):
+            coefficient = float(weight[row_idx, col_idx])
+            coef_lower = float(weight_lower[row_idx, col_idx]) if weight_lower is not None else coefficient
+            coef_upper = float(weight_upper[row_idx, col_idx]) if weight_upper is not None else coefficient
+            left = x_lower[col_idx]
+            right = x_upper[col_idx]
+
+            candidates = (
+                coef_lower * left,
+                coef_lower * right,
+                coef_upper * left,
+                coef_upper * right,
             )
-        outputs.append(accumulator)
+            product_lower = nextafter(min(candidates), -inf)
+            product_upper = nextafter(max(candidates), inf)
+            acc_lower = nextafter(acc_lower + product_lower, -inf)
+            acc_upper = nextafter(acc_upper + product_upper, inf)
 
-    widen_outputs = weight_widened or bias_widened
-    lower = tuple(_pad_outward(item.lower, -inf, include_float32=widen_outputs) for item in outputs)
-    upper = tuple(_pad_outward(item.upper, inf, include_float32=widen_outputs) for item in outputs)
-    return IntervalTensor(lower, upper)
+        if bias is not None:
+            if bias_lower is not None and bias_upper is not None:
+                acc_lower = nextafter(acc_lower + float(bias_lower[row_idx]), -inf)
+                acc_upper = nextafter(acc_upper + float(bias_upper[row_idx]), inf)
+            else:
+                bias_value = float(bias[row_idx])
+                acc_lower = nextafter(acc_lower + bias_value, -inf)
+                acc_upper = nextafter(acc_upper + bias_value, inf)
+
+        include_float32 = weight_widened or bias_widened
+        out_lower.append(_pad_outward(acc_lower, -inf, include_float32=include_float32))
+        out_upper.append(_pad_outward(acc_upper, inf, include_float32=include_float32))
+
+    return IntervalTensor.from_bounds(out_lower, out_upper)
 
 
 def _interval_abs_bounds(value: Interval) -> Interval:
