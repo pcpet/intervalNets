@@ -782,6 +782,10 @@ def _sobolev_pointwise_power_bounds(
 ) -> Interval:
     output = model.eval(box)
     jacobian = model.eval_jacobian(box)
+    if len(box.lower) <= 1:
+        output = model.eval(box)
+    else:
+        output = _mean_value_output_bounds(model, box, jacobian=jacobian)
     total = Interval.point(0.0)
 
     for lower, upper in zip(output.lower, output.upper):
