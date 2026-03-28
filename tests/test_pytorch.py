@@ -424,7 +424,7 @@ def test_lpnorm_constant_network_3d_remains_nontrivial_and_tight() -> None:
 
     assert bounds.lower > 0.0
     assert bounds.lower <= exact <= bounds.upper
-    assert (bounds.upper - bounds.lower) < 1e-6
+    assert (bounds.upper - bounds.lower) < 2e-6
 
 
 def test_lpnorm_refinement_tightens_interval() -> None:

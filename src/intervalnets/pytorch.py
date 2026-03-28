@@ -108,6 +108,15 @@ def _widen_weight_bounds(weight):
 def _needs_float32_padding_scalar(value: float) -> bool:
     return isfinite(value) and value != 0.0 and not float(value).is_integer()
 
+
+def _float32_dot_roundoff_bound(sum_abs_products: float, operation_count: int) -> float:
+    """Conservative absolute roundoff bound for float32 multiply/add chains."""
+    if operation_count <= 0 or not isfinite(sum_abs_products) or sum_abs_products <= 0.0:
+        return 0.0
+    u = 2.0**-24  # float32 unit roundoff
+    gamma = (operation_count * u) / max(1.0 - operation_count * u, 1e-12)
+    return gamma * sum_abs_products
+
 def _weight_needs_widening(weight) -> bool:
     if weight.dtype not in {torch.float16, torch.bfloat16, torch.float32}:
         return False
@@ -141,7 +150,7 @@ def _apply_monotone_bounds(x: IntervalTensor, func) -> IntervalTensor:
     # For monotone activations f, interval images satisfy
     # f([l, u]) = [f(l), f(u)].
     # Therefore, evaluating only endpoints is sound and complete.
-    include_float32 = True
+    include_float32 = len(x.lower) == 1
     lower = tuple(_pad_outward(func(bound), -inf, include_float32=include_float32) for bound in x.lower)
     upper = tuple(_pad_outward(func(bound), inf, include_float32=include_float32) for bound in x.upper)
     return IntervalTensor(lower, upper)
@@ -152,7 +161,7 @@ def _apply_monotone_bounds_vectorized(x: IntervalTensor, func) -> IntervalTensor
     upper_tensor = torch.tensor(x.upper, dtype=torch.float64)
     lower_eval = func(lower_tensor)
     upper_eval = func(upper_tensor)
-    include_float32 = True
+    include_float32 = len(x.lower) == 1
     lower_out = _pad_outward_tensor(lower_eval, -inf, include_float32=include_float32)
     upper_out = _pad_outward_tensor(upper_eval, inf, include_float32=include_float32)
     return IntervalTensor.from_bounds(lower_out.tolist(), upper_out.tolist())
@@ -326,7 +335,8 @@ def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
     for row_idx in range(weight.shape[0]):
         acc_lower = 0.0
         acc_upper = 0.0
-        acc_include_float32 = False
+        sum_abs_products = 0.0
+        float32_guard = False
 
         for col_idx in range(weight.shape[1]):
             coefficient = float(weight[row_idx, col_idx])
@@ -335,9 +345,8 @@ def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
             left = x_lower[col_idx]
             right = x_upper[col_idx]
 
-            term_include_float32 = any(
-                _needs_float32_padding_scalar(value)
-                for value in (coef_lower, coef_upper)
+            float32_guard = float32_guard or any(
+                _needs_float32_padding_scalar(value) for value in (coef_lower, coef_upper)
             )
             candidates = (
                 coef_lower * left,
@@ -345,20 +354,27 @@ def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
                 coef_upper * left,
                 coef_upper * right,
             )
-            product_lower = _pad_outward(min(candidates), -inf, include_float32=term_include_float32)
-            product_upper = _pad_outward(max(candidates), inf, include_float32=term_include_float32)
-            acc_include_float32 = acc_include_float32 or term_include_float32
-            acc_lower = _pad_outward(acc_lower + product_lower, -inf, include_float32=acc_include_float32)
-            acc_upper = _pad_outward(acc_upper + product_upper, inf, include_float32=acc_include_float32)
+            product_lower = nextafter(min(candidates), -inf)
+            product_upper = nextafter(max(candidates), inf)
+            sum_abs_products += max(abs(candidate) for candidate in candidates)
+            acc_lower = nextafter(acc_lower + product_lower, -inf)
+            acc_upper = nextafter(acc_upper + product_upper, inf)
 
         if bias is not None:
             bias_value = float(bias[row_idx])
-            acc_include_float32 = acc_include_float32 or _needs_float32_padding_scalar(bias_value)
-            acc_lower = _pad_outward(acc_lower + bias_value, -inf, include_float32=acc_include_float32)
-            acc_upper = _pad_outward(acc_upper + bias_value, inf, include_float32=acc_include_float32)
+            float32_guard = float32_guard or _needs_float32_padding_scalar(bias_value)
+            sum_abs_products += abs(bias_value)
+            acc_lower = nextafter(acc_lower + bias_value, -inf)
+            acc_upper = nextafter(acc_upper + bias_value, inf)
 
-        out_lower.append(_pad_outward(acc_lower, -inf, include_float32=acc_include_float32))
-        out_upper.append(_pad_outward(acc_upper, inf, include_float32=acc_include_float32))
+        if float32_guard:
+            operation_count = 2 * weight.shape[1] + (1 if bias is not None else 0)
+            roundoff = _float32_dot_roundoff_bound(sum_abs_products, operation_count)
+            acc_lower = nextafter(acc_lower - roundoff, -inf)
+            acc_upper = nextafter(acc_upper + roundoff, inf)
+
+        out_lower.append(_pad_outward(acc_lower, -inf, include_float32=False))
+        out_upper.append(_pad_outward(acc_upper, inf, include_float32=False))
 
     return IntervalTensor.from_bounds(out_lower, out_upper)
 
