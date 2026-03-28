@@ -239,30 +239,25 @@ def _interval_cat(intervals: list[IntervalTensor], dim: int) -> IntervalTensor:
 
 
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
-    weight = layer.weight.detach().cpu()
-    bias = layer.bias.detach().cpu() if layer.bias is not None else None
-    dtype = weight.dtype
-    x_mid = torch.tensor(x.midpoint, dtype=dtype)
-    x_rad = torch.tensor(x.radius, dtype=dtype)
+    weight = layer.weight.detach().cpu().to(torch.float64)
+    bias = layer.bias.detach().cpu().to(torch.float64) if layer.bias is not None else None
+    x_mid = torch.tensor(x.midpoint, dtype=torch.float64)
+    x_rad = torch.tensor(x.radius, dtype=torch.float64)
+
+    # Inflate the incoming radius so [x_mid - x_rad, x_mid + x_rad] is a
+    # directed-rounded enclosure before the linear map.
+    x_upper = torch.nextafter(x_mid + x_rad, torch.full_like(x_mid, float("inf")))
+    x_lower = torch.nextafter(x_mid - x_rad, torch.full_like(x_mid, float("-inf")))
+    x_rad_enclosed = torch.maximum(x_upper - x_mid, x_mid - x_lower)
 
     output_mid_tensor = weight.matmul(x_mid)
     if bias is not None:
         output_mid_tensor = output_mid_tensor + bias
-    output_rad_tensor = weight.abs().matmul(x_rad)
-    output_rad_tensor = torch.nextafter(output_rad_tensor.to(torch.float64), torch.full_like(output_rad_tensor, float("inf"), dtype=torch.float64))
-    if dtype in {torch.float16, torch.bfloat16, torch.float32}:
-        rad32 = torch.nextafter(
-            output_rad_tensor.to(torch.float32),
-            torch.full_like(output_rad_tensor, float("inf"), dtype=torch.float32),
-        ).to(torch.float64)
-        output_rad_tensor = torch.maximum(output_rad_tensor, rad32)
+    output_rad_tensor = weight.abs().matmul(x_rad_enclosed)
 
-    output_mid = tuple(float(value) for value in output_mid_tensor.tolist())
-    # Radius must be rounded outward because lower/upper conversion consumes the
-    # radius directly in enclosure-critical subtraction/addition.
-    output_rad = tuple(float(value) for value in output_rad_tensor.tolist())
-
-    return IntervalTensor.from_mid_rad(output_mid, output_rad)
+    lower_tensor = torch.nextafter(output_mid_tensor - output_rad_tensor, torch.full_like(output_mid_tensor, float("-inf")))
+    upper_tensor = torch.nextafter(output_mid_tensor + output_rad_tensor, torch.full_like(output_mid_tensor, float("inf")))
+    return IntervalTensor.from_bounds(tuple(float(value) for value in lower_tensor.tolist()), tuple(float(value) for value in upper_tensor.tolist()))
 
 
 def _interval_abs_bounds(value: Interval) -> Interval:
