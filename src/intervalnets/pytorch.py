@@ -83,6 +83,32 @@ def _scalar_interval_from_weight(weight: Any, value: Interval, widen_float32: bo
     return Interval.point(weight) * value
 
 
+def _scalar_weight_value(weight: Any) -> float:
+    """Extract a scalar layer weight/bias value."""
+    if torch is not None and isinstance(weight, torch.Tensor):
+        scalar = weight.detach().cpu()
+        if scalar.numel() != 1:
+            raise ValueError("Expected a scalar weight tensor.")
+        return float(scalar.item())
+
+    return float(weight)
+
+
+def _mul_scalar_interval_bounds(
+    scalar: float,
+    interval_lower: float,
+    interval_upper: float,
+) -> tuple[float, float]:
+    """Multiply scalar * interval using endpoint formulas + outward rounding."""
+    if scalar >= 0.0:
+        lower = scalar * interval_lower
+        upper = scalar * interval_upper
+    else:
+        lower = scalar * interval_upper
+        upper = scalar * interval_lower
+    return nextafter(lower, -inf), nextafter(upper, inf)
+
+
 def _apply_monotone_bounds(x: IntervalTensor, func) -> IntervalTensor:
     # For monotone activations f, interval images satisfy
     # f([l, u]) = [f(l), f(u)].
@@ -243,22 +269,29 @@ def _interval_cat(intervals: list[IntervalTensor], dim: int) -> IntervalTensor:
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
     weight = layer.weight.detach().cpu()
     bias = layer.bias.detach().cpu() if layer.bias is not None else None
-    x_lower = list(x.lower)
-    x_upper = list(x.upper)
-    input_intervals = [Interval(lb, ub) for lb, ub in zip(x_lower, x_upper)]
+    x_lower = tuple(float(value) for value in x.lower)
+    x_upper = tuple(float(value) for value in x.upper)
 
-    outputs: list[Interval] = []
+    lower_out: list[float] = []
+    upper_out: list[float] = []
     for row_index, row in enumerate(weight):
-        accumulator = Interval.point(0.0)
-        for coefficient, input_interval in zip(row, input_intervals):
-            accumulator = accumulator + _scalar_interval_from_weight(coefficient, input_interval)
-        if bias is not None:
-            accumulator = accumulator + _scalar_interval_from_weight(bias[row_index], Interval.point(1.0), widen_float32=True)
-        outputs.append(accumulator)
+        acc_lower = 0.0
+        acc_upper = 0.0
+        for coefficient, value_lower, value_upper in zip(row, x_lower, x_upper):
+            coeff_value = _scalar_weight_value(coefficient)
+            term_lower, term_upper = _mul_scalar_interval_bounds(coeff_value, value_lower, value_upper)
+            acc_lower = nextafter(acc_lower + term_lower, -inf)
+            acc_upper = nextafter(acc_upper + term_upper, inf)
 
-    lower = tuple(item.lower for item in outputs)
-    upper = tuple(item.upper for item in outputs)
-    return IntervalTensor(lower, upper)
+        if bias is not None:
+            bias_value = _scalar_weight_value(bias[row_index])
+            acc_lower = nextafter(acc_lower + bias_value, -inf)
+            acc_upper = nextafter(acc_upper + bias_value, inf)
+
+        lower_out.append(acc_lower)
+        upper_out.append(acc_upper)
+
+    return IntervalTensor(tuple(lower_out), tuple(upper_out))
 
 
 def _interval_abs_bounds(value: Interval) -> Interval:
@@ -308,23 +341,47 @@ def _lp_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval
     return total
 
 
-def _split_box(box: IntervalTensor) -> tuple[IntervalTensor, IntervalTensor]:
-    widths = [upper - lower for lower, upper in zip(box.lower, box.upper)]
-    split_dim = max(range(len(widths)), key=lambda idx: widths[idx])
-    midpoint = 0.5 * (box.lower[split_dim] + box.upper[split_dim])
+def _split_box(box: IntervalTensor, split_dim: int) -> tuple[IntervalTensor, IntervalTensor]:
+    """Split a box in a single chosen coordinate direction."""
+    if split_dim < 0 or split_dim >= len(box.lower):
+        raise ValueError(f"split_dim={split_dim} is out of bounds for box dimension {len(box.lower)}.")
 
-    lower_left = list(box.lower)
-    upper_left = list(box.upper)
-    lower_right = list(box.lower)
-    upper_right = list(box.upper)
+    midpoint = 0.5 * (float(box.lower[split_dim]) + float(box.upper[split_dim]))
+    left_lower = [float(v) for v in box.lower]
+    left_upper = [float(v) for v in box.upper]
+    right_lower = [float(v) for v in box.lower]
+    right_upper = [float(v) for v in box.upper]
 
-    upper_left[split_dim] = midpoint
-    lower_right[split_dim] = midpoint
-
+    left_upper[split_dim] = midpoint
+    right_lower[split_dim] = midpoint
     return (
-        IntervalTensor.from_bounds(lower_left, upper_left),
-        IntervalTensor.from_bounds(lower_right, upper_right),
+        IntervalTensor.from_bounds(left_lower, left_upper),
+        IntervalTensor.from_bounds(right_lower, right_upper),
     )
+
+
+def _select_split_dimension(box: IntervalTensor, integrand_bounds_fn) -> int:
+    """Select one split direction by minimizing post-split residual indicator."""
+    widths = [float(upper - lower) for lower, upper in zip(box.lower, box.upper)]
+    if not widths:
+        raise ValueError("Cannot split an empty box.")
+    if len(widths) == 1:
+        return 0
+
+    scores: list[float] = []
+    for split_dim in range(len(widths)):
+        left, right = _split_box(box, split_dim)
+        score = 0.0
+        for child in (left, right):
+            child_bounds = integrand_bounds_fn(child)
+            child_width = float(child_bounds.upper) - float(child_bounds.lower)
+            score += child_width * _box_volume(child)
+        scores.append(score)
+
+    finite_scores = [score for score in scores if isfinite(score)]
+    if finite_scores:
+        return min(range(len(scores)), key=lambda idx: (scores[idx], -widths[idx]))
+    return max(range(len(widths)), key=lambda idx: widths[idx])
 
 
 def _validate_dorfler_theta(theta: float) -> None:
@@ -376,7 +433,8 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
-                left, right = _split_box(box)
+                split_dim = _select_split_dimension(box, lambda child_box: _lp_pointwise_power_bounds(model, child_box, p))
+                left, right = _split_box(box, split_dim)
                 refined_boxes.extend([left, right])
             else:
                 refined_boxes.append(box)
@@ -581,7 +639,11 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
-                left, right = _split_box(box)
+                split_dim = _select_split_dimension(
+                    box,
+                    lambda child_box: _sobolev_pointwise_power_bounds(model, child_box, p),
+                )
+                left, right = _split_box(box, split_dim)
                 refined_boxes.extend([left, right])
             else:
                 refined_boxes.append(box)
