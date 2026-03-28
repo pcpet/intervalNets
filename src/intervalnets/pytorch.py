@@ -83,6 +83,32 @@ def _scalar_interval_from_weight(weight: Any, value: Interval, widen_float32: bo
     return Interval.point(weight) * value
 
 
+def _scalar_weight_value(weight: Any) -> float:
+    """Extract a scalar layer weight/bias value."""
+    if torch is not None and isinstance(weight, torch.Tensor):
+        scalar = weight.detach().cpu()
+        if scalar.numel() != 1:
+            raise ValueError("Expected a scalar weight tensor.")
+        return float(scalar.item())
+
+    return float(weight)
+
+
+def _mul_scalar_interval_bounds(
+    scalar: float,
+    interval_lower: float,
+    interval_upper: float,
+) -> tuple[float, float]:
+    """Multiply scalar * interval using endpoint formulas + outward rounding."""
+    if scalar >= 0.0:
+        lower = scalar * interval_lower
+        upper = scalar * interval_upper
+    else:
+        lower = scalar * interval_upper
+        upper = scalar * interval_lower
+    return nextafter(lower, -inf), nextafter(upper, inf)
+
+
 def _apply_monotone_bounds(x: IntervalTensor, func) -> IntervalTensor:
     # For monotone activations f, interval images satisfy
     # f([l, u]) = [f(l), f(u)].
@@ -243,22 +269,29 @@ def _interval_cat(intervals: list[IntervalTensor], dim: int) -> IntervalTensor:
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
     weight = layer.weight.detach().cpu()
     bias = layer.bias.detach().cpu() if layer.bias is not None else None
-    x_lower = list(x.lower)
-    x_upper = list(x.upper)
-    input_intervals = [Interval(lb, ub) for lb, ub in zip(x_lower, x_upper)]
+    x_lower = tuple(float(value) for value in x.lower)
+    x_upper = tuple(float(value) for value in x.upper)
 
-    outputs: list[Interval] = []
+    lower_out: list[float] = []
+    upper_out: list[float] = []
     for row_index, row in enumerate(weight):
-        accumulator = Interval.point(0.0)
-        for coefficient, input_interval in zip(row, input_intervals):
-            accumulator = accumulator + _scalar_interval_from_weight(coefficient, input_interval)
-        if bias is not None:
-            accumulator = accumulator + _scalar_interval_from_weight(bias[row_index], Interval.point(1.0), widen_float32=True)
-        outputs.append(accumulator)
+        acc_lower = 0.0
+        acc_upper = 0.0
+        for coefficient, value_lower, value_upper in zip(row, x_lower, x_upper):
+            coeff_value = _scalar_weight_value(coefficient)
+            term_lower, term_upper = _mul_scalar_interval_bounds(coeff_value, value_lower, value_upper)
+            acc_lower = nextafter(acc_lower + term_lower, -inf)
+            acc_upper = nextafter(acc_upper + term_upper, inf)
 
-    lower = tuple(item.lower for item in outputs)
-    upper = tuple(item.upper for item in outputs)
-    return IntervalTensor(lower, upper)
+        if bias is not None:
+            bias_value = _scalar_weight_value(bias[row_index])
+            acc_lower = nextafter(acc_lower + bias_value, -inf)
+            acc_upper = nextafter(acc_upper + bias_value, inf)
+
+        lower_out.append(acc_lower)
+        upper_out.append(acc_upper)
+
+    return IntervalTensor(tuple(lower_out), tuple(upper_out))
 
 
 def _interval_abs_bounds(value: Interval) -> Interval:
