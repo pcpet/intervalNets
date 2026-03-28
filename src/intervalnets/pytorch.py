@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from math import exp, inf, isfinite, log, nextafter, tanh
 from typing import Any
 
@@ -14,7 +13,6 @@ except ImportError:  # pragma: no cover - environment dependent
     nn = None
 
 
-@dataclass(frozen=True)
 class IntervalTensor(Interval):
     """Tensor-shaped interval wrapper for PyTorch interop."""
 
@@ -243,22 +241,28 @@ def _interval_cat(intervals: list[IntervalTensor], dim: int) -> IntervalTensor:
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
     weight = layer.weight.detach().cpu()
     bias = layer.bias.detach().cpu() if layer.bias is not None else None
-    x_lower = list(x.lower)
-    x_upper = list(x.upper)
-    input_intervals = [Interval(lb, ub) for lb, ub in zip(x_lower, x_upper)]
+    dtype = weight.dtype
+    x_mid = torch.tensor(x.midpoint, dtype=dtype)
+    x_rad = torch.tensor(x.radius, dtype=dtype)
 
-    outputs: list[Interval] = []
-    for row_index, row in enumerate(weight):
-        accumulator = Interval.point(0.0)
-        for coefficient, input_interval in zip(row, input_intervals):
-            accumulator = accumulator + _scalar_interval_from_weight(coefficient, input_interval)
-        if bias is not None:
-            accumulator = accumulator + _scalar_interval_from_weight(bias[row_index], Interval.point(1.0), widen_float32=True)
-        outputs.append(accumulator)
+    output_mid_tensor = weight.matmul(x_mid)
+    if bias is not None:
+        output_mid_tensor = output_mid_tensor + bias
+    output_rad_tensor = weight.abs().matmul(x_rad)
+    output_rad_tensor = torch.nextafter(output_rad_tensor.to(torch.float64), torch.full_like(output_rad_tensor, float("inf"), dtype=torch.float64))
+    if dtype in {torch.float16, torch.bfloat16, torch.float32}:
+        rad32 = torch.nextafter(
+            output_rad_tensor.to(torch.float32),
+            torch.full_like(output_rad_tensor, float("inf"), dtype=torch.float32),
+        ).to(torch.float64)
+        output_rad_tensor = torch.maximum(output_rad_tensor, rad32)
 
-    lower = tuple(item.lower for item in outputs)
-    upper = tuple(item.upper for item in outputs)
-    return IntervalTensor(lower, upper)
+    output_mid = tuple(float(value) for value in output_mid_tensor.tolist())
+    # Radius must be rounded outward because lower/upper conversion consumes the
+    # radius directly in enclosure-critical subtraction/addition.
+    output_rad = tuple(float(value) for value in output_rad_tensor.tolist())
+
+    return IntervalTensor.from_mid_rad(output_mid, output_rad)
 
 
 def _interval_abs_bounds(value: Interval) -> Interval:
