@@ -416,16 +416,48 @@ def _box_volume(box: IntervalTensor) -> float:
     return volume
 
 
-def _lp_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval:
-    if len(box.lower) <= 1:
-        output = model.eval(box)
-    else:
-        output = _mean_value_output_bounds(model, box)
+def _scalar_output_certified_lower_power(
+    model,
+    box: IntervalTensor,
+    p: float,
+    input_lipschitz_weights: tuple[float, ...] | None,
+) -> float:
+    if input_lipschitz_weights is None or len(input_lipschitz_weights) != len(box.lower):
+        return 0.0
+
+    param = next(model.parameters(), None)
+    dtype = param.dtype if param is not None else torch.float64
+    device = param.device if param is not None else torch.device("cpu")
+    center = [(float(lo) + float(hi)) * 0.5 for lo, hi in zip(box.lower, box.upper)]
+    radius = [float(hi) - c for hi, c in zip(box.upper, center)]
+
+    with torch.no_grad():
+        center_value = model(torch.tensor(center, dtype=dtype, device=device)).detach().cpu().reshape(-1).tolist()
+    if len(center_value) != 1:
+        return 0.0
+
+    delta = sum(max(float(weight), 0.0) * radius[idx] for idx, weight in enumerate(input_lipschitz_weights))
+    lower_abs = max(0.0, abs(float(center_value[0])) - delta)
+    lower_power = lower_abs**p
+    include_float32 = dtype in {torch.float16, torch.bfloat16, torch.float32}
+    return max(0.0, _pad_outward(lower_power, -inf, include_float32=include_float32))
+
+
+def _lp_pointwise_power_bounds(
+    model,
+    box: IntervalTensor,
+    p: float,
+    input_lipschitz_weights: tuple[float, ...] | None = None,
+) -> Interval:
+    output = model.eval(box)
     components = [Interval(lb, ub) for lb, ub in zip(output.lower, output.upper)]
     total = Interval.point(0.0)
     for component in components:
         absolute = _interval_abs_bounds(component)
         total = total + _interval_pow_scalar(absolute, p)
+    if len(components) == 1 and len(box.lower) > 1:
+        certified_lower = _scalar_output_certified_lower_power(model, box, p, input_lipschitz_weights)
+        total = Interval.from_bounds(max(float(total.lower), certified_lower), float(total.upper))
     return total
 
 
@@ -536,7 +568,7 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
     if iterations < 0:
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
-    effective_theta = theta if len(domain.lower) <= 1 else max(theta, 0.9)
+    effective_theta = theta if len(domain.lower) <= 1 else max(theta, 0.7)
 
     boxes = [domain]
     split_weights = _precompute_split_weights(model, domain) if len(domain.lower) > 1 else None
@@ -553,7 +585,7 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
         key = _box_key(box)
         cached = integrand_cache.get(key)
         if cached is None:
-            cached = _lp_pointwise_power_bounds(model, box, p)
+            cached = _lp_pointwise_power_bounds(model, box, p, input_lipschitz_weights=split_weights)
             integrand_cache[key] = cached
         return cached
 
@@ -742,43 +774,13 @@ def _eval_jacobian_bounds(model, domain: IntervalTensor) -> IntervalTensor:
     return IntervalTensor.from_bounds(lower, upper)
 
 
-def _mean_value_output_bounds(model, box: IntervalTensor, jacobian: IntervalTensor | None = None) -> IntervalTensor:
-    """Compute output enclosure via mean-value form f(c) + J(B) (x-c)."""
-    if len(box.shape) != 1:
-        raise NotImplementedError("Mean-value output bounds currently support flat vectors only.")
-
-    jacobian_bounds = jacobian if jacobian is not None else model.eval_jacobian(box)
-    center = [(float(lo) + float(hi)) * 0.5 for lo, hi in zip(box.lower, box.upper)]
-    radius = [float(hi) - c for hi, c in zip(box.upper, center)]
-
-    # evaluate network at center point
-    param = next(model.parameters(), None)
-    dtype = param.dtype if param is not None else torch.float64
-    device = param.device if param is not None else torch.device("cpu")
-    with torch.no_grad():
-        point_value = model(torch.tensor(center, dtype=dtype, device=device)).detach().cpu().reshape(-1).tolist()
-    include_float32_point = dtype in {torch.float16, torch.bfloat16, torch.float32}
-
-    lower_out: list[float] = []
-    upper_out: list[float] = []
-    for row_idx, point_component in enumerate(point_value):
-        point_scalar = float(point_component)
-        enclosure = Interval.from_bounds(
-            _pad_outward(point_scalar, -inf, include_float32=include_float32_point),
-            _pad_outward(point_scalar, inf, include_float32=include_float32_point),
-        )
-        row_lower = jacobian_bounds.lower[row_idx]
-        row_upper = jacobian_bounds.upper[row_idx]
-        for col_idx in range(len(center)):
-            derivative = Interval(float(row_lower[col_idx]), float(row_upper[col_idx]))
-            delta = Interval.from_bounds(-radius[col_idx], radius[col_idx])
-            enclosure = enclosure + (derivative * delta)
-        lower_out.append(float(enclosure.lower))
-        upper_out.append(float(enclosure.upper))
-    return IntervalTensor.from_bounds(lower_out, upper_out)
-
-
-def _sobolev_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval:
+def _sobolev_pointwise_power_bounds(
+    model,
+    box: IntervalTensor,
+    p: float,
+    input_lipschitz_weights: tuple[float, ...] | None = None,
+) -> Interval:
+    output = model.eval(box)
     jacobian = model.eval_jacobian(box)
     if len(box.lower) <= 1:
         output = model.eval(box)
@@ -795,6 +797,10 @@ def _sobolev_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Int
             derivative_component = Interval(entry_lower, entry_upper)
             total = total + _interval_pow_scalar(_interval_abs_bounds(derivative_component), p)
 
+    if len(output.lower) == 1 and len(box.lower) > 1:
+        certified_lower = _scalar_output_certified_lower_power(model, box, p, input_lipschitz_weights)
+        total = Interval.from_bounds(max(float(total.lower), certified_lower), float(total.upper))
+
     return total
 
 
@@ -808,7 +814,7 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
     if iterations < 0:
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
-    effective_theta = theta if len(domain.lower) <= 1 else max(theta, 0.9)
+    effective_theta = theta if len(domain.lower) <= 1 else max(theta, 0.7)
 
     boxes = [domain]
     split_weights = _precompute_split_weights(model, domain) if len(domain.lower) > 1 else None
@@ -825,7 +831,7 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
         key = _box_key(box)
         cached = integrand_cache.get(key)
         if cached is None:
-            cached = _sobolev_pointwise_power_bounds(model, box, p)
+            cached = _sobolev_pointwise_power_bounds(model, box, p, input_lipschitz_weights=split_weights)
             integrand_cache[key] = cached
         return cached
 
