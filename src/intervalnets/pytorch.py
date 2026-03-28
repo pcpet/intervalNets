@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from math import exp, inf, isfinite, log, nextafter, tanh
 from typing import Any
 
@@ -14,7 +13,6 @@ except ImportError:  # pragma: no cover - environment dependent
     nn = None
 
 
-@dataclass(frozen=True)
 class IntervalTensor(Interval):
     """Tensor-shaped interval wrapper for PyTorch interop."""
 
@@ -241,24 +239,25 @@ def _interval_cat(intervals: list[IntervalTensor], dim: int) -> IntervalTensor:
 
 
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
-    weight = layer.weight.detach().cpu()
-    bias = layer.bias.detach().cpu() if layer.bias is not None else None
-    x_lower = list(x.lower)
-    x_upper = list(x.upper)
-    input_intervals = [Interval(lb, ub) for lb, ub in zip(x_lower, x_upper)]
+    weight = layer.weight.detach().cpu().to(torch.float64)
+    bias = layer.bias.detach().cpu().to(torch.float64) if layer.bias is not None else None
+    x_mid = torch.tensor(x.midpoint, dtype=torch.float64)
+    x_rad = torch.tensor(x.radius, dtype=torch.float64)
 
-    outputs: list[Interval] = []
-    for row_index, row in enumerate(weight):
-        accumulator = Interval.point(0.0)
-        for coefficient, input_interval in zip(row, input_intervals):
-            accumulator = accumulator + _scalar_interval_from_weight(coefficient, input_interval)
-        if bias is not None:
-            accumulator = accumulator + _scalar_interval_from_weight(bias[row_index], Interval.point(1.0), widen_float32=True)
-        outputs.append(accumulator)
+    # Inflate the incoming radius so [x_mid - x_rad, x_mid + x_rad] is a
+    # directed-rounded enclosure before the linear map.
+    x_upper = torch.nextafter(x_mid + x_rad, torch.full_like(x_mid, float("inf")))
+    x_lower = torch.nextafter(x_mid - x_rad, torch.full_like(x_mid, float("-inf")))
+    x_rad_enclosed = torch.maximum(x_upper - x_mid, x_mid - x_lower)
 
-    lower = tuple(item.lower for item in outputs)
-    upper = tuple(item.upper for item in outputs)
-    return IntervalTensor(lower, upper)
+    output_mid_tensor = weight.matmul(x_mid)
+    if bias is not None:
+        output_mid_tensor = output_mid_tensor + bias
+    output_rad_tensor = weight.abs().matmul(x_rad_enclosed)
+
+    lower_tensor = torch.nextafter(output_mid_tensor - output_rad_tensor, torch.full_like(output_mid_tensor, float("-inf")))
+    upper_tensor = torch.nextafter(output_mid_tensor + output_rad_tensor, torch.full_like(output_mid_tensor, float("inf")))
+    return IntervalTensor.from_bounds(tuple(float(value) for value in lower_tensor.tolist()), tuple(float(value) for value in upper_tensor.tolist()))
 
 
 def _interval_abs_bounds(value: Interval) -> Interval:
@@ -308,9 +307,34 @@ def _lp_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval
     return total
 
 
-def _split_box(box: IntervalTensor) -> tuple[IntervalTensor, IntervalTensor]:
-    widths = [upper - lower for lower, upper in zip(box.lower, box.upper)]
-    split_dim = max(range(len(widths)), key=lambda idx: widths[idx])
+def _jacobian_dimension_scores(jacobian: IntervalTensor) -> list[float]:
+    if len(jacobian.shape) != 2:
+        raise ValueError("Jacobian interval must be matrix-shaped.")
+    output_dim = len(jacobian.lower)
+    input_dim = len(jacobian.lower[0]) if output_dim > 0 else 0
+    scores = [0.0] * input_dim
+    for row_idx in range(output_dim):
+        for col_idx in range(input_dim):
+            lower = float(jacobian.lower[row_idx][col_idx])
+            upper = float(jacobian.upper[row_idx][col_idx])
+            scores[col_idx] += max(abs(lower), abs(upper))
+    return scores
+
+
+def _choose_split_dim(box: IntervalTensor, jacobian: IntervalTensor | None = None) -> int:
+    widths = [float(upper - lower) for lower, upper in zip(box.lower, box.upper)]
+    if jacobian is None or len(widths) <= 1:
+        return max(range(len(widths)), key=lambda idx: widths[idx])
+    scores = _jacobian_dimension_scores(jacobian)
+    weighted = [width * score for width, score in zip(widths, scores)]
+    if all(score <= 0.0 for score in weighted):
+        return max(range(len(widths)), key=lambda idx: widths[idx])
+    return max(range(len(weighted)), key=lambda idx: weighted[idx])
+
+
+def _split_box(box: IntervalTensor, split_dim: int | None = None) -> tuple[IntervalTensor, IntervalTensor]:
+    if split_dim is None:
+        split_dim = _choose_split_dim(box, jacobian=None)
     midpoint = 0.5 * (box.lower[split_dim] + box.upper[split_dim])
 
     lower_left = list(box.lower)
@@ -365,18 +389,25 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
     _validate_dorfler_theta(theta)
 
     boxes = [domain]
+    use_jacobian_splitting = len(domain.lower) > 1
     for _ in range(iterations):
         indicators: list[float] = []
+        split_dims: list[int] = []
         for box in boxes:
             integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
             indicators.append(width * _box_volume(box))
+            if use_jacobian_splitting:
+                jacobian = model.eval_jacobian(box)
+                split_dims.append(_choose_split_dim(box, jacobian))
+            else:
+                split_dims.append(_choose_split_dim(box, None))
 
         marked_indices = set(_dorfler_marking(indicators, theta))
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
-                left, right = _split_box(box)
+                left, right = _split_box(box, split_dim=split_dims[idx])
                 refined_boxes.extend([left, right])
             else:
                 refined_boxes.append(box)
@@ -454,26 +485,33 @@ def _matrix_multiply(left: list[list[Interval]], right: list[list[Interval]]) ->
     if left_width != right_height:
         raise ValueError("Jacobian dimensions are incompatible for multiplication.")
 
-    right_width = len(right[0])
-    output: list[list[Interval]] = []
-    for row in left:
-        output_row: list[Interval] = []
-        for col_idx in range(right_width):
-            accumulator = Interval.point(0.0)
-            for shared_idx in range(left_width):
-                accumulator = accumulator + row[shared_idx] * right[shared_idx][col_idx]
-            output_row.append(accumulator)
-        output.append(output_row)
-    return output
+    left_mid = torch.tensor([[float(entry.midpoint) for entry in row] for row in left], dtype=torch.float64)
+    left_rad = torch.tensor([[float(entry.radius) for entry in row] for row in left], dtype=torch.float64)
+    right_mid = torch.tensor([[float(entry.midpoint) for entry in row] for row in right], dtype=torch.float64)
+    right_rad = torch.tensor([[float(entry.radius) for entry in row] for row in right], dtype=torch.float64)
+
+    output_mid = left_mid.matmul(right_mid)
+    output_rad = (
+        left_mid.abs().matmul(right_rad)
+        + left_rad.matmul(right_mid.abs())
+        + left_rad.matmul(right_rad)
+    )
+
+    lower = torch.nextafter(output_mid - output_rad, torch.full_like(output_mid, float("-inf")))
+    upper = torch.nextafter(output_mid + output_rad, torch.full_like(output_mid, float("inf")))
+    lower_rows = lower.tolist()
+    upper_rows = upper.tolist()
+    return [
+        [Interval.from_bounds(lower_rows[row_idx][col_idx], upper_rows[row_idx][col_idx]) for col_idx in range(len(lower_rows[row_idx]))]
+        for row_idx in range(len(lower_rows))
+    ]
 
 
 def _jacobian_for_layer(layer, pre_activation: IntervalTensor) -> list[list[Interval]]:
     if isinstance(layer, nn.Linear):
         weight = layer.weight.detach().cpu()
-        return [
-            [_scalar_interval_from_weight(weight[row_idx, col_idx], Interval.point(1.0)) for col_idx in range(weight.shape[1])]
-            for row_idx in range(weight.shape[0])
-        ]
+        matrix = weight.to(torch.float64).tolist()
+        return [[Interval.point(value) for value in row] for row in matrix]
     if isinstance(layer, nn.ReLU):
         derivatives = [
             _interval_derivative_bounds_relu(Interval(pre_activation.lower[idx], pre_activation.upper[idx]))
@@ -541,9 +579,14 @@ def _eval_jacobian_bounds(model, domain: IntervalTensor) -> IntervalTensor:
     return IntervalTensor.from_bounds(lower, upper)
 
 
-def _sobolev_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval:
+def _sobolev_pointwise_power_bounds(
+    model,
+    box: IntervalTensor,
+    p: float,
+    jacobian: IntervalTensor | None = None,
+) -> Interval:
     output = model.eval(box)
-    jacobian = model.eval_jacobian(box)
+    jacobian = jacobian if jacobian is not None else model.eval_jacobian(box)
     total = Interval.point(0.0)
 
     for lower, upper in zip(output.lower, output.upper):
@@ -570,18 +613,25 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
     _validate_dorfler_theta(theta)
 
     boxes = [domain]
+    use_jacobian_splitting = len(domain.lower) > 1
     for _ in range(iterations):
         indicators: list[float] = []
+        split_dims: list[int] = []
         for box in boxes:
-            integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p)
+            jacobian = model.eval_jacobian(box)
+            integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p, jacobian=jacobian)
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
             indicators.append(width * _box_volume(box))
+            if use_jacobian_splitting:
+                split_dims.append(_choose_split_dim(box, jacobian))
+            else:
+                split_dims.append(_choose_split_dim(box, None))
 
         marked_indices = set(_dorfler_marking(indicators, theta))
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
-                left, right = _split_box(box)
+                left, right = _split_box(box, split_dim=split_dims[idx])
                 refined_boxes.extend([left, right])
             else:
                 refined_boxes.append(box)

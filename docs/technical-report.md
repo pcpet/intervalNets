@@ -7,6 +7,10 @@
 
 intervalNets provides interval arithmetic and interval-aware neural-network evaluation with outward rounding. The repository combines a compact mathematical core (`interval.py`) with a PyTorch integration layer (`pytorch.py`) that overloads model evaluation on interval inputs and adds certified bounds for Jacobians, $L^p$ norms, and Sobolev-style norms. This document focuses on those two files.
 
+The current implementation emphasizes **fast conservative enclosures** for neural-network workloads,
+especially matrix-by-interval-vector propagation and Jacobian composition. It does not attempt to
+compute globally tightest interval enclosures in every step.
+
 ## Repository Overview
 
 At a high level, the codebase separates concerns:
