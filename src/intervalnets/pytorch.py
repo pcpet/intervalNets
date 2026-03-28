@@ -84,10 +84,11 @@ def _pad_outward_tensor(values, direction: float, steps: int = 1, include_float3
 
 
 def _widen_weight_bounds(weight):
-    """Return outward-rounded [lower, upper] coefficient bounds."""
+    """Return outward-rounded [lower, upper] coefficient bounds and whether widening occurred."""
     coefficients = weight.detach().cpu().to(dtype=torch.float64)
     lower = coefficients.clone()
     upper = coefficients.clone()
+    widened = False
 
     if weight.dtype in {torch.float16, torch.bfloat16, torch.float32}:
         finite = torch.isfinite(coefficients)
@@ -97,8 +98,9 @@ def _widen_weight_bounds(weight):
         if torch.any(mask):
             lower[mask] = _pad_outward_tensor(coefficients[mask], -inf, include_float32=True)
             upper[mask] = _pad_outward_tensor(coefficients[mask], inf, include_float32=True)
+            widened = True
 
-    return lower, upper
+    return lower, upper, widened
 
 
 def _scalar_interval_from_weight(weight: Any, value: Interval, widen_float32: bool = True) -> Interval:
@@ -290,28 +292,33 @@ def _interval_cat(intervals: list[IntervalTensor], dim: int) -> IntervalTensor:
 
 
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
+    # Keep accumulation in interval arithmetic form (outward rounding at each
+    # multiplication/addition) to preserve enclosure soundness.
     weight = layer.weight.detach().cpu()
-    w_lower, w_upper = _widen_weight_bounds(weight)
+    _, _, weight_widened = _widen_weight_bounds(weight)
+    bias = layer.bias.detach().cpu() if layer.bias is not None else None
+    bias_widened = False
+    input_intervals = [Interval(lb, ub) for lb, ub in zip(x.lower, x.upper)]
 
-    x_lower = torch.tensor(x.lower, dtype=torch.float64)
-    x_upper = torch.tensor(x.upper, dtype=torch.float64)
+    outputs: list[Interval] = []
+    for row_index, row in enumerate(weight):
+        accumulator = Interval.point(0.0)
+        for coefficient, input_interval in zip(row, input_intervals):
+            accumulator = accumulator + _scalar_interval_from_weight(coefficient, input_interval)
+        if bias is not None:
+            if row_index == 0:
+                _, _, bias_widened = _widen_weight_bounds(bias)
+            accumulator = accumulator + _scalar_interval_from_weight(
+                bias[row_index],
+                Interval.point(1.0),
+                widen_float32=True,
+            )
+        outputs.append(accumulator)
 
-    p1 = w_lower * x_lower.unsqueeze(0)
-    p2 = w_lower * x_upper.unsqueeze(0)
-    p3 = w_upper * x_lower.unsqueeze(0)
-    p4 = w_upper * x_upper.unsqueeze(0)
-
-    contribution_lower = torch.minimum(torch.minimum(p1, p2), torch.minimum(p3, p4)).sum(dim=1)
-    contribution_upper = torch.maximum(torch.maximum(p1, p2), torch.maximum(p3, p4)).sum(dim=1)
-
-    if layer.bias is not None:
-        b_lower, b_upper = _widen_weight_bounds(layer.bias.detach().cpu())
-        contribution_lower = contribution_lower + b_lower
-        contribution_upper = contribution_upper + b_upper
-
-    lower = _pad_outward_tensor(contribution_lower, -inf, include_float32=False).tolist()
-    upper = _pad_outward_tensor(contribution_upper, inf, include_float32=False).tolist()
-    return IntervalTensor.from_bounds(lower, upper)
+    widen_outputs = weight_widened or bias_widened
+    lower = tuple(_pad_outward(item.lower, -inf, include_float32=widen_outputs) for item in outputs)
+    upper = tuple(_pad_outward(item.upper, inf, include_float32=widen_outputs) for item in outputs)
+    return IntervalTensor(lower, upper)
 
 
 def _interval_abs_bounds(value: Interval) -> Interval:
