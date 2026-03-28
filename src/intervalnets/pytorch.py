@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from math import exp, inf, isfinite, log, nextafter, tanh
 from typing import Any
 
@@ -14,7 +13,6 @@ except ImportError:  # pragma: no cover - environment dependent
     nn = None
 
 
-@dataclass(frozen=True)
 class IntervalTensor(Interval):
     """Tensor-shaped interval wrapper for PyTorch interop."""
 
@@ -243,22 +241,26 @@ def _interval_cat(intervals: list[IntervalTensor], dim: int) -> IntervalTensor:
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
     weight = layer.weight.detach().cpu()
     bias = layer.bias.detach().cpu() if layer.bias is not None else None
-    x_lower = list(x.lower)
-    x_upper = list(x.upper)
-    input_intervals = [Interval(lb, ub) for lb, ub in zip(x_lower, x_upper)]
+    x_mid = [float(value) for value in x.midpoint]
+    x_rad = [float(value) for value in x.radius]
+    abs_weight = weight.abs()
 
-    outputs: list[Interval] = []
+    output_mid: list[float] = []
+    output_rad: list[float] = []
     for row_index, row in enumerate(weight):
-        accumulator = Interval.point(0.0)
-        for coefficient, input_interval in zip(row, input_intervals):
-            accumulator = accumulator + _scalar_interval_from_weight(coefficient, input_interval)
+        midpoint_sum = 0.0
+        radius_sum = 0.0
+        for col_index, coefficient in enumerate(row):
+            coef = float(coefficient.item())
+            midpoint_sum += coef * x_mid[col_index]
+            radius_sum += float(abs_weight[row_index, col_index].item()) * x_rad[col_index]
         if bias is not None:
-            accumulator = accumulator + _scalar_interval_from_weight(bias[row_index], Interval.point(1.0), widen_float32=True)
-        outputs.append(accumulator)
+            midpoint_sum += float(bias[row_index].item())
 
-    lower = tuple(item.lower for item in outputs)
-    upper = tuple(item.upper for item in outputs)
-    return IntervalTensor(lower, upper)
+        output_mid.append(midpoint_sum)
+        output_rad.append(_pad_outward(radius_sum, inf, include_float32=True))
+
+    return IntervalTensor.from_mid_rad(tuple(output_mid), tuple(output_rad))
 
 
 def _interval_abs_bounds(value: Interval) -> Interval:
