@@ -417,7 +417,10 @@ def _box_volume(box: IntervalTensor) -> float:
 
 
 def _lp_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval:
-    output = model.eval(box)
+    if len(box.lower) <= 1:
+        output = model.eval(box)
+    else:
+        output = _mean_value_output_bounds(model, box)
     components = [Interval(lb, ub) for lb, ub in zip(output.lower, output.upper)]
     total = Interval.point(0.0)
     for component in components:
@@ -741,9 +744,48 @@ def _eval_jacobian_bounds(model, domain: IntervalTensor) -> IntervalTensor:
     return IntervalTensor.from_bounds(lower, upper)
 
 
+def _mean_value_output_bounds(model, box: IntervalTensor, jacobian: IntervalTensor | None = None) -> IntervalTensor:
+    """Compute output enclosure via mean-value form f(c) + J(B) (x-c)."""
+    if len(box.shape) != 1:
+        raise NotImplementedError("Mean-value output bounds currently support flat vectors only.")
+
+    jacobian_bounds = jacobian if jacobian is not None else model.eval_jacobian(box)
+    center = [(float(lo) + float(hi)) * 0.5 for lo, hi in zip(box.lower, box.upper)]
+    radius = [float(hi) - c for hi, c in zip(box.upper, center)]
+
+    # evaluate network at center point
+    param = next(model.parameters(), None)
+    dtype = param.dtype if param is not None else torch.float64
+    device = param.device if param is not None else torch.device("cpu")
+    with torch.no_grad():
+        point_value = model(torch.tensor(center, dtype=dtype, device=device)).detach().cpu().reshape(-1).tolist()
+    include_float32_point = dtype in {torch.float16, torch.bfloat16, torch.float32}
+
+    lower_out: list[float] = []
+    upper_out: list[float] = []
+    for row_idx, point_component in enumerate(point_value):
+        point_scalar = float(point_component)
+        enclosure = Interval.from_bounds(
+            _pad_outward(point_scalar, -inf, include_float32=include_float32_point),
+            _pad_outward(point_scalar, inf, include_float32=include_float32_point),
+        )
+        row_lower = jacobian_bounds.lower[row_idx]
+        row_upper = jacobian_bounds.upper[row_idx]
+        for col_idx in range(len(center)):
+            derivative = Interval(float(row_lower[col_idx]), float(row_upper[col_idx]))
+            delta = Interval.from_bounds(-radius[col_idx], radius[col_idx])
+            enclosure = enclosure + (derivative * delta)
+        lower_out.append(float(enclosure.lower))
+        upper_out.append(float(enclosure.upper))
+    return IntervalTensor.from_bounds(lower_out, upper_out)
+
+
 def _sobolev_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval:
-    output = model.eval(box)
     jacobian = model.eval_jacobian(box)
+    if len(box.lower) <= 1:
+        output = model.eval(box)
+    else:
+        output = _mean_value_output_bounds(model, box, jacobian=jacobian)
     total = Interval.point(0.0)
 
     for lower, upper in zip(output.lower, output.upper):
