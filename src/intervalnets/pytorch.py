@@ -83,43 +83,30 @@ def _scalar_interval_from_weight(weight: Any, value: Interval, widen_float32: bo
     return Interval.point(weight) * value
 
 
-def _scalar_weight_bounds(weight: Any, widen_float32: bool = True) -> tuple[float, float]:
-    """Return outward-safe scalar bounds for a layer weight or bias entry."""
+def _scalar_weight_value(weight: Any) -> float:
+    """Extract a scalar layer weight/bias value."""
     if torch is not None and isinstance(weight, torch.Tensor):
         scalar = weight.detach().cpu()
         if scalar.numel() != 1:
             raise ValueError("Expected a scalar weight tensor.")
-        coefficient = float(scalar.item())
-        if (
-            widen_float32
-            and scalar.dtype in {torch.float16, torch.bfloat16, torch.float32}
-            and coefficient != 0.0
-            and not coefficient.is_integer()
-        ):
-            return (
-                _pad_outward(coefficient, -inf, include_float32=True),
-                _pad_outward(coefficient, inf, include_float32=True),
-            )
-        return coefficient, coefficient
+        return float(scalar.item())
 
-    coefficient = float(weight)
-    return coefficient, coefficient
+    return float(weight)
 
 
-def _mul_interval_bounds(
-    left_lower: float,
-    left_upper: float,
-    right_lower: float,
-    right_upper: float,
+def _mul_scalar_interval_bounds(
+    scalar: float,
+    interval_lower: float,
+    interval_upper: float,
 ) -> tuple[float, float]:
-    """Multiply scalar intervals using endpoint formulas + outward rounding."""
-    candidates = (
-        left_lower * right_lower,
-        left_lower * right_upper,
-        left_upper * right_lower,
-        left_upper * right_upper,
-    )
-    return nextafter(min(candidates), -inf), nextafter(max(candidates), inf)
+    """Multiply scalar * interval using endpoint formulas + outward rounding."""
+    if scalar >= 0.0:
+        lower = scalar * interval_lower
+        upper = scalar * interval_upper
+    else:
+        lower = scalar * interval_upper
+        upper = scalar * interval_lower
+    return nextafter(lower, -inf), nextafter(upper, inf)
 
 
 def _apply_monotone_bounds(x: IntervalTensor, func) -> IntervalTensor:
@@ -291,16 +278,15 @@ def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
         acc_lower = 0.0
         acc_upper = 0.0
         for coefficient, value_lower, value_upper in zip(row, x_lower, x_upper):
-            coeff_lower, coeff_upper = _scalar_weight_bounds(coefficient, widen_float32=True)
-            term_lower, term_upper = _mul_interval_bounds(coeff_lower, coeff_upper, value_lower, value_upper)
+            coeff_value = _scalar_weight_value(coefficient)
+            term_lower, term_upper = _mul_scalar_interval_bounds(coeff_value, value_lower, value_upper)
             acc_lower = nextafter(acc_lower + term_lower, -inf)
             acc_upper = nextafter(acc_upper + term_upper, inf)
 
         if bias is not None:
-            bias_lower, bias_upper = _scalar_weight_bounds(bias[row_index], widen_float32=True)
-            term_lower, term_upper = _mul_interval_bounds(bias_lower, bias_upper, 1.0, 1.0)
-            acc_lower = nextafter(acc_lower + term_lower, -inf)
-            acc_upper = nextafter(acc_upper + term_upper, inf)
+            bias_value = _scalar_weight_value(bias[row_index])
+            acc_lower = nextafter(acc_lower + bias_value, -inf)
+            acc_upper = nextafter(acc_upper + bias_value, inf)
 
         lower_out.append(acc_lower)
         upper_out.append(acc_upper)
