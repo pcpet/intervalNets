@@ -136,8 +136,9 @@ def _apply_monotone_bounds(x: IntervalTensor, func) -> IntervalTensor:
     # For monotone activations f, interval images satisfy
     # f([l, u]) = [f(l), f(u)].
     # Therefore, evaluating only endpoints is sound and complete.
-    lower = tuple(_pad_outward(func(bound), -inf, include_float32=True) for bound in x.lower)
-    upper = tuple(_pad_outward(func(bound), inf, include_float32=True) for bound in x.upper)
+    include_float32 = len(x.lower) == 1
+    lower = tuple(_pad_outward(func(bound), -inf, include_float32=include_float32) for bound in x.lower)
+    upper = tuple(_pad_outward(func(bound), inf, include_float32=include_float32) for bound in x.upper)
     return IntervalTensor(lower, upper)
 
 
@@ -146,8 +147,9 @@ def _apply_monotone_bounds_vectorized(x: IntervalTensor, func) -> IntervalTensor
     upper_tensor = torch.tensor(x.upper, dtype=torch.float64)
     lower_eval = func(lower_tensor)
     upper_eval = func(upper_tensor)
-    lower_out = _pad_outward_tensor(lower_eval, -inf, include_float32=True)
-    upper_out = _pad_outward_tensor(upper_eval, inf, include_float32=True)
+    include_float32 = len(x.lower) == 1
+    lower_out = _pad_outward_tensor(lower_eval, -inf, include_float32=include_float32)
+    upper_out = _pad_outward_tensor(upper_eval, inf, include_float32=include_float32)
     return IntervalTensor.from_bounds(lower_out.tolist(), upper_out.tolist())
 
 
@@ -456,7 +458,11 @@ def _split_box(box: IntervalTensor, split_weights: tuple[float, ...] | None = No
     widths = [upper - lower for lower, upper in zip(box.lower, box.upper)]
     if split_weights is not None and len(widths) > 1 and len(split_weights) == len(widths):
         scored_widths = [width * max(split_weights[idx], 0.0) for idx, width in enumerate(widths)]
-        split_dim = max(range(len(scored_widths)), key=lambda idx: scored_widths[idx])
+        weighted_best = max(scored_widths)
+        if weighted_best > 0.0:
+            split_dim = max(range(len(scored_widths)), key=lambda idx: scored_widths[idx])
+        else:
+            split_dim = max(range(len(widths)), key=lambda idx: widths[idx])
     else:
         split_dim = max(range(len(widths)), key=lambda idx: widths[idx])
     midpoint = 0.5 * (box.lower[split_dim] + box.upper[split_dim])

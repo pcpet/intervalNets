@@ -120,6 +120,17 @@ def test_split_box_uses_weighted_direction_for_multidimensional_domains() -> Non
     assert right.lower[1] == 0.5
 
 
+def test_split_box_falls_back_to_widest_direction_when_weighted_scores_vanish() -> None:
+    box = IntervalTensor.from_bounds([0.0, 0.0, 0.0], [4.0, 3.0, 2.0])
+    left, right = _split_box(box, split_weights=(0.0, 0.0, 0.0))
+
+    # With all weighted scores zero, fallback should match widest-axis splitting (dim=0).
+    assert left.upper[0] == 2.0
+    assert right.lower[0] == 2.0
+    assert left.upper[1] == box.upper[1]
+    assert left.upper[2] == box.upper[2]
+
+
 def test_zero_network_contains_zero_with_rounding_margin() -> None:
     layer = nn.Linear(3, 2)
     with torch.no_grad():
@@ -266,6 +277,20 @@ def test_added_monotone_activations_enclose_endpoint_images(activation, fn) -> N
         upper_exact = fn(interval.upper[idx])
         assert output.lower[idx] <= lower_exact
         assert output.upper[idx] >= upper_exact
+
+
+def test_sigmoid_float32_padding_is_restricted_to_univariate_inputs() -> None:
+    sigmoid = nn.Sigmoid()
+    univariate = IntervalTensor.from_bounds([0.1], [0.1])
+    multivariate = IntervalTensor.from_bounds([0.1, 0.1], [0.1, 0.1])
+
+    one_d = interval_forward(sigmoid, univariate)
+    two_d = interval_forward(sigmoid, multivariate)
+
+    width_one_d = one_d.upper[0] - one_d.lower[0]
+    width_two_d = two_d.upper[0] - two_d.lower[0]
+
+    assert width_one_d >= width_two_d
 
 
 def test_interval_add_encloses_branch_sum_corners() -> None:
