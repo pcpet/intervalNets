@@ -409,6 +409,22 @@ def test_lpnorm_contains_monte_carlo_estimate() -> None:
     assert bounds.lower <= estimate <= bounds.upper
 
 
+def test_lpnorm_refinement_tightens_interval_in_two_dimensions() -> None:
+    enable_interval_eval()
+    torch.manual_seed(41)
+    model = nn.Sequential(nn.Linear(2, 10), nn.Tanh(), nn.Linear(10, 1))
+    for parameter in model.parameters():
+        nn.init.uniform_(parameter, a=-1.0, b=1.0)
+
+    domain = IntervalTensor.from_bounds([-1.0, -0.5], [1.0, 1.5])
+    coarse = model.lpnorm(domain, p=2.0, iterations=1)
+    refined = model.lpnorm(domain, p=2.0, iterations=5)
+
+    assert refined.lower >= coarse.lower
+    assert refined.upper <= coarse.upper
+    assert (refined.upper - refined.lower) <= (coarse.upper - coarse.lower)
+
+
 def test_eval_jacobian_linear_layer_matches_exact_weight_matrix() -> None:
     enable_interval_eval()
     layer = nn.Linear(2, 2)
@@ -515,6 +531,22 @@ def test_sobolev_norm_rejects_invalid_dorfler_theta() -> None:
         _ = model.sobolev_norm(domain, p=2.0, iterations=1, theta=0.0)
     with pytest.raises(ValueError):
         _ = model.sobolev_norm(domain, p=2.0, iterations=1, theta=1.1)
+
+
+def test_sobolev_norm_refinement_tightens_interval_in_two_dimensions() -> None:
+    enable_interval_eval()
+    torch.manual_seed(53)
+    model = nn.Sequential(nn.Linear(2, 8), nn.Tanh(), nn.Linear(8, 1))
+    for parameter in model.parameters():
+        nn.init.uniform_(parameter, a=-1.0, b=1.0)
+
+    domain = IntervalTensor.from_bounds([-1.5, -1.0], [0.75, 2.0])
+    coarse = model.sobolev_norm(domain, p=2.0, iterations=1)
+    refined = model.sobolev_norm(domain, p=2.0, iterations=4)
+
+    assert refined.lower >= coarse.lower
+    assert refined.upper <= coarse.upper
+    assert (refined.upper - refined.lower) <= (coarse.upper - coarse.lower)
 
 
 def test_sigmoid_interval_encloses_endpoint_images() -> None:
