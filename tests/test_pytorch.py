@@ -5,7 +5,7 @@ torch = pytest.importorskip("torch")
 from torch import nn
 
 from intervalnets import Interval, IntervalAdd, IntervalCat, IntervalTensor, enable_interval_eval, interval_forward
-from intervalnets.pytorch import _interval_pow_scalar
+from intervalnets.pytorch import _interval_pow_scalar, _split_box
 
 
 def test_relu_negative_interval_rounds_outward_to_zero() -> None:
@@ -80,6 +80,44 @@ def test_linear_interval_matches_expected_affine_bounds() -> None:
     ]
     assert output.lower[0] <= min(candidates)
     assert output.upper[0] >= max(candidates)
+
+
+def test_linear_interval_randomized_corner_enclosure_stress() -> None:
+    torch.manual_seed(123)
+    for _ in range(200):
+        layer = nn.Linear(2, 2)
+        with torch.no_grad():
+            layer.weight.uniform_(-3.0, 3.0)
+            layer.bias.uniform_(-1.0, 1.0)
+
+        lower = torch.empty(2).uniform_(-2.0, 1.0)
+        width = torch.empty(2).uniform_(0.0, 3.0)
+        upper = lower + width
+
+        interval = IntervalTensor.from_bounds(lower.tolist(), upper.tolist())
+        output = interval_forward(layer, interval)
+
+        corners = [
+            (x0, x1)
+            for x0 in (interval.lower[0], interval.upper[0])
+            for x1 in (interval.lower[1], interval.upper[1])
+        ]
+        eval_dtype = layer.weight.dtype
+        for corner in corners:
+            exact = layer(torch.tensor(corner, dtype=eval_dtype)).detach().tolist()
+            for idx, value in enumerate(exact):
+                assert output.lower[idx] <= value <= output.upper[idx]
+
+
+def test_split_box_uses_weighted_direction_for_multidimensional_domains() -> None:
+    box = IntervalTensor.from_bounds([0.0, 0.0], [4.0, 1.0])
+    left, right = _split_box(box, split_weights=(0.1, 10.0))
+
+    # split should occur along dim=1 (second component), not widest dim=0
+    assert left.upper[0] == box.upper[0]
+    assert right.lower[0] == box.lower[0]
+    assert left.upper[1] == 0.5
+    assert right.lower[1] == 0.5
 
 
 def test_zero_network_contains_zero_with_rounding_margin() -> None:
