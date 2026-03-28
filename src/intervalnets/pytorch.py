@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from math import exp, inf, isfinite, log, nextafter, tanh
 from typing import Any
 
@@ -14,7 +13,6 @@ except ImportError:  # pragma: no cover - environment dependent
     nn = None
 
 
-@dataclass(frozen=True)
 class IntervalTensor(Interval):
     """Tensor-shaped interval wrapper for PyTorch interop."""
 
@@ -241,24 +239,25 @@ def _interval_cat(intervals: list[IntervalTensor], dim: int) -> IntervalTensor:
 
 
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
-    weight = layer.weight.detach().cpu()
-    bias = layer.bias.detach().cpu() if layer.bias is not None else None
-    x_lower = list(x.lower)
-    x_upper = list(x.upper)
-    input_intervals = [Interval(lb, ub) for lb, ub in zip(x_lower, x_upper)]
+    weight = layer.weight.detach().cpu().to(torch.float64)
+    bias = layer.bias.detach().cpu().to(torch.float64) if layer.bias is not None else None
+    x_mid = torch.tensor(x.midpoint, dtype=torch.float64)
+    x_rad = torch.tensor(x.radius, dtype=torch.float64)
 
-    outputs: list[Interval] = []
-    for row_index, row in enumerate(weight):
-        accumulator = Interval.point(0.0)
-        for coefficient, input_interval in zip(row, input_intervals):
-            accumulator = accumulator + _scalar_interval_from_weight(coefficient, input_interval)
-        if bias is not None:
-            accumulator = accumulator + _scalar_interval_from_weight(bias[row_index], Interval.point(1.0), widen_float32=True)
-        outputs.append(accumulator)
+    # Inflate the incoming radius so [x_mid - x_rad, x_mid + x_rad] is a
+    # directed-rounded enclosure before the linear map.
+    x_upper = torch.nextafter(x_mid + x_rad, torch.full_like(x_mid, float("inf")))
+    x_lower = torch.nextafter(x_mid - x_rad, torch.full_like(x_mid, float("-inf")))
+    x_rad_enclosed = torch.maximum(x_upper - x_mid, x_mid - x_lower)
 
-    lower = tuple(item.lower for item in outputs)
-    upper = tuple(item.upper for item in outputs)
-    return IntervalTensor(lower, upper)
+    output_mid_tensor = weight.matmul(x_mid)
+    if bias is not None:
+        output_mid_tensor = output_mid_tensor + bias
+    output_rad_tensor = weight.abs().matmul(x_rad_enclosed)
+
+    lower_tensor = torch.nextafter(output_mid_tensor - output_rad_tensor, torch.full_like(output_mid_tensor, float("-inf")))
+    upper_tensor = torch.nextafter(output_mid_tensor + output_rad_tensor, torch.full_like(output_mid_tensor, float("inf")))
+    return IntervalTensor.from_bounds(tuple(float(value) for value in lower_tensor.tolist()), tuple(float(value) for value in upper_tensor.tolist()))
 
 
 def _interval_abs_bounds(value: Interval) -> Interval:
@@ -454,26 +453,33 @@ def _matrix_multiply(left: list[list[Interval]], right: list[list[Interval]]) ->
     if left_width != right_height:
         raise ValueError("Jacobian dimensions are incompatible for multiplication.")
 
-    right_width = len(right[0])
-    output: list[list[Interval]] = []
-    for row in left:
-        output_row: list[Interval] = []
-        for col_idx in range(right_width):
-            accumulator = Interval.point(0.0)
-            for shared_idx in range(left_width):
-                accumulator = accumulator + row[shared_idx] * right[shared_idx][col_idx]
-            output_row.append(accumulator)
-        output.append(output_row)
-    return output
+    left_mid = torch.tensor([[float(entry.midpoint) for entry in row] for row in left], dtype=torch.float64)
+    left_rad = torch.tensor([[float(entry.radius) for entry in row] for row in left], dtype=torch.float64)
+    right_mid = torch.tensor([[float(entry.midpoint) for entry in row] for row in right], dtype=torch.float64)
+    right_rad = torch.tensor([[float(entry.radius) for entry in row] for row in right], dtype=torch.float64)
+
+    output_mid = left_mid.matmul(right_mid)
+    output_rad = (
+        left_mid.abs().matmul(right_rad)
+        + left_rad.matmul(right_mid.abs())
+        + left_rad.matmul(right_rad)
+    )
+
+    lower = torch.nextafter(output_mid - output_rad, torch.full_like(output_mid, float("-inf")))
+    upper = torch.nextafter(output_mid + output_rad, torch.full_like(output_mid, float("inf")))
+    lower_rows = lower.tolist()
+    upper_rows = upper.tolist()
+    return [
+        [Interval.from_bounds(lower_rows[row_idx][col_idx], upper_rows[row_idx][col_idx]) for col_idx in range(len(lower_rows[row_idx]))]
+        for row_idx in range(len(lower_rows))
+    ]
 
 
 def _jacobian_for_layer(layer, pre_activation: IntervalTensor) -> list[list[Interval]]:
     if isinstance(layer, nn.Linear):
         weight = layer.weight.detach().cpu()
-        return [
-            [_scalar_interval_from_weight(weight[row_idx, col_idx], Interval.point(1.0)) for col_idx in range(weight.shape[1])]
-            for row_idx in range(weight.shape[0])
-        ]
+        matrix = weight.to(torch.float64).tolist()
+        return [[Interval.point(value) for value in row] for row in matrix]
     if isinstance(layer, nn.ReLU):
         derivatives = [
             _interval_derivative_bounds_relu(Interval(pre_activation.lower[idx], pre_activation.upper[idx]))

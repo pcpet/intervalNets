@@ -55,6 +55,15 @@ def _validate_bounds(lower: Data, upper: Data) -> None:
         raise ValueError("Lower bounds must not exceed upper bounds.")
 
 
+def _validate_radius(radius: Data) -> None:
+    if isinstance(radius, tuple):
+        for item in radius:
+            _validate_radius(item)
+        return
+    if radius < 0.0:
+        raise ValueError("Interval radii must be non-negative.")
+
+
 def _contains(lower: Data, upper: Data, value: Data) -> bool:
     if isinstance(lower, tuple) and isinstance(upper, tuple) and isinstance(value, tuple):
         return len(lower) == len(upper) == len(value) and all(
@@ -76,6 +85,44 @@ def _shape(value: Data) -> tuple[int, ...]:
 
 def _neg(value: Data) -> Data:
     return _map_unary(value, lambda item: -item)
+
+
+def _add_data(left: Data, right: Data) -> Data:
+    return _map_binary(left, right, lambda l, r: l + r)
+
+
+def _sub_data(left: Data, right: Data) -> Data:
+    return _map_binary(left, right, lambda l, r: l - r)
+
+
+def _mul_data(left: Data, right: Data) -> Data:
+    return _map_binary(left, right, lambda l, r: l * r)
+
+
+def _scale_data(value: Data, scalar: float) -> Data:
+    return _map_unary(value, lambda item: item * scalar)
+
+
+def _abs_data(value: Data) -> Data:
+    return _map_unary(value, abs)
+
+
+def _lower_from_mid_rad(midpoint: Data, radius: Data) -> Data:
+    exact = _sub_data(midpoint, radius)
+    return outward_lower(exact)
+
+
+def _upper_from_mid_rad(midpoint: Data, radius: Data) -> Data:
+    exact = _add_data(midpoint, radius)
+    return outward_upper(exact)
+
+
+def _mid_from_bounds(lower: Data, upper: Data) -> Data:
+    return _map_binary(lower, upper, lambda lo, hi: (lo + hi) / 2.0)
+
+
+def _rad_from_bounds(lower: Data, upper: Data) -> Data:
+    return _map_binary(lower, upper, lambda lo, hi: (hi - lo) / 2.0)
 
 
 def _mul_bounds(
@@ -115,19 +162,26 @@ def _mul_bounds(
     return nextafter(min(candidates), -inf), nextafter(max(candidates), inf)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class Interval:
-    """Closed interval with outward-rounded arithmetic."""
+    """Closed interval with midpoint-radius storage and outward-rounded arithmetic."""
 
-    lower: Data
-    upper: Data
+    midpoint: Data
+    radius: Data
+    lower_bound: Data
+    upper_bound: Data
 
-    def __post_init__(self) -> None:
-        lower = _to_data(self.lower)
-        upper = _to_data(self.upper)
-        _validate_bounds(lower, upper)
-        object.__setattr__(self, "lower", lower)
-        object.__setattr__(self, "upper", upper)
+    def __init__(self, lower: Any, upper: Any) -> None:
+        lower_data = _to_data(lower)
+        upper_data = _to_data(upper)
+        _validate_bounds(lower_data, upper_data)
+        midpoint = _mid_from_bounds(lower_data, upper_data)
+        radius = _rad_from_bounds(lower_data, upper_data)
+        _validate_radius(radius)
+        object.__setattr__(self, "midpoint", midpoint)
+        object.__setattr__(self, "radius", radius)
+        object.__setattr__(self, "lower_bound", lower_data)
+        object.__setattr__(self, "upper_bound", upper_data)
 
     @classmethod
     def point(cls, value: Any) -> "Interval":
@@ -138,9 +192,26 @@ class Interval:
     def from_bounds(cls, lower: Any, upper: Any) -> "Interval":
         return cls(lower, upper)
 
+    @classmethod
+    def from_mid_rad(cls, midpoint: Any, radius: Any) -> "Interval":
+        midpoint_data = _to_data(midpoint)
+        radius_data = _to_data(radius)
+        _validate_radius(radius_data)
+        lower = _lower_from_mid_rad(midpoint_data, radius_data)
+        upper = _upper_from_mid_rad(midpoint_data, radius_data)
+        return cls(lower, upper)
+
+    @property
+    def lower(self) -> Data:
+        return self.lower_bound
+
+    @property
+    def upper(self) -> Data:
+        return self.upper_bound
+
     @property
     def shape(self) -> tuple[int, ...]:
-        return _shape(self.lower)
+        return _shape(self.midpoint)
 
     def contains(self, value: Any) -> bool:
         return _contains(self.lower, self.upper, _to_data(value))
@@ -150,24 +221,24 @@ class Interval:
 
     def __add__(self, other: Any) -> "Interval":
         other_interval = other if isinstance(other, Interval) else Interval.point(other)
-        lower = _map_binary(self.lower, other_interval.lower, lambda left, right: nextafter(left + right, -inf))
-        upper = _map_binary(self.upper, other_interval.upper, lambda left, right: nextafter(left + right, inf))
-        return Interval(lower, upper)
+        midpoint = _add_data(self.midpoint, other_interval.midpoint)
+        radius = outward_upper(_add_data(self.radius, other_interval.radius))
+        return Interval.from_mid_rad(midpoint, radius)
 
     def __radd__(self, other: Any) -> "Interval":
         return self + other
 
     def __sub__(self, other: Any) -> "Interval":
         other_interval = other if isinstance(other, Interval) else Interval.point(other)
-        lower = _map_binary(self.lower, other_interval.upper, lambda left, right: nextafter(left - right, -inf))
-        upper = _map_binary(self.upper, other_interval.lower, lambda left, right: nextafter(left - right, inf))
-        return Interval(lower, upper)
+        midpoint = _sub_data(self.midpoint, other_interval.midpoint)
+        radius = outward_upper(_add_data(self.radius, other_interval.radius))
+        return Interval.from_mid_rad(midpoint, radius)
 
     def __rsub__(self, other: Any) -> "Interval":
         return (other if isinstance(other, Interval) else Interval.point(other)) - self
 
     def __neg__(self) -> "Interval":
-        return Interval(outward_lower(_neg(self.upper)), outward_upper(_neg(self.lower)))
+        return Interval.from_mid_rad(_neg(self.midpoint), self.radius)
 
     def __mul__(self, other: Any) -> "Interval":
         other_interval = other if isinstance(other, Interval) else Interval.point(other)
@@ -192,4 +263,11 @@ class Interval:
         return self * reciprocal
 
     def __repr__(self) -> str:
-        return f"Interval(lower={self.lower!r}, upper={self.upper!r})"
+        return (
+            "Interval("
+            f"midpoint={self.midpoint!r}, "
+            f"radius={self.radius!r}, "
+            f"lower={self.lower!r}, "
+            f"upper={self.upper!r}"
+            ")"
+        )
