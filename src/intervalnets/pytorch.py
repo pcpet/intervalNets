@@ -408,9 +408,57 @@ def _lp_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval
     return total
 
 
-def _split_box(box: IntervalTensor) -> tuple[IntervalTensor, IntervalTensor]:
+def _activation_lipschitz_upper(layer) -> float:
+    if isinstance(layer, (nn.ReLU, nn.Identity, nn.Flatten, nn.Softplus)):
+        return 1.0
+    if isinstance(layer, nn.LeakyReLU):
+        return max(1.0, abs(float(layer.negative_slope)))
+    if isinstance(layer, nn.Sigmoid):
+        return 0.25
+    if isinstance(layer, nn.Tanh):
+        return 1.0
+    if isinstance(layer, nn.Softmax):
+        # Conservative elementwise upper bound in this context.
+        return 1.0
+    raise NotImplementedError
+
+
+def _precompute_split_weights(model, domain: IntervalTensor) -> tuple[float, ...] | None:
+    if len(domain.shape) != 1 or len(domain.lower) <= 1:
+        return None
+
+    layers = list(model) if isinstance(model, nn.Sequential) else [model]
+    sensitivity = None
+
+    try:
+        for layer in reversed(layers):
+            if isinstance(layer, nn.Linear):
+                weight_abs = layer.weight.detach().cpu().to(dtype=torch.float64).abs()
+                if sensitivity is None:
+                    sensitivity = torch.ones(weight_abs.shape[0], dtype=torch.float64)
+                sensitivity = weight_abs.t().matmul(sensitivity)
+            else:
+                slope_upper = _activation_lipschitz_upper(layer)
+                if sensitivity is None:
+                    continue
+                sensitivity = sensitivity * slope_upper
+    except NotImplementedError:
+        return None
+
+    if sensitivity is None:
+        return None
+    if sensitivity.numel() != len(domain.lower):
+        return None
+    return tuple(float(max(value.item(), 0.0)) for value in sensitivity)
+
+
+def _split_box(box: IntervalTensor, split_weights: tuple[float, ...] | None = None) -> tuple[IntervalTensor, IntervalTensor]:
     widths = [upper - lower for lower, upper in zip(box.lower, box.upper)]
-    split_dim = max(range(len(widths)), key=lambda idx: widths[idx])
+    if split_weights is not None and len(widths) > 1 and len(split_weights) == len(widths):
+        scored_widths = [width * max(split_weights[idx], 0.0) for idx, width in enumerate(widths)]
+        split_dim = max(range(len(scored_widths)), key=lambda idx: scored_widths[idx])
+    else:
+        split_dim = max(range(len(widths)), key=lambda idx: widths[idx])
     midpoint = 0.5 * (box.lower[split_dim] + box.upper[split_dim])
 
     lower_left = list(box.lower)
@@ -465,6 +513,7 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
     _validate_dorfler_theta(theta)
 
     boxes = [domain]
+    split_weights = _precompute_split_weights(model, domain) if len(domain.lower) > 1 else None
     integrand_cache: dict[tuple[tuple[float, ...], tuple[float, ...]], Interval] = {}
     volume_cache: dict[tuple[tuple[float, ...], tuple[float, ...]], float] = {}
 
@@ -501,7 +550,7 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
-                left, right = _split_box(box)
+                left, right = _split_box(box, split_weights=split_weights)
                 refined_boxes.extend([left, right])
             else:
                 refined_boxes.append(box)
@@ -696,6 +745,7 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
     _validate_dorfler_theta(theta)
 
     boxes = [domain]
+    split_weights = _precompute_split_weights(model, domain) if len(domain.lower) > 1 else None
     integrand_cache: dict[tuple[tuple[float, ...], tuple[float, ...]], Interval] = {}
     volume_cache: dict[tuple[tuple[float, ...], tuple[float, ...]], float] = {}
 
@@ -732,7 +782,7 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
-                left, right = _split_box(box)
+                left, right = _split_box(box, split_weights=split_weights)
                 refined_boxes.extend([left, right])
             else:
                 refined_boxes.append(box)
