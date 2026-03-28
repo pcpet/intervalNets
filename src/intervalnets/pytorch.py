@@ -307,9 +307,34 @@ def _lp_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval
     return total
 
 
-def _split_box(box: IntervalTensor) -> tuple[IntervalTensor, IntervalTensor]:
-    widths = [upper - lower for lower, upper in zip(box.lower, box.upper)]
-    split_dim = max(range(len(widths)), key=lambda idx: widths[idx])
+def _jacobian_dimension_scores(jacobian: IntervalTensor) -> list[float]:
+    if len(jacobian.shape) != 2:
+        raise ValueError("Jacobian interval must be matrix-shaped.")
+    output_dim = len(jacobian.lower)
+    input_dim = len(jacobian.lower[0]) if output_dim > 0 else 0
+    scores = [0.0] * input_dim
+    for row_idx in range(output_dim):
+        for col_idx in range(input_dim):
+            lower = float(jacobian.lower[row_idx][col_idx])
+            upper = float(jacobian.upper[row_idx][col_idx])
+            scores[col_idx] += max(abs(lower), abs(upper))
+    return scores
+
+
+def _choose_split_dim(box: IntervalTensor, jacobian: IntervalTensor | None = None) -> int:
+    widths = [float(upper - lower) for lower, upper in zip(box.lower, box.upper)]
+    if jacobian is None or len(widths) <= 1:
+        return max(range(len(widths)), key=lambda idx: widths[idx])
+    scores = _jacobian_dimension_scores(jacobian)
+    weighted = [width * score for width, score in zip(widths, scores)]
+    if all(score <= 0.0 for score in weighted):
+        return max(range(len(widths)), key=lambda idx: widths[idx])
+    return max(range(len(weighted)), key=lambda idx: weighted[idx])
+
+
+def _split_box(box: IntervalTensor, split_dim: int | None = None) -> tuple[IntervalTensor, IntervalTensor]:
+    if split_dim is None:
+        split_dim = _choose_split_dim(box, jacobian=None)
     midpoint = 0.5 * (box.lower[split_dim] + box.upper[split_dim])
 
     lower_left = list(box.lower)
@@ -364,18 +389,25 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
     _validate_dorfler_theta(theta)
 
     boxes = [domain]
+    use_jacobian_splitting = len(domain.lower) > 1
     for _ in range(iterations):
         indicators: list[float] = []
+        split_dims: list[int] = []
         for box in boxes:
             integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
             indicators.append(width * _box_volume(box))
+            if use_jacobian_splitting:
+                jacobian = model.eval_jacobian(box)
+                split_dims.append(_choose_split_dim(box, jacobian))
+            else:
+                split_dims.append(_choose_split_dim(box, None))
 
         marked_indices = set(_dorfler_marking(indicators, theta))
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
-                left, right = _split_box(box)
+                left, right = _split_box(box, split_dim=split_dims[idx])
                 refined_boxes.extend([left, right])
             else:
                 refined_boxes.append(box)
@@ -547,9 +579,14 @@ def _eval_jacobian_bounds(model, domain: IntervalTensor) -> IntervalTensor:
     return IntervalTensor.from_bounds(lower, upper)
 
 
-def _sobolev_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval:
+def _sobolev_pointwise_power_bounds(
+    model,
+    box: IntervalTensor,
+    p: float,
+    jacobian: IntervalTensor | None = None,
+) -> Interval:
     output = model.eval(box)
-    jacobian = model.eval_jacobian(box)
+    jacobian = jacobian if jacobian is not None else model.eval_jacobian(box)
     total = Interval.point(0.0)
 
     for lower, upper in zip(output.lower, output.upper):
@@ -576,18 +613,25 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
     _validate_dorfler_theta(theta)
 
     boxes = [domain]
+    use_jacobian_splitting = len(domain.lower) > 1
     for _ in range(iterations):
         indicators: list[float] = []
+        split_dims: list[int] = []
         for box in boxes:
-            integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p)
+            jacobian = model.eval_jacobian(box)
+            integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p, jacobian=jacobian)
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
             indicators.append(width * _box_volume(box))
+            if use_jacobian_splitting:
+                split_dims.append(_choose_split_dim(box, jacobian))
+            else:
+                split_dims.append(_choose_split_dim(box, None))
 
         marked_indices = set(_dorfler_marking(indicators, theta))
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
-                left, right = _split_box(box)
+                left, right = _split_box(box, split_dim=split_dims[idx])
                 refined_boxes.extend([left, right])
             else:
                 refined_boxes.append(box)

@@ -12,6 +12,10 @@ This document describes the public Python API exposed by `intervalnets` and how 
 
 ## Core interval arithmetic (`Interval`)
 
+`Interval` uses midpoint-radius internals to support fast affine interval propagation paths used by
+the PyTorch backend. The library targets **certified enclosures with good throughput**, not globally
+optimal/tightest interval boxes for every operation.
+
 ### Construction
 
 - `Interval(lower, upper)`
@@ -32,6 +36,8 @@ This document describes the public Python API exposed by `intervalnets` and how 
 ### Arithmetic operations
 
 - `+`, `-`, unary `-`, `*`, `/` are implemented with outward rounding.
+- In affine-heavy code paths (e.g. linear layers and Jacobian composition), interval propagation is
+  optimized around midpoint-radius matrix formulas (`A x_mid ± |A| x_rad`).
 - Scalar division by an interval containing `0` raises `ZeroDivisionError`.
 - Vector interval division is intentionally not implemented and raises `NotImplementedError`.
 
@@ -144,6 +150,10 @@ Layer derivatives currently implemented:
 - `nn.Flatten`
 
 For `nn.Sequential`, Jacobian enclosures are composed with interval matrix multiplication.
+
+Implementation note: Jacobian composition currently favors vectorized midpoint-radius interval matrix
+products for speed. This is conservative and efficient, but not necessarily the tightest enclosure
+that could be achieved with more expensive symbolic or optimization-based techniques.
 
 ## Minimal examples
 

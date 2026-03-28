@@ -11,11 +11,25 @@
    the preprint *Certified and accurate computation of function space norms of deep neural networks*
    (arXiv:2603.06431).
 
+## Design note: speed-oriented interval enclosures
+
+The current implementation uses a **midpoint-radius interval representation** and is explicitly
+optimized for repeated affine propagation of interval vectors through matrices:
+
+\[
+A x_{\text{mid}} \pm |A| x_{\text{rad}}.
+\]
+
+This design gives fast, vectorized propagation for neural network workloads (especially `nn.Linear`
+and Jacobian composition). The resulting boxes are **conservative enclosures**, but they are not
+always the tightest possible interval enclosure one could compute with more expensive methods.
+
 ## Highlights
 
 - interval construction and arithmetic operations use outward rounding to account for floating-point roundoff errors,
 - degenerate intervals `[x, x]` are supported,
 - interval propagation currently supports `nn.Sequential`, `nn.Flatten`, `nn.Linear`, `nn.ReLU`, `nn.Sigmoid`, `nn.Tanh`, `nn.Softplus`, `nn.LeakyReLU`, `nn.Softmax`, `nn.Identity`, plus `IntervalAdd`/`IntervalCat` branch combinators,
+- linear and Jacobian propagation are implemented with midpoint-radius matrix formulas for speed; this favors runtime performance over globally minimal box tightness,
 - `model.eval(interval)`, `model.eval_jacobian(...)`, `model.lpnorm(...)`, and `model.sobolev_norm(...)` are attached through a single opt-in monkey patch (`enable_interval_eval()`),
 - `model.lpnorm(domain, p, iterations, theta=0.5)` and
   `model.sobolev_norm(domain, p, iterations, theta=0.5)` use
