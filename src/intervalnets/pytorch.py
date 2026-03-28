@@ -341,39 +341,53 @@ def _lp_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval
     return total
 
 
-def _split_box(box: IntervalTensor) -> tuple[IntervalTensor, ...]:
-    """Split a box along up to two widest coordinates.
-
-    For higher-dimensional domains, splitting only one axis per iteration can
-    stall convergence because dependency inflation from untouched coordinates
-    dominates interval widths. Splitting along the two widest coordinates gives
-    a stronger reduction in multi-dimensional uncertainty while keeping growth
-    in child boxes manageable.
-    """
+def _select_split_dimension(model, box: IntervalTensor) -> int:
+    """Select one split direction using width-weighted Jacobian sensitivity."""
     widths = [float(upper - lower) for lower, upper in zip(box.lower, box.upper)]
     if not widths:
         raise ValueError("Cannot split an empty box.")
+    if len(widths) == 1:
+        return 0
 
-    split_dims = sorted(range(len(widths)), key=lambda idx: widths[idx], reverse=True)[: min(2, len(widths))]
-    children: list[tuple[list[float], list[float]]] = [([float(v) for v in box.lower], [float(v) for v in box.upper])]
+    try:
+        jacobian = model.eval_jacobian(box)
+        row_count = len(jacobian.lower)
+        sensitivities: list[float] = []
+        for col_idx in range(len(widths)):
+            sensitivity = 0.0
+            for row_idx in range(row_count):
+                entry_lower = float(jacobian.lower[row_idx][col_idx])
+                entry_upper = float(jacobian.upper[row_idx][col_idx])
+                sensitivity += max(abs(entry_lower), abs(entry_upper))
+            sensitivities.append(sensitivity)
 
-    for split_dim in split_dims:
-        refined_children: list[tuple[list[float], list[float]]] = []
-        for lower_bounds, upper_bounds in children:
-            midpoint = 0.5 * (lower_bounds[split_dim] + upper_bounds[split_dim])
+        scores = [width * sensitivity for width, sensitivity in zip(widths, sensitivities)]
+        if any(isfinite(score) and score > 0.0 for score in scores):
+            return max(range(len(scores)), key=lambda idx: (scores[idx], widths[idx]))
+    except Exception:
+        # Fall back to geometry-only splitting when Jacobian evaluation is unavailable.
+        pass
 
-            left_lower = list(lower_bounds)
-            left_upper = list(upper_bounds)
-            right_lower = list(lower_bounds)
-            right_upper = list(upper_bounds)
+    return max(range(len(widths)), key=lambda idx: widths[idx])
 
-            left_upper[split_dim] = midpoint
-            right_lower[split_dim] = midpoint
 
-            refined_children.extend([(left_lower, left_upper), (right_lower, right_upper)])
-        children = refined_children
+def _split_box(box: IntervalTensor, split_dim: int) -> tuple[IntervalTensor, IntervalTensor]:
+    """Split a box in a single chosen coordinate direction."""
+    if split_dim < 0 or split_dim >= len(box.lower):
+        raise ValueError(f"split_dim={split_dim} is out of bounds for box dimension {len(box.lower)}.")
 
-    return tuple(IntervalTensor.from_bounds(lower, upper) for lower, upper in children)
+    midpoint = 0.5 * (float(box.lower[split_dim]) + float(box.upper[split_dim]))
+    left_lower = [float(v) for v in box.lower]
+    left_upper = [float(v) for v in box.upper]
+    right_lower = [float(v) for v in box.lower]
+    right_upper = [float(v) for v in box.upper]
+
+    left_upper[split_dim] = midpoint
+    right_lower[split_dim] = midpoint
+    return (
+        IntervalTensor.from_bounds(left_lower, left_upper),
+        IntervalTensor.from_bounds(right_lower, right_upper),
+    )
 
 
 def _validate_dorfler_theta(theta: float) -> None:
@@ -425,7 +439,9 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
-                refined_boxes.extend(_split_box(box))
+                split_dim = _select_split_dimension(model, box)
+                left, right = _split_box(box, split_dim)
+                refined_boxes.extend([left, right])
             else:
                 refined_boxes.append(box)
         boxes = refined_boxes
@@ -629,7 +645,9 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
-                refined_boxes.extend(_split_box(box))
+                split_dim = _select_split_dimension(model, box)
+                left, right = _split_box(box, split_dim)
+                refined_boxes.extend([left, right])
             else:
                 refined_boxes.append(box)
         boxes = refined_boxes

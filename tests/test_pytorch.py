@@ -425,6 +425,22 @@ def test_lpnorm_refinement_tightens_interval_in_two_dimensions() -> None:
     assert (refined.upper - refined.lower) <= (coarse.upper - coarse.lower)
 
 
+def test_lpnorm_refinement_tightens_interval_in_three_dimensions() -> None:
+    enable_interval_eval()
+    torch.manual_seed(71)
+    model = nn.Sequential(nn.Linear(3, 12), nn.Tanh(), nn.Linear(12, 1))
+    for parameter in model.parameters():
+        nn.init.uniform_(parameter, a=-1.0, b=1.0)
+
+    domain = IntervalTensor.from_bounds([-1.0, -0.5, -0.25], [1.0, 1.5, 0.75])
+    coarse = model.lpnorm(domain, p=2.0, iterations=1)
+    refined = model.lpnorm(domain, p=2.0, iterations=6)
+
+    assert refined.lower >= coarse.lower
+    assert refined.upper <= coarse.upper
+    assert (refined.upper - refined.lower) <= (coarse.upper - coarse.lower)
+
+
 def test_eval_jacobian_linear_layer_matches_exact_weight_matrix() -> None:
     enable_interval_eval()
     layer = nn.Linear(2, 2)
@@ -543,6 +559,22 @@ def test_sobolev_norm_refinement_tightens_interval_in_two_dimensions() -> None:
     domain = IntervalTensor.from_bounds([-1.5, -1.0], [0.75, 2.0])
     coarse = model.sobolev_norm(domain, p=2.0, iterations=1)
     refined = model.sobolev_norm(domain, p=2.0, iterations=4)
+
+    assert refined.lower >= coarse.lower
+    assert refined.upper <= coarse.upper
+    assert (refined.upper - refined.lower) <= (coarse.upper - coarse.lower)
+
+
+def test_sobolev_norm_refinement_tightens_interval_in_three_dimensions() -> None:
+    enable_interval_eval()
+    torch.manual_seed(83)
+    model = nn.Sequential(nn.Linear(3, 10), nn.Tanh(), nn.Linear(10, 1))
+    for parameter in model.parameters():
+        nn.init.uniform_(parameter, a=-1.0, b=1.0)
+
+    domain = IntervalTensor.from_bounds([-1.5, -1.0, -0.5], [0.75, 2.0, 1.25])
+    coarse = model.sobolev_norm(domain, p=2.0, iterations=1)
+    refined = model.sobolev_norm(domain, p=2.0, iterations=5)
 
     assert refined.lower >= coarse.lower
     assert refined.upper <= coarse.upper
