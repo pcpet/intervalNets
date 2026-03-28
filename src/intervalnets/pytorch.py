@@ -341,23 +341,39 @@ def _lp_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval
     return total
 
 
-def _split_box(box: IntervalTensor) -> tuple[IntervalTensor, IntervalTensor]:
-    widths = [upper - lower for lower, upper in zip(box.lower, box.upper)]
-    split_dim = max(range(len(widths)), key=lambda idx: widths[idx])
-    midpoint = 0.5 * (box.lower[split_dim] + box.upper[split_dim])
+def _split_box(box: IntervalTensor) -> tuple[IntervalTensor, ...]:
+    """Split a box along up to two widest coordinates.
 
-    lower_left = list(box.lower)
-    upper_left = list(box.upper)
-    lower_right = list(box.lower)
-    upper_right = list(box.upper)
+    For higher-dimensional domains, splitting only one axis per iteration can
+    stall convergence because dependency inflation from untouched coordinates
+    dominates interval widths. Splitting along the two widest coordinates gives
+    a stronger reduction in multi-dimensional uncertainty while keeping growth
+    in child boxes manageable.
+    """
+    widths = [float(upper - lower) for lower, upper in zip(box.lower, box.upper)]
+    if not widths:
+        raise ValueError("Cannot split an empty box.")
 
-    upper_left[split_dim] = midpoint
-    lower_right[split_dim] = midpoint
+    split_dims = sorted(range(len(widths)), key=lambda idx: widths[idx], reverse=True)[: min(2, len(widths))]
+    children: list[tuple[list[float], list[float]]] = [([float(v) for v in box.lower], [float(v) for v in box.upper])]
 
-    return (
-        IntervalTensor.from_bounds(lower_left, upper_left),
-        IntervalTensor.from_bounds(lower_right, upper_right),
-    )
+    for split_dim in split_dims:
+        refined_children: list[tuple[list[float], list[float]]] = []
+        for lower_bounds, upper_bounds in children:
+            midpoint = 0.5 * (lower_bounds[split_dim] + upper_bounds[split_dim])
+
+            left_lower = list(lower_bounds)
+            left_upper = list(upper_bounds)
+            right_lower = list(lower_bounds)
+            right_upper = list(upper_bounds)
+
+            left_upper[split_dim] = midpoint
+            right_lower[split_dim] = midpoint
+
+            refined_children.extend([(left_lower, left_upper), (right_lower, right_upper)])
+        children = refined_children
+
+    return tuple(IntervalTensor.from_bounds(lower, upper) for lower, upper in children)
 
 
 def _validate_dorfler_theta(theta: float) -> None:
@@ -409,8 +425,7 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
-                left, right = _split_box(box)
-                refined_boxes.extend([left, right])
+                refined_boxes.extend(_split_box(box))
             else:
                 refined_boxes.append(box)
         boxes = refined_boxes
@@ -614,8 +629,7 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
             if idx in marked_indices:
-                left, right = _split_box(box)
-                refined_boxes.extend([left, right])
+                refined_boxes.extend(_split_box(box))
             else:
                 refined_boxes.append(box)
         boxes = refined_boxes
