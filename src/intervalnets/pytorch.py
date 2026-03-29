@@ -91,7 +91,24 @@ def _apply_monotone_bounds(x: IntervalTensor, func) -> IntervalTensor:
 
 
 def _relu_forward(layer, x: IntervalTensor) -> IntervalTensor:
-    return _apply_monotone_bounds(x, lambda value: max(0.0, value))
+    lower_out: list[float] = []
+    upper_out: list[float] = []
+    for lower, upper in zip(x.lower, x.upper):
+        lo = float(lower)
+        hi = float(upper)
+        if hi <= 0.0:
+            # ReLU([l, u]) is exactly [0, 0] on non-positive inputs.
+            lower_out.append(0.0)
+            upper_out.append(0.0)
+            continue
+        if lo >= 0.0:
+            lower_out.append(_pad_outward(lo, -inf, include_float32=True))
+            upper_out.append(_pad_outward(hi, inf, include_float32=True))
+            continue
+        # Crossing zero: lower bound is exactly 0, upper needs outward padding.
+        lower_out.append(0.0)
+        upper_out.append(_pad_outward(max(0.0, hi), inf, include_float32=True))
+    return IntervalTensor.from_bounds(tuple(lower_out), tuple(upper_out))
 
 
 def _sigmoid_scalar(value: float) -> float:
@@ -713,9 +730,10 @@ def _sobolev_pointwise_power_bounds(
     model,
     box: IntervalTensor,
     p: float,
+    output: IntervalTensor | None = None,
     jacobian: IntervalTensor | None = None,
 ) -> Interval:
-    output = model.eval(box)
+    output = output if output is not None else model.eval(box)
     jacobian = jacobian if jacobian is not None else model.eval_jacobian(box)
     total = Interval.point(0.0)
 
@@ -729,6 +747,25 @@ def _sobolev_pointwise_power_bounds(
             total = total + _interval_pow_scalar(_interval_abs_bounds(derivative_component), p)
 
     return total
+
+
+def _interval_tensor_is_exact_constant(interval: IntervalTensor) -> bool:
+    def _all_equal(lower, upper) -> bool:
+        if isinstance(lower, tuple) and isinstance(upper, tuple):
+            return len(lower) == len(upper) and all(_all_equal(lo, hi) for lo, hi in zip(lower, upper))
+        if isinstance(lower, tuple) or isinstance(upper, tuple):
+            return False
+        return float(lower) == float(upper)
+
+    return _all_equal(interval.lower, interval.upper)
+
+
+def _jacobian_is_exact_zero(jacobian: IntervalTensor) -> bool:
+    return all(
+        float(entry_lower) == 0.0 and float(entry_upper) == 0.0
+        for row_lower, row_upper in zip(jacobian.lower, jacobian.upper)
+        for entry_lower, entry_upper in zip(row_lower, row_upper)
+    )
 
 
 def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: int, theta: float) -> Interval:
@@ -748,10 +785,16 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
         indicators: list[float] = []
         split_dims: list[int] = []
         for box in boxes:
+            output = model.eval(box)
             jacobian = model.eval_jacobian(box)
-            integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p, jacobian=jacobian)
-            width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
-            indicators.append(width * _box_volume(box))
+            integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p, output=output, jacobian=jacobian)
+            if _interval_tensor_is_exact_constant(output) and _jacobian_is_exact_zero(jacobian):
+                # A rigorously constant box has zero Sobolev seminorm contribution,
+                # so further refinement is unnecessary for the derivative part.
+                indicators.append(0.0)
+            else:
+                width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
+                indicators.append(width * _box_volume(box))
             if use_jacobian_splitting:
                 split_dims.append(_choose_split_dim(box, jacobian))
             else:

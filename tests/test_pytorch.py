@@ -14,8 +14,8 @@ def test_relu_negative_interval_rounds_outward_to_zero() -> None:
 
     output = interval_forward(relu, interval)
 
-    assert all(lower < 0.0 for lower in output.lower)
-    assert all(upper > 0.0 for upper in output.upper)
+    assert all(lower == 0.0 for lower in output.lower)
+    assert all(upper == 0.0 for upper in output.upper)
 
 
 def test_relu_positive_interval_preserves_endpoint_images() -> None:
@@ -36,10 +36,20 @@ def test_relu_mixed_interval_clamps_only_the_lower_endpoint() -> None:
 
     output = interval_forward(relu, interval)
 
-    assert output.lower[0] < 0.0
+    assert output.lower[0] == 0.0
     assert output.upper[0] >= 4.0
-    assert output.lower[1] < 0.0
+    assert output.lower[1] == 0.0
     assert output.upper[1] >= 2.5
+
+
+def test_relu_zero_point_interval_remains_exact_zero() -> None:
+    relu = nn.ReLU()
+    interval = IntervalTensor.from_bounds([0.0], [0.0])
+
+    output = interval_forward(relu, interval)
+
+    assert output.lower[0] == 0.0
+    assert output.upper[0] == 0.0
 
 
 def test_relu_network_encloses_endpoint_evaluations() -> None:
