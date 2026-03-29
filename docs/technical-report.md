@@ -171,6 +171,7 @@ Core orchestration and helpers include:
 
 - `_scalar_interval_from_weight`: robustly encloses scalar coefficients, including explicit `torch.nextafter` for low-precision dtypes.
 - `_apply_monotone_bounds`: endpoint-only propagation for monotone activations.
+- `_relu_forward`: specialized ReLU propagation that preserves exact `[0, 0]` images on non-positive intervals.
 - `_interval_abs_bounds` and `_interval_pow_scalar`: scalar interval transformations used in integral bounds.
 - `_split_box`: adaptive refinement by bisecting widest coordinate.
 - Slope-aware helpers keep lower/upper affine forms in the input variables and concretize with outward rounding to preserve certified enclosure guarantees.
@@ -258,6 +259,7 @@ $
 - Optional PyTorch dependency is guarded (`try/except ImportError`) and validated via `_require_torch`.
 - Monkey patching is global (`nn.Module`), one-way for process lifetime, and guarded by `_PATCHED`.
 - Adaptive integration chooses the box with largest indicator `(integrand width) * (box volume)` for bisection.
+- Sobolev refinement avoids over-refining rigorously constant boxes by detecting exact-constant outputs paired with exact-zero Jacobian enclosures and assigning zero refinement indicators to those boxes.
 - Forward enclosure mode is configurable:
   - `"box"`: baseline midpoint-radius propagation.
   - `"slope"`: slope-aware affine relaxation for `nn.Sequential` chains of `nn.Linear` and `nn.ReLU`; when an unsupported layer appears, bounds are first concretized and propagation conservatively continues in `"box"` mode.

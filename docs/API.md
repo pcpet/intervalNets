@@ -103,6 +103,10 @@ Unsupported modules raise `NotImplementedError` with the offending module type.
 - `"box"` (default): midpoint-radius interval propagation throughout.
 - `"slope"`: slope-aware affine relaxation for `nn.Sequential` chains of `nn.Linear` and `nn.ReLU`; unsupported layers are conservatively concretized and then continued with `"box"` mode.
 
+ReLU-specific note:
+
+- For non-positive input intervals, ReLU images are kept exactly as `[0, 0]` (not artificially widened around zero).
+
 ## Branch combinators
 
 ### `IntervalAdd(left, right)`
@@ -132,6 +136,8 @@ Runs each branch on the same input interval and concatenates outputs.
 5. Repeat for `iterations` rounds.
 6. Accumulate interval integral bounds over the resulting partition.
 7. Clamp tiny negative roundoff artifacts to zero before taking the `1/p` power.
+
+Sobolev refinement additionally skips boxes that are rigorously constant with an exactly zero Jacobian enclosure, avoiding unnecessary subdivision of derivative-inactive regions.
 
 Important constraints:
 
@@ -180,7 +186,7 @@ print(a * b)   # outward-rounded enclosure of [1,2] * [3,3]
 from intervalnets import IntervalTensor, enable_interval_eval
 from torch import nn
 
-enable_interval_eval()
+enable_interval_eval(enclosure_mode="box")
 
 model = nn.Sequential(
     nn.Linear(2, 4),

@@ -29,13 +29,14 @@ always the tightest possible interval enclosure one could compute with more expe
 - interval construction and arithmetic operations use outward rounding to account for floating-point roundoff errors,
 - degenerate intervals `[x, x]` are supported,
 - interval propagation currently supports `nn.Sequential`, `nn.Flatten`, `nn.Linear`, `nn.ReLU`, `nn.Sigmoid`, `nn.Tanh`, `nn.Softplus`, `nn.LeakyReLU`, `nn.Softmax`, `nn.Identity`, plus `IntervalAdd`/`IntervalCat` branch combinators,
+- ReLU propagation preserves mathematically exact zero images (`[0, 0]`) for non-positive pre-activation intervals; only non-exact branches are outward-padded,
 - linear and Jacobian propagation are implemented with midpoint-radius matrix formulas for speed; this favors runtime performance over globally minimal box tightness,
 - `model.eval(interval)`, `model.eval_jacobian(...)`, `model.lpnorm(...)`, and `model.sobolev_norm(...)` are attached through a single opt-in monkey patch (`enable_interval_eval()`),
 - `enable_interval_eval(enclosure_mode="box")` accepts `"box"` (default midpoint-radius propagation) or `"slope"` (slope-aware affine relaxation for `nn.Sequential` chains of `nn.Linear` + `nn.ReLU`, with conservative fallback to `"box"` for unsupported layers),
 - `model.lpnorm(domain, p, iterations, theta=0.5)` and
   `model.sobolev_norm(domain, p, iterations, theta=0.5)` use
   Dörfler-type bulk marking (with uncertainty indicators) and adaptive
-  bisection to return outward-rounded certified norm enclosures.
+  bisection to return outward-rounded certified norm enclosures; rigorously constant boxes with zero Jacobian are skipped during Sobolev refinement.
 
 ## Quick start
 
