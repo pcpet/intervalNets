@@ -260,6 +260,136 @@ def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
     return IntervalTensor.from_bounds(tuple(float(value) for value in lower_tensor.tolist()), tuple(float(value) for value in upper_tensor.tolist()))
 
 
+def _concretize_affine_bounds(
+    lower_matrix: torch.Tensor,
+    lower_bias: torch.Tensor,
+    upper_matrix: torch.Tensor,
+    upper_bias: torch.Tensor,
+    input_box: IntervalTensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    x_mid = torch.tensor(input_box.midpoint, dtype=torch.float64)
+    x_rad = torch.tensor(input_box.radius, dtype=torch.float64)
+
+    lower_center = lower_matrix.matmul(x_mid) + lower_bias
+    lower_radius = lower_matrix.abs().matmul(x_rad)
+    upper_center = upper_matrix.matmul(x_mid) + upper_bias
+    upper_radius = upper_matrix.abs().matmul(x_rad)
+
+    lower = torch.nextafter(lower_center - lower_radius, torch.full_like(lower_center, float("-inf")))
+    upper = torch.nextafter(upper_center + upper_radius, torch.full_like(upper_center, float("inf")))
+    return lower, upper
+
+
+def _linear_relaxation_step(
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    lower_matrix: torch.Tensor,
+    lower_bias: torch.Tensor,
+    upper_matrix: torch.Tensor,
+    upper_bias: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    positive = (weight >= 0).to(torch.float64)
+    negative = (weight < 0).to(torch.float64)
+
+    next_lower_matrix = (positive * weight).matmul(lower_matrix) + (negative * weight).matmul(upper_matrix)
+    next_upper_matrix = (positive * weight).matmul(upper_matrix) + (negative * weight).matmul(lower_matrix)
+
+    next_lower_bias = (positive * weight).matmul(lower_bias) + (negative * weight).matmul(upper_bias) + bias
+    next_upper_bias = (positive * weight).matmul(upper_bias) + (negative * weight).matmul(lower_bias) + bias
+    return next_lower_matrix, next_lower_bias, next_upper_matrix, next_upper_bias
+
+
+def _relu_relaxation_step(
+    lower_matrix: torch.Tensor,
+    lower_bias: torch.Tensor,
+    upper_matrix: torch.Tensor,
+    upper_bias: torch.Tensor,
+    input_box: IntervalTensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    pre_lower, pre_upper = _concretize_affine_bounds(lower_matrix, lower_bias, upper_matrix, upper_bias, input_box)
+    size = pre_lower.numel()
+    next_lower_matrix = torch.zeros_like(lower_matrix)
+    next_lower_bias = torch.zeros_like(lower_bias)
+    next_upper_matrix = torch.zeros_like(upper_matrix)
+    next_upper_bias = torch.zeros_like(upper_bias)
+
+    for idx in range(size):
+        lower = float(pre_lower[idx].item())
+        upper = float(pre_upper[idx].item())
+
+        if upper <= 0.0:
+            continue
+
+        if lower >= 0.0:
+            next_lower_matrix[idx] = lower_matrix[idx]
+            next_lower_bias[idx] = lower_bias[idx]
+            next_upper_matrix[idx] = upper_matrix[idx]
+            next_upper_bias[idx] = upper_bias[idx]
+            continue
+
+        slope = upper / (upper - lower)
+        slope = min(1.0, max(0.0, slope))
+        intercept = -slope * lower
+        intercept = _pad_outward(intercept, inf, include_float32=True)
+
+        next_upper_matrix[idx] = slope * upper_matrix[idx]
+        next_upper_bias[idx] = slope * upper_bias[idx] + intercept
+        # Crossing neurons use the constant lower bound 0.0, which is a
+        # globally valid lower enclosure for ReLU.
+
+    return next_lower_matrix, next_lower_bias, next_upper_matrix, next_upper_bias
+
+
+def _sequential_linear_relu_relaxation(module: nn.Sequential, x: IntervalTensor) -> IntervalTensor:
+    if len(x.shape) != 1:
+        raise NotImplementedError("Slope-aware enclosure currently supports flat vectors only.")
+
+    input_dim = len(x.lower)
+    lower_matrix = torch.eye(input_dim, dtype=torch.float64)
+    upper_matrix = torch.eye(input_dim, dtype=torch.float64)
+    lower_bias = torch.zeros(input_dim, dtype=torch.float64)
+    upper_bias = torch.zeros(input_dim, dtype=torch.float64)
+
+    children = list(module.children())
+    for child_idx, child in enumerate(children):
+        if isinstance(child, nn.Linear):
+            weight = child.weight.detach().cpu().to(torch.float64)
+            bias = child.bias.detach().cpu().to(torch.float64) if child.bias is not None else torch.zeros(weight.shape[0], dtype=torch.float64)
+            lower_matrix, lower_bias, upper_matrix, upper_bias = _linear_relaxation_step(
+                weight,
+                bias,
+                lower_matrix,
+                lower_bias,
+                upper_matrix,
+                upper_bias,
+            )
+            continue
+
+        if isinstance(child, nn.ReLU):
+            lower_matrix, lower_bias, upper_matrix, upper_bias = _relu_relaxation_step(
+                lower_matrix,
+                lower_bias,
+                upper_matrix,
+                upper_bias,
+                x,
+            )
+            continue
+
+        lower, upper = _concretize_affine_bounds(lower_matrix, lower_bias, upper_matrix, upper_bias, x)
+        concretized = IntervalTensor.from_bounds(
+            tuple(float(value) for value in lower.tolist()),
+            tuple(float(value) for value in upper.tolist()),
+        )
+        remainder = nn.Sequential(*children[child_idx:])
+        return interval_forward(remainder, concretized, enclosure_mode="box")
+
+    lower, upper = _concretize_affine_bounds(lower_matrix, lower_bias, upper_matrix, upper_bias, x)
+    return IntervalTensor.from_bounds(
+        tuple(float(value) for value in lower.tolist()),
+        tuple(float(value) for value in upper.tolist()),
+    )
+
+
 def _interval_abs_bounds(value: Interval) -> Interval:
     if isinstance(value.lower, tuple) or isinstance(value.upper, tuple):
         raise ValueError("Expected a scalar interval.")
@@ -651,12 +781,16 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
     return _interval_pow_scalar(non_negative, exponent)
 
 
-def interval_forward(module, x: IntervalTensor) -> IntervalTensor:
+def interval_forward(module, x: IntervalTensor, enclosure_mode: str = "box") -> IntervalTensor:
     _require_torch()
+    if enclosure_mode not in {"box", "slope"}:
+        raise ValueError("enclosure_mode must be either 'box' or 'slope'.")
     if isinstance(module, nn.Sequential):
+        if enclosure_mode == "slope":
+            return _sequential_linear_relu_relaxation(module, x)
         result = x
         for child in module:
-            result = interval_forward(child, result)
+            result = interval_forward(child, result, enclosure_mode=enclosure_mode)
         return result
     if isinstance(module, nn.Flatten):
         return IntervalTensor(tuple(x.lower), tuple(x.upper))
@@ -677,11 +811,11 @@ def interval_forward(module, x: IntervalTensor) -> IntervalTensor:
     if isinstance(module, nn.Identity):
         return IntervalTensor(tuple(x.lower), tuple(x.upper))
     if isinstance(module, IntervalAdd):
-        left = interval_forward(module.left, x)
-        right = interval_forward(module.right, x)
+        left = interval_forward(module.left, x, enclosure_mode=enclosure_mode)
+        right = interval_forward(module.right, x, enclosure_mode=enclosure_mode)
         return _interval_add(left, right)
     if isinstance(module, IntervalCat):
-        parts = [interval_forward(branch, x) for branch in module.branches]
+        parts = [interval_forward(branch, x, enclosure_mode=enclosure_mode) for branch in module.branches]
         return _interval_cat(parts, module.dim)
     raise NotImplementedError(
         f"Interval forward currently supports nn.Sequential, nn.Flatten, nn.Linear, nn.ReLU, nn.Sigmoid, nn.Tanh, nn.Softplus, nn.LeakyReLU, nn.Softmax, nn.Identity, IntervalAdd, and IntervalCat only; got {type(module).__name__}."
@@ -692,9 +826,11 @@ _ORIGINAL_EVAL = getattr(nn.Module, "eval", None) if nn is not None else None
 _PATCHED = False
 
 
-def enable_interval_eval() -> None:
+def enable_interval_eval(enclosure_mode: str = "box") -> None:
     _require_torch()
     global _PATCHED
+    if enclosure_mode not in {"box", "slope"}:
+        raise ValueError("enclosure_mode must be either 'box' or 'slope'.")
     if _PATCHED:
         return
 
@@ -704,7 +840,7 @@ def enable_interval_eval() -> None:
             return result
         if not isinstance(interval, IntervalTensor):
             raise TypeError("model.eval(interval) requires an IntervalTensor input.")
-        return interval_forward(self, interval)
+        return interval_forward(self, interval, enclosure_mode=enclosure_mode)
 
     def lpnorm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.5):
         _ORIGINAL_EVAL(self)

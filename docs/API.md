@@ -6,8 +6,8 @@ This document describes the public Python API exposed by `intervalnets` and how 
 
 - `intervalnets.interval.Interval`: core immutable interval type with outward-rounded scalar/tuple arithmetic.
 - `intervalnets.pytorch.IntervalTensor`: interval type specialized for PyTorch interoperability.
-- `intervalnets.pytorch.enable_interval_eval()`: monkey patch that adds interval-aware methods onto `torch.nn.Module`.
-- `intervalnets.pytorch.interval_forward(module, x)`: interval propagation backend used by patched `model.eval(interval)`.
+- `intervalnets.pytorch.enable_interval_eval(enclosure_mode="box")`: monkey patch that adds interval-aware methods onto `torch.nn.Module`.
+- `intervalnets.pytorch.interval_forward(module, x, enclosure_mode="box")`: interval propagation backend used by patched `model.eval(interval)`.
 - `intervalnets.pytorch.IntervalAdd`, `intervalnets.pytorch.IntervalCat`: helper combinators for branched interval models.
 
 ## Core interval arithmetic (`Interval`)
@@ -61,7 +61,7 @@ Call once at startup:
 ```python
 from intervalnets import enable_interval_eval
 
-enable_interval_eval()
+enable_interval_eval(enclosure_mode="box")
 ```
 
 After this, every `torch.nn.Module` gets:
@@ -81,7 +81,7 @@ After this, every `torch.nn.Module` gets:
 
 ## Supported layers and modules for interval forward propagation
 
-`interval_forward(module, x)` currently supports:
+`interval_forward(module, x, enclosure_mode="box")` currently supports:
 
 - `nn.Sequential`
 - `nn.Flatten` (for flat vectors)
@@ -97,6 +97,11 @@ After this, every `torch.nn.Module` gets:
 - `IntervalCat` (flat vectors, concatenation along the only axis)
 
 Unsupported modules raise `NotImplementedError` with the offending module type.
+
+`enclosure_mode` options:
+
+- `"box"` (default): midpoint-radius interval propagation throughout.
+- `"slope"`: slope-aware affine relaxation for `nn.Sequential` chains of `nn.Linear` and `nn.ReLU`; unsupported layers are conservatively concretized and then continued with `"box"` mode.
 
 ## Branch combinators
 
