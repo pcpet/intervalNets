@@ -2,7 +2,7 @@
 
 `intervalNets` is a robust PyTorch-first toolkit focused on three core capabilities:
 
-1. an overloaded `model.eval(interval)` pathway (enabled via `enable_interval_eval()`) for interval
+1. an overloaded `model.eval(interval)` pathway (enabled via `enable_interval_eval(...)`) for interval
    propagation through neural networks with outward-rounded arithmetic, including roundoff-aware bounds;
 2. rigorous enclosure of Lebesgue/Lp norms over interval domains via `model.lpnorm(domain, p, iterations=...)`;
 3. interval Jacobian enclosure via `model.eval_jacobian(domain)` and Sobolev-style norms via
@@ -29,12 +29,15 @@ always the tightest possible interval enclosure one could compute with more expe
 - interval construction and arithmetic operations use outward rounding to account for floating-point roundoff errors,
 - degenerate intervals `[x, x]` are supported,
 - interval propagation currently supports `nn.Sequential`, `nn.Flatten`, `nn.Linear`, `nn.ReLU`, `nn.Sigmoid`, `nn.Tanh`, `nn.Softplus`, `nn.LeakyReLU`, `nn.Softmax`, `nn.Identity`, plus `IntervalAdd`/`IntervalCat` branch combinators,
+- ReLU propagation preserves mathematically exact zero images (`[0, 0]`) for non-positive pre-activation intervals; only non-exact branches are outward-padded,
 - linear and Jacobian propagation are implemented with midpoint-radius matrix formulas for speed; this favors runtime performance over globally minimal box tightness,
 - `model.eval(interval)`, `model.eval_jacobian(...)`, `model.lpnorm(...)`, and `model.sobolev_norm(...)` are attached through a single opt-in monkey patch (`enable_interval_eval()`),
+- `model.is_affine_on(domain)` can certify whether a `nn.Sequential` ReLU model stays inside a single affine piece on a given box,
+- `enable_interval_eval(enclosure_mode="box")` accepts `"box"` (default midpoint-radius propagation) or `"slope"` (slope-aware affine relaxation for `nn.Sequential` chains of `nn.Linear` + `nn.ReLU`, with conservative fallback to `"box"` for unsupported layers),
 - `model.lpnorm(domain, p, iterations, theta=0.5)` and
   `model.sobolev_norm(domain, p, iterations, theta=0.5)` use
   Dörfler-type bulk marking (with uncertainty indicators) and adaptive
-  bisection to return outward-rounded certified norm enclosures.
+  bisection to return outward-rounded certified norm enclosures; rigorously constant boxes with zero Jacobian are skipped during Sobolev refinement.
 
 ## Quick start
 
@@ -56,11 +59,14 @@ Then you can import it normally:
 from intervalnets import IntervalTensor, enable_interval_eval
 from torch import nn
 
-enable_interval_eval()
+enable_interval_eval(enclosure_mode="box")
 
 model = nn.Sequential(nn.Linear(2, 1))
 interval = IntervalTensor.from_bounds([1.0, 2.0], [1.5, 2.5])
 output = model.eval(interval)
+
+# optional tighter forward enclosures for Linear+ReLU chains
+enable_interval_eval(enclosure_mode="slope")
 
 domain = IntervalTensor.from_bounds([0.0, 0.0], [1.0, 1.0])
 lp_bounds = model.lpnorm(domain, p=2.0, iterations=8)
