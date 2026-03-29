@@ -644,8 +644,17 @@ def _matrix_multiply(left: list[list[Interval]], right: list[list[Interval]]) ->
         + left_rad.matmul(right_rad)
     )
 
-    lower = torch.nextafter(output_mid - output_rad, torch.full_like(output_mid, float("-inf")))
-    upper = torch.nextafter(output_mid + output_rad, torch.full_like(output_mid, float("inf")))
+    lower_raw = output_mid - output_rad
+    upper_raw = output_mid + output_rad
+    lower = torch.nextafter(lower_raw, torch.full_like(output_mid, float("-inf")))
+    upper = torch.nextafter(upper_raw, torch.full_like(output_mid, float("inf")))
+
+    # Preserve mathematically exact zeros. In particular, products involving an
+    # exact zero interval should remain [0, 0] rather than being widened to a
+    # tiny outward-rounded enclosure around zero.
+    exact_zero_mask = (output_mid == 0.0) & (output_rad == 0.0)
+    lower = torch.where(exact_zero_mask, torch.zeros_like(lower), lower)
+    upper = torch.where(exact_zero_mask, torch.zeros_like(upper), upper)
     lower_rows = lower.tolist()
     upper_rows = upper.tolist()
     return [

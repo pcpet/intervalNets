@@ -522,6 +522,22 @@ def test_eval_jacobian_sequential_encloses_corner_gradients() -> None:
     assert jacobian.upper[0][0] >= max(slopes)
 
 
+def test_eval_jacobian_dead_relu_path_stays_exact_zero() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1), nn.ReLU(), nn.Linear(1, 1))
+    with torch.no_grad():
+        model[0].weight.fill_(1.0)
+        model[0].bias.fill_(-2.0)
+        model[2].weight.fill_(3.0)
+        model[2].bias.zero_()
+
+    domain = IntervalTensor.from_bounds([0.0], [1.0])
+    jacobian = model.eval_jacobian(domain)
+
+    assert jacobian.lower[0][0] == 0.0
+    assert jacobian.upper[0][0] == 0.0
+
+
 def test_sobolev_norm_constant_network_matches_closed_form() -> None:
     enable_interval_eval()
     model = nn.Sequential(nn.Linear(1, 1))
