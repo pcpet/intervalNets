@@ -541,15 +541,30 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
         indicators: list[float] = []
         split_dims: list[int] = []
         for box in boxes:
+            affine_on_box = False
+            try:
+                affine_on_box = _is_affine_on_box(model, box)
+            except (NotImplementedError, TypeError):
+                affine_on_box = False
+
             integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
-            width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
-            indicators.append(width * _box_volume(box))
-            if use_jacobian_splitting:
+            if affine_on_box:
+                # On a certified affine ReLU piece we currently keep the box unsplit.
+                # This preserves validity while prioritizing speed until an exact affine-piece
+                # integral path is introduced.
+                indicators.append(0.0)
+            else:
+                width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
+                indicators.append(width * _box_volume(box))
+
+            if use_jacobian_splitting and not affine_on_box:
                 jacobian = model.eval_jacobian(box)
                 split_dims.append(_choose_split_dim(box, jacobian))
             else:
                 split_dims.append(_choose_split_dim(box, None))
 
+        if all(indicator <= 0.0 for indicator in indicators):
+            break
         marked_indices = set(_dorfler_marking(indicators, theta))
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):
@@ -785,10 +800,21 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
         indicators: list[float] = []
         split_dims: list[int] = []
         for box in boxes:
+            affine_on_box = False
+            try:
+                affine_on_box = _is_affine_on_box(model, box)
+            except (NotImplementedError, TypeError):
+                affine_on_box = False
+
             output = model.eval(box)
             jacobian = model.eval_jacobian(box)
             integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p, output=output, jacobian=jacobian)
-            if _interval_tensor_is_exact_constant(output) and _jacobian_is_exact_zero(jacobian):
+            if affine_on_box:
+                # On a certified affine ReLU piece we currently keep the box unsplit.
+                # This preserves validity while prioritizing speed until an exact affine-piece
+                # integral path is introduced.
+                indicators.append(0.0)
+            elif _interval_tensor_is_exact_constant(output) and _jacobian_is_exact_zero(jacobian):
                 # A rigorously constant box has zero Sobolev seminorm contribution,
                 # so further refinement is unnecessary for the derivative part.
                 indicators.append(0.0)
@@ -800,6 +826,8 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
             else:
                 split_dims.append(_choose_split_dim(box, None))
 
+        if all(indicator <= 0.0 for indicator in indicators):
+            break
         marked_indices = set(_dorfler_marking(indicators, theta))
         refined_boxes: list[IntervalTensor] = []
         for idx, box in enumerate(boxes):

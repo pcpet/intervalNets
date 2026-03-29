@@ -175,6 +175,7 @@ Core orchestration and helpers include:
 - `_interval_abs_bounds` and `_interval_pow_scalar`: scalar interval transformations used in integral bounds.
 - `_split_box`: adaptive refinement by bisecting widest coordinate.
 - Slope-aware helpers keep lower/upper affine forms in the input variables and concretize with outward rounding to preserve certified enclosure guarantees.
+- `_lpnorm_bounds` / `_sobolev_norm_bounds`: during adaptive refinement, boxes certified as single affine ReLU pieces by `_is_affine_on_box` are currently kept unsplit (speed-focused shortcut; enclosure validity remains unchanged).
 
 #### Important imports and dependencies
 

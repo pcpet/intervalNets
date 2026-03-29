@@ -150,6 +150,40 @@ def test_is_affine_on_detects_crossing_relu_pattern() -> None:
     assert model.is_affine_on(domain) is False
 
 
+def test_lpnorm_affine_piece_shortcut_skips_refinement() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 2), nn.ReLU(), nn.Linear(2, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.0], [2.0]]))
+        model[0].bias.copy_(torch.tensor([10.0, 10.0]))
+        model[2].weight.copy_(torch.tensor([[1.5, -0.5]]))
+        model[2].bias.copy_(torch.tensor([0.25]))
+
+    domain = IntervalTensor.from_bounds([0.0], [1.0])
+    coarse = model.lpnorm(domain, p=2.0, iterations=0)
+    refined = model.lpnorm(domain, p=2.0, iterations=4)
+
+    assert coarse.lower == refined.lower
+    assert coarse.upper == refined.upper
+
+
+def test_sobolev_affine_piece_shortcut_skips_refinement() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 2), nn.ReLU(), nn.Linear(2, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.0], [2.0]]))
+        model[0].bias.copy_(torch.tensor([10.0, 10.0]))
+        model[2].weight.copy_(torch.tensor([[1.5, -0.5]]))
+        model[2].bias.copy_(torch.tensor([0.25]))
+
+    domain = IntervalTensor.from_bounds([0.0], [1.0])
+    coarse = model.sobolev_norm(domain, p=2.0, iterations=0)
+    refined = model.sobolev_norm(domain, p=2.0, iterations=4)
+
+    assert coarse.lower == refined.lower
+    assert coarse.upper == refined.upper
+
+
 def test_linear_interval_matches_expected_affine_bounds() -> None:
     layer = nn.Linear(2, 1)
     with torch.no_grad():

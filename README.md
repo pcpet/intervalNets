@@ -37,7 +37,9 @@ always the tightest possible interval enclosure one could compute with more expe
 - `model.lpnorm(domain, p, iterations, theta=0.5)` and
   `model.sobolev_norm(domain, p, iterations, theta=0.5)` use
   Dörfler-type bulk marking (with uncertainty indicators) and adaptive
-  bisection to return outward-rounded certified norm enclosures; rigorously constant boxes with zero Jacobian are skipped during Sobolev refinement.
+  bisection to return outward-rounded certified norm enclosures; boxes certified by
+  `model.is_affine_on(...)` are kept unsplit during refinement (speed-focused shortcut),
+  and rigorously constant boxes with zero Jacobian are skipped during Sobolev refinement.
 
 ## Quick start
 
