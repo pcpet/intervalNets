@@ -72,12 +72,12 @@ After this, every `torch.nn.Module` gets:
   - Interval forward propagation.
 - `model.lpnorm(domain: IntervalTensor, p: float, iterations: int = 0)`
   - Outward-rounded enclosure of the model `L^p` norm on a box domain.
-  - During adaptive refinement, boxes certified by `model.is_affine_on(...)` are not bisected further (speed-focused shortcut).
+  - For supported 1D affine pieces (`nn.Sequential` with `nn.Linear`/`nn.ReLU`), integral contributions are computed via affine quadrature with quantified floating-point error inflation.
 - `model.eval_jacobian(domain: IntervalTensor)`
   - Interval enclosure of Jacobian matrix entries over the domain.
 - `model.sobolev_norm(domain: IntervalTensor, p: float, iterations: int = 0)`
   - Enclosure of a first-order Sobolev-style norm (`|f|^p + |Df|^p`) over the domain.
-  - During adaptive refinement, boxes certified by `model.is_affine_on(...)` are not bisected further (speed-focused shortcut).
+  - For supported 1D affine pieces (`nn.Sequential` with `nn.Linear`/`nn.ReLU`), integral contributions are computed via affine quadrature with quantified floating-point error inflation.
 - `model.is_affine_on(domain: IntervalTensor)`
   - Returns `True` iff a supported `nn.Sequential` ReLU model is certified to stay in one affine piece over the box (no ReLU sign crossings).
 

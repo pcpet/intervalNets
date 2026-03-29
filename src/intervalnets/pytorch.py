@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from math import exp, inf, isfinite, log, nextafter, tanh
+from math import copysign, exp, inf, isfinite, log, nextafter, tanh
 from typing import Any
 
 from .interval import Interval
@@ -541,19 +541,18 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
         indicators: list[float] = []
         split_dims: list[int] = []
         for box in boxes:
+            affine_integral_bounds = _affine_lp_integral_bounds_if_available(model, box, p)
             affine_on_box = False
             try:
                 affine_on_box = _is_affine_on_box(model, box)
             except (NotImplementedError, TypeError):
                 affine_on_box = False
 
-            integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
-            if affine_on_box:
-                # On a certified affine ReLU piece we currently keep the box unsplit.
-                # This preserves validity while prioritizing speed until an exact affine-piece
-                # integral path is introduced.
-                indicators.append(0.0)
+            if affine_integral_bounds is not None:
+                width = float(affine_integral_bounds.upper) - float(affine_integral_bounds.lower)
+                indicators.append(width)
             else:
+                integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
                 width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
                 indicators.append(width * _box_volume(box))
 
@@ -577,11 +576,15 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
 
     integral = Interval.point(0.0)
     for box in boxes:
-        integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
-        weighted = Interval.from_bounds(
-            float(integrand_bounds.lower) * _box_volume(box),
-            float(integrand_bounds.upper) * _box_volume(box),
-        )
+        affine_integral_bounds = _affine_lp_integral_bounds_if_available(model, box, p)
+        if affine_integral_bounds is not None:
+            weighted = affine_integral_bounds
+        else:
+            integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
+            weighted = Interval.from_bounds(
+                float(integrand_bounds.lower) * _box_volume(box),
+                float(integrand_bounds.upper) * _box_volume(box),
+            )
         integral = integral + weighted
 
     non_negative = Interval.from_bounds(max(0.0, float(integral.lower)), max(0.0, float(integral.upper)))
@@ -800,29 +803,33 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
         indicators: list[float] = []
         split_dims: list[int] = []
         for box in boxes:
+            affine_integral_bounds = _affine_sobolev_integral_bounds_if_available(model, box, p)
             affine_on_box = False
             try:
                 affine_on_box = _is_affine_on_box(model, box)
             except (NotImplementedError, TypeError):
                 affine_on_box = False
 
-            output = model.eval(box)
-            jacobian = model.eval_jacobian(box)
-            integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p, output=output, jacobian=jacobian)
-            if affine_on_box:
-                # On a certified affine ReLU piece we currently keep the box unsplit.
-                # This preserves validity while prioritizing speed until an exact affine-piece
-                # integral path is introduced.
-                indicators.append(0.0)
-            elif _interval_tensor_is_exact_constant(output) and _jacobian_is_exact_zero(jacobian):
-                # A rigorously constant box has zero Sobolev seminorm contribution,
-                # so further refinement is unnecessary for the derivative part.
-                indicators.append(0.0)
+            if affine_integral_bounds is not None:
+                width = float(affine_integral_bounds.upper) - float(affine_integral_bounds.lower)
+                indicators.append(width)
             else:
-                width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
-                indicators.append(width * _box_volume(box))
+                output = model.eval(box)
+                jacobian = model.eval_jacobian(box)
+                integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p, output=output, jacobian=jacobian)
+                if _interval_tensor_is_exact_constant(output) and _jacobian_is_exact_zero(jacobian):
+                    # A rigorously constant box has zero Sobolev seminorm contribution,
+                    # so further refinement is unnecessary for the derivative part.
+                    indicators.append(0.0)
+                else:
+                    width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
+                    indicators.append(width * _box_volume(box))
             if use_jacobian_splitting:
-                split_dims.append(_choose_split_dim(box, jacobian))
+                if affine_on_box and affine_integral_bounds is not None:
+                    split_dims.append(_choose_split_dim(box, None))
+                else:
+                    jacobian = model.eval_jacobian(box)
+                    split_dims.append(_choose_split_dim(box, jacobian))
             else:
                 split_dims.append(_choose_split_dim(box, None))
 
@@ -840,11 +847,15 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
 
     integral = Interval.point(0.0)
     for box in boxes:
-        integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p)
-        weighted = Interval.from_bounds(
-            float(integrand_bounds.lower) * _box_volume(box),
-            float(integrand_bounds.upper) * _box_volume(box),
-        )
+        affine_integral_bounds = _affine_sobolev_integral_bounds_if_available(model, box, p)
+        if affine_integral_bounds is not None:
+            weighted = affine_integral_bounds
+        else:
+            integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p)
+            weighted = Interval.from_bounds(
+                float(integrand_bounds.lower) * _box_volume(box),
+                float(integrand_bounds.upper) * _box_volume(box),
+            )
         integral = integral + weighted
 
     non_negative = Interval.from_bounds(max(0.0, float(integral.lower)), max(0.0, float(integral.upper)))
@@ -871,6 +882,112 @@ def _is_affine_on_box(module, domain: IntervalTensor) -> bool:
             continue
         current = interval_forward(child, current, enclosure_mode="box")
     return True
+
+
+def _extract_affine_map_1d(module, domain: IntervalTensor) -> tuple[list[float], list[float]] | None:
+    if len(domain.shape) != 1 or len(domain.lower) != 1:
+        return None
+    if not isinstance(module, nn.Sequential):
+        return None
+
+    coeffs = [1.0]
+    offsets = [0.0]
+    x_lower = float(domain.lower[0])
+    x_upper = float(domain.upper[0])
+
+    for child in module:
+        if isinstance(child, nn.Linear):
+            weight = child.weight.detach().cpu().to(torch.float64)
+            bias = child.bias.detach().cpu().to(torch.float64) if child.bias is not None else torch.zeros(weight.shape[0], dtype=torch.float64)
+            next_coeffs: list[float] = []
+            next_offsets: list[float] = []
+            for row_idx in range(weight.shape[0]):
+                row = weight[row_idx]
+                new_coeff = 0.0
+                new_offset = float(bias[row_idx].item())
+                for col_idx, w in enumerate(row.tolist()):
+                    new_coeff += float(w) * coeffs[col_idx]
+                    new_offset += float(w) * offsets[col_idx]
+                next_coeffs.append(new_coeff)
+                next_offsets.append(new_offset)
+            coeffs, offsets = next_coeffs, next_offsets
+            continue
+        if isinstance(child, nn.ReLU):
+            for idx in range(len(coeffs)):
+                lo = coeffs[idx] * x_lower + offsets[idx]
+                hi = coeffs[idx] * x_upper + offsets[idx]
+                lower = min(lo, hi)
+                upper = max(lo, hi)
+                if upper <= 0.0:
+                    coeffs[idx] = 0.0
+                    offsets[idx] = 0.0
+                elif lower >= 0.0:
+                    continue
+                else:
+                    return None
+            continue
+        return None
+    return coeffs, offsets
+
+
+def _signed_abs_primitive(value: float, exponent: float) -> float:
+    return copysign(abs(value) ** exponent, value)
+
+
+def _integral_abs_affine_power_1d(lower: float, upper: float, a: float, b: float, p: float) -> float:
+    if a == 0.0:
+        return abs(b) ** p * (upper - lower)
+    t_lower = a * lower + b
+    t_upper = a * upper + b
+    primitive_lower = _signed_abs_primitive(t_lower, p + 1.0) / (p + 1.0)
+    primitive_upper = _signed_abs_primitive(t_upper, p + 1.0) / (p + 1.0)
+    return (primitive_upper - primitive_lower) / a
+
+
+def _quantified_scalar_error_interval(value: float, scale: float, terms: int = 32) -> Interval:
+    eps = 2.220446049250313e-16
+    error = terms * eps * max(1.0, abs(scale))
+    lower = _pad_outward(value - error, -inf, include_float32=True)
+    upper = _pad_outward(value + error, inf, include_float32=True)
+    return Interval.from_bounds(lower, upper)
+
+
+def _affine_lp_integral_bounds_if_available(model, box: IntervalTensor, p: float) -> Interval | None:
+    affine_map = _extract_affine_map_1d(model, box)
+    if affine_map is None:
+        return None
+    coeffs, offsets = affine_map
+    x_lower = float(box.lower[0])
+    x_upper = float(box.upper[0])
+    total = 0.0
+    scale = 0.0
+    for a, b in zip(coeffs, offsets):
+        component = _integral_abs_affine_power_1d(x_lower, x_upper, a, b, p)
+        total += component
+        scale += abs(component)
+    return _quantified_scalar_error_interval(total, scale, terms=96)
+
+
+def _affine_sobolev_integral_bounds_if_available(model, box: IntervalTensor, p: float) -> Interval | None:
+    affine_map = _extract_affine_map_1d(model, box)
+    if affine_map is None:
+        return None
+    coeffs, offsets = affine_map
+    x_lower = float(box.lower[0])
+    x_upper = float(box.upper[0])
+    span = x_upper - x_lower
+
+    output_total = 0.0
+    output_scale = 0.0
+    for a, b in zip(coeffs, offsets):
+        component = _integral_abs_affine_power_1d(x_lower, x_upper, a, b, p)
+        output_total += component
+        output_scale += abs(component)
+
+    derivative_total = sum(abs(a) ** p for a in coeffs) * span
+    total = output_total + derivative_total
+    scale = output_scale + abs(derivative_total)
+    return _quantified_scalar_error_interval(total, scale, terms=128)
 
 
 def interval_forward(module, x: IntervalTensor, enclosure_mode: str = "box") -> IntervalTensor:

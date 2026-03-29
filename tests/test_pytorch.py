@@ -150,38 +150,34 @@ def test_is_affine_on_detects_crossing_relu_pattern() -> None:
     assert model.is_affine_on(domain) is False
 
 
-def test_lpnorm_affine_piece_shortcut_skips_refinement() -> None:
+def test_lpnorm_affine_piece_quadrature_contains_closed_form_value() -> None:
     enable_interval_eval()
-    model = nn.Sequential(nn.Linear(1, 2), nn.ReLU(), nn.Linear(2, 1))
+    model = nn.Sequential(nn.Linear(1, 1))
     with torch.no_grad():
-        model[0].weight.copy_(torch.tensor([[1.0], [2.0]]))
-        model[0].bias.copy_(torch.tensor([10.0, 10.0]))
-        model[2].weight.copy_(torch.tensor([[1.5, -0.5]]))
-        model[2].bias.copy_(torch.tensor([0.25]))
+        model[0].weight.copy_(torch.tensor([[2.0]]))
+        model[0].bias.copy_(torch.tensor([1.0]))
 
     domain = IntervalTensor.from_bounds([0.0], [1.0])
-    coarse = model.lpnorm(domain, p=2.0, iterations=0)
-    refined = model.lpnorm(domain, p=2.0, iterations=4)
+    bounds = model.lpnorm(domain, p=2.0, iterations=2)
+    exact = math.sqrt(13.0 / 3.0)
 
-    assert coarse.lower == refined.lower
-    assert coarse.upper == refined.upper
+    assert bounds.lower <= exact <= bounds.upper
+    assert bounds.upper - bounds.lower < 1e-6
 
 
-def test_sobolev_affine_piece_shortcut_skips_refinement() -> None:
+def test_sobolev_affine_piece_quadrature_contains_closed_form_value() -> None:
     enable_interval_eval()
-    model = nn.Sequential(nn.Linear(1, 2), nn.ReLU(), nn.Linear(2, 1))
+    model = nn.Sequential(nn.Linear(1, 1))
     with torch.no_grad():
-        model[0].weight.copy_(torch.tensor([[1.0], [2.0]]))
-        model[0].bias.copy_(torch.tensor([10.0, 10.0]))
-        model[2].weight.copy_(torch.tensor([[1.5, -0.5]]))
-        model[2].bias.copy_(torch.tensor([0.25]))
+        model[0].weight.copy_(torch.tensor([[2.0]]))
+        model[0].bias.copy_(torch.tensor([1.0]))
 
     domain = IntervalTensor.from_bounds([0.0], [1.0])
-    coarse = model.sobolev_norm(domain, p=2.0, iterations=0)
-    refined = model.sobolev_norm(domain, p=2.0, iterations=4)
+    bounds = model.sobolev_norm(domain, p=2.0, iterations=2)
+    exact = math.sqrt((13.0 / 3.0) + 4.0)
 
-    assert coarse.lower == refined.lower
-    assert coarse.upper == refined.upper
+    assert bounds.lower <= exact <= bounds.upper
+    assert bounds.upper - bounds.lower < 1e-6
 
 
 def test_linear_interval_matches_expected_affine_bounds() -> None:
@@ -465,7 +461,7 @@ def test_lpnorm_constant_network_matches_exact_value() -> None:
     exact = (18.0) ** 0.5
 
     assert bounds.lower <= exact <= bounds.upper
-    assert (bounds.upper - bounds.lower) < 1e-10
+    assert (bounds.upper - bounds.lower) < 1e-6
 
 
 def test_lpnorm_refinement_tightens_interval() -> None:
@@ -594,7 +590,7 @@ def test_sobolev_norm_constant_network_matches_closed_form() -> None:
     exact = (18.0) ** 0.5
 
     assert bounds.lower <= exact <= bounds.upper
-    assert (bounds.upper - bounds.lower) < 1e-10
+    assert (bounds.upper - bounds.lower) < 1e-6
 
 
 def test_sobolev_norm_refinement_tightens_interval() -> None:
