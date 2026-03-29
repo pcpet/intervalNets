@@ -6,8 +6,8 @@ This document describes the public Python API exposed by `intervalnets` and how 
 
 - `intervalnets.interval.Interval`: core immutable interval type with outward-rounded scalar/tuple arithmetic.
 - `intervalnets.pytorch.IntervalTensor`: interval type specialized for PyTorch interoperability.
-- `intervalnets.pytorch.enable_interval_eval()`: monkey patch that adds interval-aware methods onto `torch.nn.Module`.
-- `intervalnets.pytorch.interval_forward(module, x)`: interval propagation backend used by patched `model.eval(interval)`.
+- `intervalnets.pytorch.enable_interval_eval(enclosure_mode="box")`: monkey patch that adds interval-aware methods onto `torch.nn.Module`.
+- `intervalnets.pytorch.interval_forward(module, x, enclosure_mode="box")`: interval propagation backend used by patched `model.eval(interval)`.
 - `intervalnets.pytorch.IntervalAdd`, `intervalnets.pytorch.IntervalCat`: helper combinators for branched interval models.
 
 ## Core interval arithmetic (`Interval`)
@@ -61,7 +61,7 @@ Call once at startup:
 ```python
 from intervalnets import enable_interval_eval
 
-enable_interval_eval()
+enable_interval_eval(enclosure_mode="box")
 ```
 
 After this, every `torch.nn.Module` gets:
@@ -81,7 +81,7 @@ After this, every `torch.nn.Module` gets:
 
 ## Supported layers and modules for interval forward propagation
 
-`interval_forward(module, x)` currently supports:
+`interval_forward(module, x, enclosure_mode="box")` currently supports:
 
 - `nn.Sequential`
 - `nn.Flatten` (for flat vectors)
@@ -97,6 +97,15 @@ After this, every `torch.nn.Module` gets:
 - `IntervalCat` (flat vectors, concatenation along the only axis)
 
 Unsupported modules raise `NotImplementedError` with the offending module type.
+
+`enclosure_mode` options:
+
+- `"box"` (default): midpoint-radius interval propagation throughout.
+- `"slope"`: slope-aware affine relaxation for `nn.Sequential` chains of `nn.Linear` and `nn.ReLU`; unsupported layers are conservatively concretized and then continued with `"box"` mode.
+
+ReLU-specific note:
+
+- For non-positive input intervals, ReLU images are kept exactly as `[0, 0]` (not artificially widened around zero).
 
 ## Branch combinators
 
@@ -127,6 +136,8 @@ Runs each branch on the same input interval and concatenates outputs.
 5. Repeat for `iterations` rounds.
 6. Accumulate interval integral bounds over the resulting partition.
 7. Clamp tiny negative roundoff artifacts to zero before taking the `1/p` power.
+
+Sobolev refinement additionally skips boxes that are rigorously constant with an exactly zero Jacobian enclosure, avoiding unnecessary subdivision of derivative-inactive regions.
 
 Important constraints:
 
@@ -175,7 +186,7 @@ print(a * b)   # outward-rounded enclosure of [1,2] * [3,3]
 from intervalnets import IntervalTensor, enable_interval_eval
 from torch import nn
 
-enable_interval_eval()
+enable_interval_eval(enclosure_mode="box")
 
 model = nn.Sequential(
     nn.Linear(2, 4),

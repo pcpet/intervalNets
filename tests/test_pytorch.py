@@ -14,8 +14,8 @@ def test_relu_negative_interval_rounds_outward_to_zero() -> None:
 
     output = interval_forward(relu, interval)
 
-    assert all(lower < 0.0 for lower in output.lower)
-    assert all(upper > 0.0 for upper in output.upper)
+    assert all(lower == 0.0 for lower in output.lower)
+    assert all(upper == 0.0 for upper in output.upper)
 
 
 def test_relu_positive_interval_preserves_endpoint_images() -> None:
@@ -36,10 +36,20 @@ def test_relu_mixed_interval_clamps_only_the_lower_endpoint() -> None:
 
     output = interval_forward(relu, interval)
 
-    assert output.lower[0] < 0.0
+    assert output.lower[0] == 0.0
     assert output.upper[0] >= 4.0
-    assert output.lower[1] < 0.0
+    assert output.lower[1] == 0.0
     assert output.upper[1] >= 2.5
+
+
+def test_relu_zero_point_interval_remains_exact_zero() -> None:
+    relu = nn.ReLU()
+    interval = IntervalTensor.from_bounds([0.0], [0.0])
+
+    output = interval_forward(relu, interval)
+
+    assert output.lower[0] == 0.0
+    assert output.upper[0] == 0.0
 
 
 def test_relu_network_encloses_endpoint_evaluations() -> None:
@@ -62,6 +72,56 @@ def test_relu_network_encloses_endpoint_evaluations() -> None:
 
     assert output.lower[0] <= min(candidates)
     assert output.upper[0] >= max(candidates)
+
+
+def test_slope_enclosure_tightens_relu_dependency_example() -> None:
+    model = nn.Sequential(nn.Linear(1, 2), nn.ReLU(), nn.Linear(2, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.0], [-1.0]]))
+        model[0].bias.copy_(torch.tensor([0.0, 0.0]))
+        model[2].weight.copy_(torch.tensor([[1.0, 1.0]]))
+        model[2].bias.copy_(torch.tensor([0.0]))
+
+    interval = IntervalTensor.from_bounds([-1.0], [1.0])
+    box_bounds = interval_forward(model, interval, enclosure_mode="box")
+    slope_bounds = interval_forward(model, interval, enclosure_mode="slope")
+
+    assert slope_bounds.lower[0] >= box_bounds.lower[0]
+    assert slope_bounds.upper[0] <= box_bounds.upper[0]
+    assert slope_bounds.upper[0] <= 1.0 + 1e-6
+
+
+def test_slope_enclosure_remains_valid_on_sampled_points() -> None:
+    torch.manual_seed(11)
+    model = nn.Sequential(nn.Linear(2, 6), nn.ReLU(), nn.Linear(6, 1))
+    with torch.no_grad():
+        for parameter in model.parameters():
+            nn.init.uniform_(parameter, a=-1.0, b=1.0)
+
+    interval = IntervalTensor.from_bounds([-1.0, -0.5], [1.0, 1.5])
+    slope_bounds = interval_forward(model, interval, enclosure_mode="slope")
+
+    samples = torch.rand(5000, 2, dtype=torch.float64)
+    samples[:, 0] = 2.0 * samples[:, 0] - 1.0
+    samples[:, 1] = 2.0 * samples[:, 1] - 0.5
+    values = model(samples.to(dtype=torch.float32)).to(dtype=torch.float64).squeeze(-1)
+
+    assert float(values.min().item()) >= slope_bounds.lower[0]
+    assert float(values.max().item()) <= slope_bounds.upper[0]
+
+
+def test_enable_interval_eval_accepts_slope_mode() -> None:
+    enable_interval_eval(enclosure_mode="slope")
+    model = nn.Sequential(nn.Linear(1, 2), nn.ReLU(), nn.Linear(2, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.0], [-1.0]]))
+        model[0].bias.copy_(torch.tensor([0.0, 0.0]))
+        model[2].weight.copy_(torch.tensor([[1.0, 1.0]]))
+        model[2].bias.copy_(torch.tensor([0.0]))
+
+    interval = IntervalTensor.from_bounds([-1.0], [1.0])
+    result = model.eval(interval)
+    assert result.upper[0] <= 1.0 + 1e-6
 
 
 def test_linear_interval_matches_expected_affine_bounds() -> None:
