@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import product
 from math import exp, inf, isfinite, log, nextafter, tanh
 from typing import Any
 
@@ -885,6 +886,64 @@ def interval_forward(module, x: IntervalTensor, enclosure_mode: str = "box") -> 
     raise NotImplementedError(
         f"Interval forward currently supports nn.Sequential, nn.Flatten, nn.Linear, nn.ReLU, nn.Sigmoid, nn.Tanh, nn.Softplus, nn.LeakyReLU, nn.Softmax, nn.Identity, IntervalAdd, and IntervalCat only; got {type(module).__name__}."
     )
+
+
+def interval_forward_refine(
+    module,
+    x: IntervalTensor,
+    enclosure_mode: str = "slope",
+    splits_per_dim: int = 2,
+    max_cells: int = 256,
+) -> IntervalTensor:
+    """Refine interval forward bounds by subdividing the input box.
+
+    This helper computes interval bounds on multiple sub-boxes and returns the
+    hull over all outputs. It is conservative and never looser than evaluating
+    `interval_forward(...)` once on the full input box.
+    """
+    _require_torch()
+    if len(x.shape) != 1:
+        raise NotImplementedError("interval_forward_refine currently supports flat vectors only.")
+    if splits_per_dim < 1:
+        raise ValueError("splits_per_dim must be at least 1.")
+
+    dim = len(x.lower)
+    total_cells = splits_per_dim ** dim
+    if total_cells > max_cells:
+        raise ValueError(
+            f"Refinement would create {total_cells} cells which exceeds max_cells={max_cells}. "
+            "Reduce splits_per_dim, input dimension, or increase max_cells."
+        )
+
+    if splits_per_dim == 1:
+        return interval_forward(module, x, enclosure_mode=enclosure_mode)
+
+    per_dim_edges = [
+        [float(x.lower[d] + (x.upper[d] - x.lower[d]) * idx / splits_per_dim) for idx in range(splits_per_dim + 1)]
+        for d in range(dim)
+    ]
+
+    hull_lower: tuple[float, ...] | None = None
+    hull_upper: tuple[float, ...] | None = None
+
+    for cell_index in product(range(splits_per_dim), repeat=dim):
+        cell_lower = [per_dim_edges[d][cell_index[d]] for d in range(dim)]
+        cell_upper = [per_dim_edges[d][cell_index[d] + 1] for d in range(dim)]
+        cell = IntervalTensor.from_bounds(cell_lower, cell_upper)
+        cell_out = interval_forward(module, cell, enclosure_mode=enclosure_mode)
+        lower = tuple(float(v) for v in cell_out.lower)
+        upper = tuple(float(v) for v in cell_out.upper)
+
+        if hull_lower is None or hull_upper is None:
+            hull_lower = lower
+            hull_upper = upper
+            continue
+
+        hull_lower = tuple(min(hull_lower[idx], lower[idx]) for idx in range(len(lower)))
+        hull_upper = tuple(max(hull_upper[idx], upper[idx]) for idx in range(len(upper)))
+
+    assert hull_lower is not None and hull_upper is not None
+    return IntervalTensor.from_bounds(hull_lower, hull_upper)
 
 
 _ORIGINAL_EVAL = getattr(nn.Module, "eval", None) if nn is not None else None
