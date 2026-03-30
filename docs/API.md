@@ -6,11 +6,15 @@ This document describes the public Python API exposed by `intervalnets` and how 
 
 - `intervalnets.interval.Interval`: core immutable interval type with outward-rounded scalar/tuple arithmetic.
 - `intervalnets.pytorch.IntervalTensor`: interval type specialized for PyTorch interoperability.
-- `intervalnets.pytorch.enable_interval_eval()`: monkey patch that adds interval-aware methods onto `torch.nn.Module`.
-- `intervalnets.pytorch.interval_forward(module, x)`: interval propagation backend used by patched `model.eval(interval)`.
+- `intervalnets.pytorch.enable_interval_eval(enclosure_mode="slope")`: monkey patch that adds interval-aware methods onto `torch.nn.Module`.
+- `intervalnets.pytorch.interval_forward(module, x, enclosure_mode="box")`: interval propagation backend used by patched `model.eval(interval)`.
 - `intervalnets.pytorch.IntervalAdd`, `intervalnets.pytorch.IntervalCat`: helper combinators for branched interval models.
 
 ## Core interval arithmetic (`Interval`)
+
+`Interval` uses midpoint-radius internals to support fast affine interval propagation paths used by
+the PyTorch backend. The library targets **certified enclosures with good throughput**, not globally
+optimal/tightest interval boxes for every operation.
 
 ### Construction
 
@@ -32,6 +36,8 @@ This document describes the public Python API exposed by `intervalnets` and how 
 ### Arithmetic operations
 
 - `+`, `-`, unary `-`, `*`, `/` are implemented with outward rounding.
+- In affine-heavy code paths (e.g. linear layers and Jacobian composition), interval propagation is
+  optimized around midpoint-radius matrix formulas (`A x_mid ± |A| x_rad`).
 - Scalar division by an interval containing `0` raises `ZeroDivisionError`.
 - Vector interval division is intentionally not implemented and raises `NotImplementedError`.
 
@@ -55,7 +61,7 @@ Call once at startup:
 ```python
 from intervalnets import enable_interval_eval
 
-enable_interval_eval()
+enable_interval_eval(enclosure_mode="slope")
 ```
 
 After this, every `torch.nn.Module` gets:
@@ -67,7 +73,7 @@ After this, every `torch.nn.Module` gets:
 - `model.lpnorm(domain: IntervalTensor, p: float, iterations: int = 0)`
   - Outward-rounded enclosure of the model `L^p` norm on a box domain.
 - `model.eval_jacobian(domain: IntervalTensor)`
-  - Interval enclosure of Jacobian matrix entries over the domain.
+  - Interval enclosure of Jacobian matrix entries over the domain, using the same `enclosure_mode` selected when calling `enable_interval_eval(...)` for sequential pre-activation propagation.
 - `model.sobolev_norm(domain: IntervalTensor, p: float, iterations: int = 0)`
   - Enclosure of a first-order Sobolev-style norm (`|f|^p + |Df|^p`) over the domain.
 
@@ -75,7 +81,7 @@ After this, every `torch.nn.Module` gets:
 
 ## Supported layers and modules for interval forward propagation
 
-`interval_forward(module, x)` currently supports:
+`interval_forward(module, x, enclosure_mode="box")` currently supports:
 
 - `nn.Sequential`
 - `nn.Flatten` (for flat vectors)
@@ -91,6 +97,15 @@ After this, every `torch.nn.Module` gets:
 - `IntervalCat` (flat vectors, concatenation along the only axis)
 
 Unsupported modules raise `NotImplementedError` with the offending module type.
+
+`enclosure_mode` options:
+
+- `"box"`: midpoint-radius interval propagation throughout.
+- `"slope"` (default for `enable_interval_eval`): slope-aware affine relaxation for `nn.Sequential` chains of `nn.Linear` and `nn.ReLU`; unsupported layers are conservatively concretized and then continued with `"box"` mode.
+
+ReLU-specific note:
+
+- For non-positive input intervals, ReLU images are kept exactly as `[0, 0]` (not artificially widened around zero).
 
 ## Branch combinators
 
@@ -122,6 +137,8 @@ Runs each branch on the same input interval and concatenates outputs.
 6. Accumulate interval integral bounds over the resulting partition.
 7. Clamp tiny negative roundoff artifacts to zero before taking the `1/p` power.
 
+Sobolev refinement additionally skips boxes that are rigorously constant with an exactly zero Jacobian enclosure, avoiding unnecessary subdivision of derivative-inactive regions.
+
 Important constraints:
 
 - Input domain must be an `IntervalTensor`.
@@ -143,7 +160,11 @@ Layer derivatives currently implemented:
 - `nn.Softmax`
 - `nn.Flatten`
 
-For `nn.Sequential`, Jacobian enclosures are composed with interval matrix multiplication.
+For `nn.Sequential`, Jacobian enclosures are composed with interval matrix multiplication, and layer-input intervals are computed with the configured `enclosure_mode` (`"slope"` by default via `enable_interval_eval`).
+
+Implementation note: Jacobian composition currently favors vectorized midpoint-radius interval matrix
+products for speed. This is conservative and efficient, but not necessarily the tightest enclosure
+that could be achieved with more expensive symbolic or optimization-based techniques.
 
 ## Minimal examples
 
@@ -165,7 +186,7 @@ print(a * b)   # outward-rounded enclosure of [1,2] * [3,3]
 from intervalnets import IntervalTensor, enable_interval_eval
 from torch import nn
 
-enable_interval_eval()
+enable_interval_eval(enclosure_mode="slope")
 
 model = nn.Sequential(
     nn.Linear(2, 4),

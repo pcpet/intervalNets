@@ -5,7 +5,7 @@ torch = pytest.importorskip("torch")
 from torch import nn
 
 from intervalnets import Interval, IntervalAdd, IntervalCat, IntervalTensor, enable_interval_eval, interval_forward
-from intervalnets.pytorch import _interval_pow_scalar
+from intervalnets.pytorch import _eval_jacobian_bounds, _interval_pow_scalar
 
 
 def test_relu_negative_interval_rounds_outward_to_zero() -> None:
@@ -14,8 +14,8 @@ def test_relu_negative_interval_rounds_outward_to_zero() -> None:
 
     output = interval_forward(relu, interval)
 
-    assert all(lower < 0.0 for lower in output.lower)
-    assert all(upper > 0.0 for upper in output.upper)
+    assert all(lower == 0.0 for lower in output.lower)
+    assert all(upper == 0.0 for upper in output.upper)
 
 
 def test_relu_positive_interval_preserves_endpoint_images() -> None:
@@ -36,10 +36,20 @@ def test_relu_mixed_interval_clamps_only_the_lower_endpoint() -> None:
 
     output = interval_forward(relu, interval)
 
-    assert output.lower[0] < 0.0
+    assert output.lower[0] == 0.0
     assert output.upper[0] >= 4.0
-    assert output.lower[1] < 0.0
+    assert output.lower[1] == 0.0
     assert output.upper[1] >= 2.5
+
+
+def test_relu_zero_point_interval_remains_exact_zero() -> None:
+    relu = nn.ReLU()
+    interval = IntervalTensor.from_bounds([0.0], [0.0])
+
+    output = interval_forward(relu, interval)
+
+    assert output.lower[0] == 0.0
+    assert output.upper[0] == 0.0
 
 
 def test_relu_network_encloses_endpoint_evaluations() -> None:
@@ -62,6 +72,70 @@ def test_relu_network_encloses_endpoint_evaluations() -> None:
 
     assert output.lower[0] <= min(candidates)
     assert output.upper[0] >= max(candidates)
+
+
+def test_slope_enclosure_tightens_relu_dependency_example() -> None:
+    model = nn.Sequential(nn.Linear(1, 2), nn.ReLU(), nn.Linear(2, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.0], [-1.0]]))
+        model[0].bias.copy_(torch.tensor([0.0, 0.0]))
+        model[2].weight.copy_(torch.tensor([[1.0, 1.0]]))
+        model[2].bias.copy_(torch.tensor([0.0]))
+
+    interval = IntervalTensor.from_bounds([-1.0], [1.0])
+    box_bounds = interval_forward(model, interval, enclosure_mode="box")
+    slope_bounds = interval_forward(model, interval, enclosure_mode="slope")
+
+    assert slope_bounds.lower[0] >= box_bounds.lower[0]
+    assert slope_bounds.upper[0] <= box_bounds.upper[0]
+    assert slope_bounds.upper[0] <= 1.0 + 1e-6
+
+
+def test_slope_enclosure_remains_valid_on_sampled_points() -> None:
+    torch.manual_seed(11)
+    model = nn.Sequential(nn.Linear(2, 6), nn.ReLU(), nn.Linear(6, 1))
+    with torch.no_grad():
+        for parameter in model.parameters():
+            nn.init.uniform_(parameter, a=-1.0, b=1.0)
+
+    interval = IntervalTensor.from_bounds([-1.0, -0.5], [1.0, 1.5])
+    slope_bounds = interval_forward(model, interval, enclosure_mode="slope")
+
+    samples = torch.rand(5000, 2, dtype=torch.float64)
+    samples[:, 0] = 2.0 * samples[:, 0] - 1.0
+    samples[:, 1] = 2.0 * samples[:, 1] - 0.5
+    values = model(samples.to(dtype=torch.float32)).to(dtype=torch.float64).squeeze(-1)
+
+    assert float(values.min().item()) >= slope_bounds.lower[0]
+    assert float(values.max().item()) <= slope_bounds.upper[0]
+
+
+def test_enable_interval_eval_accepts_slope_mode() -> None:
+    enable_interval_eval(enclosure_mode="slope")
+    model = nn.Sequential(nn.Linear(1, 2), nn.ReLU(), nn.Linear(2, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.0], [-1.0]]))
+        model[0].bias.copy_(torch.tensor([0.0, 0.0]))
+        model[2].weight.copy_(torch.tensor([[1.0, 1.0]]))
+        model[2].bias.copy_(torch.tensor([0.0]))
+
+    interval = IntervalTensor.from_bounds([-1.0], [1.0])
+    result = model.eval(interval)
+    assert result.upper[0] <= 1.0 + 1e-6
+
+
+def test_enable_interval_eval_defaults_to_slope_mode() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 2), nn.ReLU(), nn.Linear(2, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.0], [-1.0]]))
+        model[0].bias.copy_(torch.tensor([0.0, 0.0]))
+        model[2].weight.copy_(torch.tensor([[1.0, 1.0]]))
+        model[2].bias.copy_(torch.tensor([0.0]))
+
+    interval = IntervalTensor.from_bounds([-1.0], [1.0])
+    result = model.eval(interval)
+    assert result.upper[0] <= 1.0 + 1e-6
 
 
 def test_linear_interval_matches_expected_affine_bounds() -> None:
@@ -409,6 +483,53 @@ def test_lpnorm_contains_monte_carlo_estimate() -> None:
     assert bounds.lower <= estimate <= bounds.upper
 
 
+def test_slope_mode_tightens_jacobian_enclosure_for_relu_chain() -> None:
+    model = nn.Sequential(nn.Linear(2, 3), nn.ReLU(), nn.Linear(3, 3), nn.ReLU(), nn.Linear(3, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[-1.783151626586914, 1.7537529468536377], [-1.2988224029541016, -0.2275230884552002], [0.5729870796203613, 0.06371665000915527]]))
+        model[0].bias.copy_(torch.tensor([-1.3457634449005127, -1.6166434288024902, 1.5941648483276367]))
+        model[2].weight.copy_(torch.tensor([[0.32567739486694336, 1.6592490673065186, -0.6704812049865723], [0.5891108512878418, -0.4573523998260498, -0.08894228935241699], [-1.2180883884429932, 0.6764018535614014, 0.6323318481445312]]))
+        model[2].bias.copy_(torch.tensor([-0.04125714302062988, -0.44980430603027344, -1.2328596115112305]))
+        model[4].weight.copy_(torch.tensor([[1.383089542388916, -1.4888482093811035, 0.8193309307098389]]))
+        model[4].bias.copy_(torch.tensor([-0.6725070476531982]))
+
+    domain = IntervalTensor.from_bounds([-1.0, -1.0], [1.0, 1.0])
+    box_jacobian = _eval_jacobian_bounds(model, domain, enclosure_mode="box")
+    slope_jacobian = _eval_jacobian_bounds(model, domain, enclosure_mode="slope")
+
+    box_width = sum(
+        float(upper - lower)
+        for row_lower, row_upper in zip(box_jacobian.lower, box_jacobian.upper)
+        for lower, upper in zip(row_lower, row_upper)
+    )
+    slope_width = sum(
+        float(upper - lower)
+        for row_lower, row_upper in zip(slope_jacobian.lower, slope_jacobian.upper)
+        for lower, upper in zip(row_lower, row_upper)
+    )
+
+    assert slope_width < box_width
+
+
+def test_enable_interval_eval_slope_default_applies_to_eval_jacobian() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(2, 3), nn.ReLU(), nn.Linear(3, 3), nn.ReLU(), nn.Linear(3, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[-1.783151626586914, 1.7537529468536377], [-1.2988224029541016, -0.2275230884552002], [0.5729870796203613, 0.06371665000915527]]))
+        model[0].bias.copy_(torch.tensor([-1.3457634449005127, -1.6166434288024902, 1.5941648483276367]))
+        model[2].weight.copy_(torch.tensor([[0.32567739486694336, 1.6592490673065186, -0.6704812049865723], [0.5891108512878418, -0.4573523998260498, -0.08894228935241699], [-1.2180883884429932, 0.6764018535614014, 0.6323318481445312]]))
+        model[2].bias.copy_(torch.tensor([-0.04125714302062988, -0.44980430603027344, -1.2328596115112305]))
+        model[4].weight.copy_(torch.tensor([[1.383089542388916, -1.4888482093811035, 0.8193309307098389]]))
+        model[4].bias.copy_(torch.tensor([-0.6725070476531982]))
+
+    domain = IntervalTensor.from_bounds([-1.0, -1.0], [1.0, 1.0])
+    patched = model.eval_jacobian(domain)
+    expected = _eval_jacobian_bounds(model, domain, enclosure_mode="slope")
+
+    assert patched.lower == expected.lower
+    assert patched.upper == expected.upper
+
+
 def test_eval_jacobian_linear_layer_matches_exact_weight_matrix() -> None:
     enable_interval_eval()
     layer = nn.Linear(2, 2)
@@ -460,6 +581,22 @@ def test_eval_jacobian_sequential_encloses_corner_gradients() -> None:
 
     assert jacobian.lower[0][0] <= min(slopes)
     assert jacobian.upper[0][0] >= max(slopes)
+
+
+def test_eval_jacobian_dead_relu_path_stays_exact_zero() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1), nn.ReLU(), nn.Linear(1, 1))
+    with torch.no_grad():
+        model[0].weight.fill_(1.0)
+        model[0].bias.fill_(-2.0)
+        model[2].weight.fill_(3.0)
+        model[2].bias.zero_()
+
+    domain = IntervalTensor.from_bounds([0.0], [1.0])
+    jacobian = model.eval_jacobian(domain)
+
+    assert jacobian.lower[0][0] == 0.0
+    assert jacobian.upper[0][0] == 0.0
 
 
 def test_sobolev_norm_constant_network_matches_closed_form() -> None:
