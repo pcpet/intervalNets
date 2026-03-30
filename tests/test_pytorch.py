@@ -5,7 +5,7 @@ torch = pytest.importorskip("torch")
 from torch import nn
 
 from intervalnets import Interval, IntervalAdd, IntervalCat, IntervalTensor, enable_interval_eval, interval_forward
-from intervalnets.pytorch import _interval_pow_scalar
+from intervalnets.pytorch import _eval_jacobian_bounds, _interval_pow_scalar
 
 
 def test_relu_negative_interval_rounds_outward_to_zero() -> None:
@@ -112,6 +112,20 @@ def test_slope_enclosure_remains_valid_on_sampled_points() -> None:
 
 def test_enable_interval_eval_accepts_slope_mode() -> None:
     enable_interval_eval(enclosure_mode="slope")
+    model = nn.Sequential(nn.Linear(1, 2), nn.ReLU(), nn.Linear(2, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.0], [-1.0]]))
+        model[0].bias.copy_(torch.tensor([0.0, 0.0]))
+        model[2].weight.copy_(torch.tensor([[1.0, 1.0]]))
+        model[2].bias.copy_(torch.tensor([0.0]))
+
+    interval = IntervalTensor.from_bounds([-1.0], [1.0])
+    result = model.eval(interval)
+    assert result.upper[0] <= 1.0 + 1e-6
+
+
+def test_enable_interval_eval_defaults_to_slope_mode() -> None:
+    enable_interval_eval()
     model = nn.Sequential(nn.Linear(1, 2), nn.ReLU(), nn.Linear(2, 1))
     with torch.no_grad():
         model[0].weight.copy_(torch.tensor([[1.0], [-1.0]]))
@@ -467,6 +481,53 @@ def test_lpnorm_contains_monte_carlo_estimate() -> None:
         estimate = float((volume * torch.mean(integrand)).sqrt().item())
 
     assert bounds.lower <= estimate <= bounds.upper
+
+
+def test_slope_mode_tightens_jacobian_enclosure_for_relu_chain() -> None:
+    model = nn.Sequential(nn.Linear(2, 3), nn.ReLU(), nn.Linear(3, 3), nn.ReLU(), nn.Linear(3, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[-1.783151626586914, 1.7537529468536377], [-1.2988224029541016, -0.2275230884552002], [0.5729870796203613, 0.06371665000915527]]))
+        model[0].bias.copy_(torch.tensor([-1.3457634449005127, -1.6166434288024902, 1.5941648483276367]))
+        model[2].weight.copy_(torch.tensor([[0.32567739486694336, 1.6592490673065186, -0.6704812049865723], [0.5891108512878418, -0.4573523998260498, -0.08894228935241699], [-1.2180883884429932, 0.6764018535614014, 0.6323318481445312]]))
+        model[2].bias.copy_(torch.tensor([-0.04125714302062988, -0.44980430603027344, -1.2328596115112305]))
+        model[4].weight.copy_(torch.tensor([[1.383089542388916, -1.4888482093811035, 0.8193309307098389]]))
+        model[4].bias.copy_(torch.tensor([-0.6725070476531982]))
+
+    domain = IntervalTensor.from_bounds([-1.0, -1.0], [1.0, 1.0])
+    box_jacobian = _eval_jacobian_bounds(model, domain, enclosure_mode="box")
+    slope_jacobian = _eval_jacobian_bounds(model, domain, enclosure_mode="slope")
+
+    box_width = sum(
+        float(upper - lower)
+        for row_lower, row_upper in zip(box_jacobian.lower, box_jacobian.upper)
+        for lower, upper in zip(row_lower, row_upper)
+    )
+    slope_width = sum(
+        float(upper - lower)
+        for row_lower, row_upper in zip(slope_jacobian.lower, slope_jacobian.upper)
+        for lower, upper in zip(row_lower, row_upper)
+    )
+
+    assert slope_width < box_width
+
+
+def test_enable_interval_eval_slope_default_applies_to_eval_jacobian() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(2, 3), nn.ReLU(), nn.Linear(3, 3), nn.ReLU(), nn.Linear(3, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[-1.783151626586914, 1.7537529468536377], [-1.2988224029541016, -0.2275230884552002], [0.5729870796203613, 0.06371665000915527]]))
+        model[0].bias.copy_(torch.tensor([-1.3457634449005127, -1.6166434288024902, 1.5941648483276367]))
+        model[2].weight.copy_(torch.tensor([[0.32567739486694336, 1.6592490673065186, -0.6704812049865723], [0.5891108512878418, -0.4573523998260498, -0.08894228935241699], [-1.2180883884429932, 0.6764018535614014, 0.6323318481445312]]))
+        model[2].bias.copy_(torch.tensor([-0.04125714302062988, -0.44980430603027344, -1.2328596115112305]))
+        model[4].weight.copy_(torch.tensor([[1.383089542388916, -1.4888482093811035, 0.8193309307098389]]))
+        model[4].bias.copy_(torch.tensor([-0.6725070476531982]))
+
+    domain = IntervalTensor.from_bounds([-1.0, -1.0], [1.0, 1.0])
+    patched = model.eval_jacobian(domain)
+    expected = _eval_jacobian_bounds(model, domain, enclosure_mode="slope")
+
+    assert patched.lower == expected.lower
+    assert patched.upper == expected.upper
 
 
 def test_eval_jacobian_linear_layer_matches_exact_weight_matrix() -> None:

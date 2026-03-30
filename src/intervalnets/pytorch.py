@@ -713,19 +713,32 @@ def _jacobian_for_layer(layer, pre_activation: IntervalTensor) -> list[list[Inte
     )
 
 
-def _eval_jacobian_bounds(model, domain: IntervalTensor) -> IntervalTensor:
+def _sequential_layer_inputs(module: nn.Sequential, domain: IntervalTensor, enclosure_mode: str) -> list[IntervalTensor]:
+    children = list(module.children())
+    if not children:
+        return []
+
+    layer_inputs: list[IntervalTensor] = [domain]
+    for idx in range(1, len(children)):
+        prefix = nn.Sequential(*children[:idx])
+        layer_inputs.append(interval_forward(prefix, domain, enclosure_mode=enclosure_mode))
+    return layer_inputs
+
+
+def _eval_jacobian_bounds(model, domain: IntervalTensor, enclosure_mode: str = "box") -> IntervalTensor:
     if not isinstance(domain, IntervalTensor):
         raise TypeError("model.eval_jacobian(domain) requires an IntervalTensor domain.")
     if len(domain.shape) != 1:
         raise NotImplementedError("Interval Jacobian evaluation currently supports flat input boxes only.")
+    if enclosure_mode not in {"box", "slope"}:
+        raise ValueError("enclosure_mode must be either 'box' or 'slope'.")
 
     if isinstance(model, nn.Sequential):
-        current_interval = domain
+        layer_inputs = _sequential_layer_inputs(model, domain, enclosure_mode=enclosure_mode)
         current_jacobian = _identity_jacobian(len(domain.lower))
-        for child in model:
-            local_jacobian = _jacobian_for_layer(child, current_interval)
+        for child, pre_activation in zip(model, layer_inputs):
+            local_jacobian = _jacobian_for_layer(child, pre_activation)
             current_jacobian = _matrix_multiply(local_jacobian, current_jacobian)
-            current_interval = interval_forward(child, current_interval)
     else:
         local_jacobian = _jacobian_for_layer(model, domain)
         current_jacobian = local_jacobian
@@ -878,7 +891,7 @@ _ORIGINAL_EVAL = getattr(nn.Module, "eval", None) if nn is not None else None
 _PATCHED = False
 
 
-def enable_interval_eval(enclosure_mode: str = "box") -> None:
+def enable_interval_eval(enclosure_mode: str = "slope") -> None:
     _require_torch()
     global _PATCHED
     if enclosure_mode not in {"box", "slope"}:
@@ -900,7 +913,7 @@ def enable_interval_eval(enclosure_mode: str = "box") -> None:
 
     def eval_jacobian_with_interval(self, domain: IntervalTensor):
         _ORIGINAL_EVAL(self)
-        return _eval_jacobian_bounds(self, domain)
+        return _eval_jacobian_bounds(self, domain, enclosure_mode=enclosure_mode)
 
     def sobolev_norm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.5):
         _ORIGINAL_EVAL(self)
