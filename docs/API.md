@@ -6,7 +6,7 @@ This document describes the public Python API exposed by `intervalnets` and how 
 
 - `intervalnets.interval.Interval`: core immutable interval type with outward-rounded scalar/tuple arithmetic.
 - `intervalnets.pytorch.IntervalTensor`: interval type specialized for PyTorch interoperability.
-- `intervalnets.pytorch.enable_interval_eval(enclosure_mode="box")`: monkey patch that adds interval-aware methods onto `torch.nn.Module`.
+- `intervalnets.pytorch.enable_interval_eval(enclosure_mode="slope")`: monkey patch that adds interval-aware methods onto `torch.nn.Module`.
 - `intervalnets.pytorch.interval_forward(module, x, enclosure_mode="box")`: interval propagation backend used by patched `model.eval(interval)`.
 - `intervalnets.pytorch.IntervalAdd`, `intervalnets.pytorch.IntervalCat`: helper combinators for branched interval models.
 
@@ -61,7 +61,7 @@ Call once at startup:
 ```python
 from intervalnets import enable_interval_eval
 
-enable_interval_eval(enclosure_mode="box")
+enable_interval_eval(enclosure_mode="slope")
 ```
 
 After this, every `torch.nn.Module` gets:
@@ -100,8 +100,8 @@ Unsupported modules raise `NotImplementedError` with the offending module type.
 
 `enclosure_mode` options:
 
-- `"box"` (default): midpoint-radius interval propagation throughout.
-- `"slope"`: slope-aware affine relaxation for `nn.Sequential` chains of `nn.Linear` and `nn.ReLU`; unsupported layers are conservatively concretized and then continued with `"box"` mode.
+- `"box"`: midpoint-radius interval propagation throughout.
+- `"slope"` (default for `enable_interval_eval`): slope-aware affine relaxation for `nn.Sequential` chains of `nn.Linear` and `nn.ReLU`; unsupported layers are conservatively concretized and then continued with `"box"` mode.
 
 ReLU-specific note:
 
@@ -186,7 +186,7 @@ print(a * b)   # outward-rounded enclosure of [1,2] * [3,3]
 from intervalnets import IntervalTensor, enable_interval_eval
 from torch import nn
 
-enable_interval_eval(enclosure_mode="box")
+enable_interval_eval(enclosure_mode="slope")
 
 model = nn.Sequential(
     nn.Linear(2, 4),
