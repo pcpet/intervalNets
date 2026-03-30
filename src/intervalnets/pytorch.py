@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import product
 from math import exp, inf, isfinite, log, nextafter, tanh
 from typing import Any
 
@@ -454,6 +455,56 @@ def _lp_pointwise_power_bounds(model, box: IntervalTensor, p: float) -> Interval
     return total
 
 
+def _subdivide_box(box: IntervalTensor, splits_per_dim: int, max_cells: int) -> list[IntervalTensor]:
+    if len(box.shape) != 1:
+        raise NotImplementedError("Refinement currently supports flat vectors only.")
+    if splits_per_dim < 1:
+        raise ValueError("splits_per_dim must be at least 1.")
+
+    dim = len(box.lower)
+    total_cells = splits_per_dim ** dim
+    if total_cells > max_cells:
+        raise ValueError(
+            f"Refinement would create {total_cells} cells which exceeds max_cells={max_cells}. "
+            "Reduce splits_per_dim, input dimension, or increase max_cells."
+        )
+    if splits_per_dim == 1:
+        return [box]
+
+    per_dim_edges = [
+        [float(box.lower[d] + (box.upper[d] - box.lower[d]) * idx / splits_per_dim) for idx in range(splits_per_dim + 1)]
+        for d in range(dim)
+    ]
+
+    cells: list[IntervalTensor] = []
+    for cell_index in product(range(splits_per_dim), repeat=dim):
+        cell_lower = [per_dim_edges[d][cell_index[d]] for d in range(dim)]
+        cell_upper = [per_dim_edges[d][cell_index[d] + 1] for d in range(dim)]
+        cells.append(IntervalTensor.from_bounds(cell_lower, cell_upper))
+    return cells
+
+
+def _hull_intervals(intervals: list[Interval]) -> Interval:
+    if not intervals:
+        raise ValueError("Cannot hull an empty interval list.")
+    lower = min(float(item.lower) for item in intervals)
+    upper = max(float(item.upper) for item in intervals)
+    return Interval.from_bounds(lower, upper)
+
+
+def _lp_pointwise_power_bounds_refined(
+    model,
+    box: IntervalTensor,
+    p: float,
+    forward_refine_splits: int,
+    forward_refine_max_cells: int,
+) -> Interval:
+    if forward_refine_splits <= 1:
+        return _lp_pointwise_power_bounds(model, box, p)
+    cells = _subdivide_box(box, splits_per_dim=forward_refine_splits, max_cells=forward_refine_max_cells)
+    return _hull_intervals([_lp_pointwise_power_bounds(model, cell, p) for cell in cells])
+
+
 def _jacobian_dimension_scores(jacobian: IntervalTensor) -> list[float]:
     if len(jacobian.shape) != 2:
         raise ValueError("Jacobian interval must be matrix-shaped.")
@@ -524,7 +575,15 @@ def _dorfler_marking(indicators: list[float], theta: float) -> list[int]:
     return marked
 
 
-def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, theta: float) -> Interval:
+def _lpnorm_bounds(
+    model,
+    domain: IntervalTensor,
+    p: float,
+    iterations: int,
+    theta: float,
+    forward_refine_splits: int = 1,
+    forward_refine_max_cells: int = 256,
+) -> Interval:
     if not isinstance(domain, IntervalTensor):
         raise TypeError("model.lpnorm(domain, p, iterations) requires an IntervalTensor domain.")
     if len(domain.shape) != 1:
@@ -534,6 +593,8 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
     if iterations < 0:
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
+    if forward_refine_splits < 1:
+        raise ValueError("forward_refine_splits must be at least 1.")
 
     boxes = [domain]
     use_jacobian_splitting = len(domain.lower) > 1
@@ -541,7 +602,13 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
         indicators: list[float] = []
         split_dims: list[int] = []
         for box in boxes:
-            integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
+            integrand_bounds = _lp_pointwise_power_bounds_refined(
+                model,
+                box,
+                p,
+                forward_refine_splits=forward_refine_splits,
+                forward_refine_max_cells=forward_refine_max_cells,
+            )
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
             indicators.append(width * _box_volume(box))
             if use_jacobian_splitting:
@@ -562,7 +629,13 @@ def _lpnorm_bounds(model, domain: IntervalTensor, p: float, iterations: int, the
 
     integral = Interval.point(0.0)
     for box in boxes:
-        integrand_bounds = _lp_pointwise_power_bounds(model, box, p)
+        integrand_bounds = _lp_pointwise_power_bounds_refined(
+            model,
+            box,
+            p,
+            forward_refine_splits=forward_refine_splits,
+            forward_refine_max_cells=forward_refine_max_cells,
+        )
         weighted = Interval.from_bounds(
             float(integrand_bounds.lower) * _box_volume(box),
             float(integrand_bounds.upper) * _box_volume(box),
@@ -790,7 +863,28 @@ def _jacobian_is_exact_zero(jacobian: IntervalTensor) -> bool:
     )
 
 
-def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: int, theta: float) -> Interval:
+def _sobolev_pointwise_power_bounds_refined(
+    model,
+    box: IntervalTensor,
+    p: float,
+    forward_refine_splits: int,
+    forward_refine_max_cells: int,
+) -> Interval:
+    if forward_refine_splits <= 1:
+        return _sobolev_pointwise_power_bounds(model, box, p)
+    cells = _subdivide_box(box, splits_per_dim=forward_refine_splits, max_cells=forward_refine_max_cells)
+    return _hull_intervals([_sobolev_pointwise_power_bounds(model, cell, p) for cell in cells])
+
+
+def _sobolev_norm_bounds(
+    model,
+    domain: IntervalTensor,
+    p: float,
+    iterations: int,
+    theta: float,
+    forward_refine_splits: int = 1,
+    forward_refine_max_cells: int = 256,
+) -> Interval:
     if not isinstance(domain, IntervalTensor):
         raise TypeError("model.sobolev_norm(domain, p, iterations) requires an IntervalTensor domain.")
     if len(domain.shape) != 1:
@@ -800,6 +894,8 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
     if iterations < 0:
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
+    if forward_refine_splits < 1:
+        raise ValueError("forward_refine_splits must be at least 1.")
 
     boxes = [domain]
     use_jacobian_splitting = len(domain.lower) > 1
@@ -807,9 +903,15 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
         indicators: list[float] = []
         split_dims: list[int] = []
         for box in boxes:
+            integrand_bounds = _sobolev_pointwise_power_bounds_refined(
+                model,
+                box,
+                p,
+                forward_refine_splits=forward_refine_splits,
+                forward_refine_max_cells=forward_refine_max_cells,
+            )
             output = model.eval(box)
             jacobian = model.eval_jacobian(box)
-            integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p, output=output, jacobian=jacobian)
             if _interval_tensor_is_exact_constant(output) and _jacobian_is_exact_zero(jacobian):
                 # A rigorously constant box has zero Sobolev seminorm contribution,
                 # so further refinement is unnecessary for the derivative part.
@@ -834,7 +936,13 @@ def _sobolev_norm_bounds(model, domain: IntervalTensor, p: float, iterations: in
 
     integral = Interval.point(0.0)
     for box in boxes:
-        integrand_bounds = _sobolev_pointwise_power_bounds(model, box, p)
+        integrand_bounds = _sobolev_pointwise_power_bounds_refined(
+            model,
+            box,
+            p,
+            forward_refine_splits=forward_refine_splits,
+            forward_refine_max_cells=forward_refine_max_cells,
+        )
         weighted = Interval.from_bounds(
             float(integrand_bounds.lower) * _box_volume(box),
             float(integrand_bounds.upper) * _box_volume(box),
@@ -887,6 +995,46 @@ def interval_forward(module, x: IntervalTensor, enclosure_mode: str = "box") -> 
     )
 
 
+def interval_forward_refine(
+    module,
+    x: IntervalTensor,
+    enclosure_mode: str = "slope",
+    splits_per_dim: int = 2,
+    max_cells: int = 256,
+) -> IntervalTensor:
+    """Refine interval forward bounds by subdividing the input box.
+
+    This helper computes interval bounds on multiple sub-boxes and returns the
+    hull over all outputs. It is conservative and never looser than evaluating
+    `interval_forward(...)` once on the full input box.
+    """
+    _require_torch()
+    if len(x.shape) != 1:
+        raise NotImplementedError("interval_forward_refine currently supports flat vectors only.")
+    if splits_per_dim < 1:
+        raise ValueError("splits_per_dim must be at least 1.")
+    cells = _subdivide_box(x, splits_per_dim=splits_per_dim, max_cells=max_cells)
+
+    hull_lower: tuple[float, ...] | None = None
+    hull_upper: tuple[float, ...] | None = None
+
+    for cell in cells:
+        cell_out = interval_forward(module, cell, enclosure_mode=enclosure_mode)
+        lower = tuple(float(v) for v in cell_out.lower)
+        upper = tuple(float(v) for v in cell_out.upper)
+
+        if hull_lower is None or hull_upper is None:
+            hull_lower = lower
+            hull_upper = upper
+            continue
+
+        hull_lower = tuple(min(hull_lower[idx], lower[idx]) for idx in range(len(lower)))
+        hull_upper = tuple(max(hull_upper[idx], upper[idx]) for idx in range(len(upper)))
+
+    assert hull_lower is not None and hull_upper is not None
+    return IntervalTensor.from_bounds(hull_lower, hull_upper)
+
+
 _ORIGINAL_EVAL = getattr(nn.Module, "eval", None) if nn is not None else None
 _PATCHED = False
 
@@ -907,17 +1055,49 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
             raise TypeError("model.eval(interval) requires an IntervalTensor input.")
         return interval_forward(self, interval, enclosure_mode=enclosure_mode)
 
-    def lpnorm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.5):
+    def lpnorm_with_interval(
+        self,
+        domain: IntervalTensor,
+        p: float,
+        iterations: int = 0,
+        theta: float = 0.5,
+        forward_refine_splits: int = 1,
+        forward_refine_max_cells: int = 256,
+    ):
         _ORIGINAL_EVAL(self)
-        return _lpnorm_bounds(self, domain, p, iterations, theta)
+        return _lpnorm_bounds(
+            self,
+            domain,
+            p,
+            iterations,
+            theta,
+            forward_refine_splits=forward_refine_splits,
+            forward_refine_max_cells=forward_refine_max_cells,
+        )
 
     def eval_jacobian_with_interval(self, domain: IntervalTensor):
         _ORIGINAL_EVAL(self)
         return _eval_jacobian_bounds(self, domain, enclosure_mode=enclosure_mode)
 
-    def sobolev_norm_with_interval(self, domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.5):
+    def sobolev_norm_with_interval(
+        self,
+        domain: IntervalTensor,
+        p: float,
+        iterations: int = 0,
+        theta: float = 0.5,
+        forward_refine_splits: int = 1,
+        forward_refine_max_cells: int = 256,
+    ):
         _ORIGINAL_EVAL(self)
-        return _sobolev_norm_bounds(self, domain, p, iterations, theta)
+        return _sobolev_norm_bounds(
+            self,
+            domain,
+            p,
+            iterations,
+            theta,
+            forward_refine_splits=forward_refine_splits,
+            forward_refine_max_cells=forward_refine_max_cells,
+        )
 
     nn.Module.eval = eval_with_interval
     nn.Module.lpnorm = lpnorm_with_interval

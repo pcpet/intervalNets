@@ -33,10 +33,13 @@ always the tightest possible interval enclosure one could compute with more expe
 - linear and Jacobian propagation are implemented with midpoint-radius matrix formulas for speed; this favors runtime performance over globally minimal box tightness,
 - `model.eval(interval)`, `model.eval_jacobian(...)`, `model.lpnorm(...)`, and `model.sobolev_norm(...)` are attached through a single opt-in monkey patch (`enable_interval_eval()`), and the selected `enclosure_mode` is reused for both `model.eval(interval)` and sequential pre-activation propagation inside `model.eval_jacobian(...)`,
 - `enable_interval_eval(enclosure_mode="slope")` accepts `"box"` or `"slope"` (default: slope-aware affine relaxation for `nn.Sequential` chains of `nn.Linear` + `nn.ReLU`, with conservative fallback to `"box"` for unsupported layers),
+- slope mode is particularly useful for dependency-heavy patterns such as `Linear(rotation) -> ReLU -> Linear(rotation^{-1})`: plain box propagation can overestimate strongly, while slope-aware relaxations keep substantially tighter certified bounds,
+- for additional tightness, `interval_forward_refine(model, interval, enclosure_mode="slope", splits_per_dim=...)` subdivides the input box and hulls sub-box outputs (higher cost, tighter bounds),
 - `model.lpnorm(domain, p, iterations, theta=0.5)` and
   `model.sobolev_norm(domain, p, iterations, theta=0.5)` use
   Dörfler-type bulk marking (with uncertainty indicators) and adaptive
   bisection to return outward-rounded certified norm enclosures; rigorously constant boxes with zero Jacobian are skipped during Sobolev refinement.
+- both norm routines accept optional `forward_refine_splits` / `forward_refine_max_cells` arguments to tighten per-box forward enclosures during integration.
 
 ## Quick start
 
