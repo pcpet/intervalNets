@@ -39,6 +39,7 @@ always the tightest possible interval enclosure one could compute with more expe
   `model.sobolev_norm(domain, p, iterations, theta=0.5)` use
   Dörfler-type bulk marking (with uncertainty indicators) and adaptive
   bisection to return outward-rounded certified norm enclosures; rigorously constant boxes with zero Jacobian are skipped during Sobolev refinement.
+- both norm routines accept optional `forward_refine_splits` / `forward_refine_max_cells` arguments to tighten per-box forward enclosures during integration.
 
 ## Quick start
 
