@@ -4,7 +4,15 @@ import pytest
 torch = pytest.importorskip("torch")
 from torch import nn
 
-from intervalnets import Interval, IntervalAdd, IntervalCat, IntervalTensor, enable_interval_eval, interval_forward
+from intervalnets import (
+    Interval,
+    IntervalAdd,
+    IntervalCat,
+    IntervalTensor,
+    enable_interval_eval,
+    interval_forward,
+    interval_forward_refine,
+)
 from intervalnets.pytorch import _eval_jacobian_bounds, _interval_pow_scalar
 
 
@@ -108,6 +116,78 @@ def test_slope_enclosure_remains_valid_on_sampled_points() -> None:
 
     assert float(values.min().item()) >= slope_bounds.lower[0]
     assert float(values.max().item()) <= slope_bounds.upper[0]
+
+
+def test_slope_enclosure_tightens_rotated_relu_sandwich() -> None:
+    angle = math.pi / 4.0
+    rotation = torch.tensor(
+        [
+            [math.cos(angle), -math.sin(angle)],
+            [math.sin(angle), math.cos(angle)],
+        ],
+        dtype=torch.float32,
+    )
+    inverse_rotation = rotation.transpose(0, 1)
+
+    model = nn.Sequential(
+        nn.Linear(2, 2, bias=False),
+        nn.ReLU(),
+        nn.Linear(2, 2, bias=False),
+    )
+    with torch.no_grad():
+        model[0].weight.copy_(rotation)
+        model[2].weight.copy_(inverse_rotation)
+
+    interval = IntervalTensor.from_bounds([-1.0, -1.0], [1.0, 1.0])
+    box_bounds = interval_forward(model, interval, enclosure_mode="box")
+    slope_bounds = interval_forward(model, interval, enclosure_mode="slope")
+
+    assert slope_bounds.upper[0] <= box_bounds.upper[0]
+    assert slope_bounds.lower[0] >= box_bounds.lower[0]
+
+    samples = 2.0 * torch.rand(6000, 2, dtype=torch.float64) - 1.0
+    values = model(samples.to(dtype=torch.float32)).to(dtype=torch.float64)
+    assert float(values[:, 0].min().item()) >= slope_bounds.lower[0]
+    assert float(values[:, 0].max().item()) <= slope_bounds.upper[0]
+    assert float(values[:, 1].min().item()) >= slope_bounds.lower[1]
+    assert float(values[:, 1].max().item()) <= slope_bounds.upper[1]
+
+
+def test_refined_slope_enclosure_tightens_rotated_relu_sandwich() -> None:
+    angle = math.pi / 4.0
+    rotation = torch.tensor(
+        [
+            [math.cos(angle), -math.sin(angle)],
+            [math.sin(angle), math.cos(angle)],
+        ],
+        dtype=torch.float32,
+    )
+    inverse_rotation = rotation.transpose(0, 1)
+
+    model = nn.Sequential(
+        nn.Linear(2, 2, bias=False),
+        nn.ReLU(),
+        nn.Linear(2, 2, bias=False),
+    )
+    with torch.no_grad():
+        model[0].weight.copy_(rotation)
+        model[2].weight.copy_(inverse_rotation)
+
+    interval = IntervalTensor.from_bounds([-1.0, -1.0], [1.0, 1.0])
+    slope_bounds = interval_forward(model, interval, enclosure_mode="slope")
+    refined_bounds = interval_forward_refine(model, interval, enclosure_mode="slope", splits_per_dim=2, max_cells=16)
+
+    assert refined_bounds.lower[0] >= slope_bounds.lower[0]
+    assert refined_bounds.upper[0] <= slope_bounds.upper[0]
+    assert refined_bounds.lower[1] >= slope_bounds.lower[1]
+    assert refined_bounds.upper[1] <= slope_bounds.upper[1]
+
+    samples = 2.0 * torch.rand(6000, 2, dtype=torch.float64) - 1.0
+    values = model(samples.to(dtype=torch.float32)).to(dtype=torch.float64)
+    assert float(values[:, 0].min().item()) >= refined_bounds.lower[0]
+    assert float(values[:, 0].max().item()) <= refined_bounds.upper[0]
+    assert float(values[:, 1].min().item()) >= refined_bounds.lower[1]
+    assert float(values[:, 1].max().item()) <= refined_bounds.upper[1]
 
 
 def test_enable_interval_eval_accepts_slope_mode() -> None:
