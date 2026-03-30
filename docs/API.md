@@ -73,7 +73,7 @@ After this, every `torch.nn.Module` gets:
 - `model.lpnorm(domain: IntervalTensor, p: float, iterations: int = 0)`
   - Outward-rounded enclosure of the model `L^p` norm on a box domain.
 - `model.eval_jacobian(domain: IntervalTensor)`
-  - Interval enclosure of Jacobian matrix entries over the domain.
+  - Interval enclosure of Jacobian matrix entries over the domain, using the same `enclosure_mode` selected when calling `enable_interval_eval(...)` for sequential pre-activation propagation.
 - `model.sobolev_norm(domain: IntervalTensor, p: float, iterations: int = 0)`
   - Enclosure of a first-order Sobolev-style norm (`|f|^p + |Df|^p`) over the domain.
 
@@ -160,7 +160,7 @@ Layer derivatives currently implemented:
 - `nn.Softmax`
 - `nn.Flatten`
 
-For `nn.Sequential`, Jacobian enclosures are composed with interval matrix multiplication.
+For `nn.Sequential`, Jacobian enclosures are composed with interval matrix multiplication, and layer-input intervals are computed with the configured `enclosure_mode` (`"slope"` by default via `enable_interval_eval`).
 
 Implementation note: Jacobian composition currently favors vectorized midpoint-radius interval matrix
 products for speed. This is conservative and efficient, but not necessarily the tightest enclosure
