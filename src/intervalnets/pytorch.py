@@ -878,7 +878,7 @@ _ORIGINAL_EVAL = getattr(nn.Module, "eval", None) if nn is not None else None
 _PATCHED = False
 
 
-def enable_interval_eval(enclosure_mode: str = "box") -> None:
+def enable_interval_eval(enclosure_mode: str = "slope") -> None:
     _require_torch()
     global _PATCHED
     if enclosure_mode not in {"box", "slope"}:

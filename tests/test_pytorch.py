@@ -124,6 +124,20 @@ def test_enable_interval_eval_accepts_slope_mode() -> None:
     assert result.upper[0] <= 1.0 + 1e-6
 
 
+def test_enable_interval_eval_defaults_to_slope_mode() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 2), nn.ReLU(), nn.Linear(2, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.0], [-1.0]]))
+        model[0].bias.copy_(torch.tensor([0.0, 0.0]))
+        model[2].weight.copy_(torch.tensor([[1.0, 1.0]]))
+        model[2].bias.copy_(torch.tensor([0.0]))
+
+    interval = IntervalTensor.from_bounds([-1.0], [1.0])
+    result = model.eval(interval)
+    assert result.upper[0] <= 1.0 + 1e-6
+
+
 def test_linear_interval_matches_expected_affine_bounds() -> None:
     layer = nn.Linear(2, 1)
     with torch.no_grad():
