@@ -103,6 +103,23 @@ For worked examples, see:
 - `notebooks/reproduce_lp_w1p_experiments.ipynb` for reproducible certified
   `L^p` and `W^{1,p}` experiments aligned with arXiv:2603.06431 (intentionally excluding `W^{2,p}`).
 
+
+## Numerical experiment figures
+
+Yes—good idea. The notebook pipeline now exports figures under
+`notebooks/notebooks/artifacts/`, and they can be embedded directly in this
+README.
+
+### 1D toy experiments (`L^p` and `W^{1,p}`)
+
+![W1p 1D experiment](notebooks/notebooks/artifacts/figure_a_w1p_1d.png)
+![Lp 1D experiment](notebooks/notebooks/artifacts/figure_b_lp_1d.png)
+
+### 2D experiment diagnostics
+
+![2D curves](notebooks/notebooks/artifacts/figure_cd_2d_curves.png)
+![Local gap heatmaps](notebooks/notebooks/artifacts/figure_d_local_gap_heatmaps.png)
+
 ## Reference
 
 - Johannes Gründler, Moritz Maibaum, Philipp Petersen,
