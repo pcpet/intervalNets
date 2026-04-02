@@ -8,6 +8,7 @@ This document describes the public Python API exposed by `intervalnets` and how 
 - `intervalnets.pytorch.IntervalTensor`: interval type specialized for PyTorch interoperability.
 - `intervalnets.pytorch.enable_interval_eval(enclosure_mode="slope")`: monkey patch that adds interval-aware methods onto `torch.nn.Module`.
 - `intervalnets.pytorch.interval_forward(module, x, enclosure_mode="box")`: interval propagation backend used by patched `model.eval(interval)`.
+- `intervalnets.pytorch.interval_forward_refine(module, x, enclosure_mode="slope", splits_per_dim=2, max_cells=256)`: optional subdivision-based forward refinement.
 - `intervalnets.pytorch.IntervalAdd`, `intervalnets.pytorch.IntervalCat`: helper combinators for branched interval models.
 
 ## Core interval arithmetic (`Interval`)
@@ -70,11 +71,11 @@ After this, every `torch.nn.Module` gets:
   - Standard PyTorch eval mode behavior (unchanged).
 - `model.eval(interval: IntervalTensor)`
   - Interval forward propagation.
-- `model.lpnorm(domain: IntervalTensor, p: float, iterations: int = 0)`
+- `model.lpnorm(domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.5, forward_refine_splits: int = 1, forward_refine_max_cells: int = 256)`
   - Outward-rounded enclosure of the model `L^p` norm on a box domain.
 - `model.eval_jacobian(domain: IntervalTensor)`
   - Interval enclosure of Jacobian matrix entries over the domain, using the same `enclosure_mode` selected when calling `enable_interval_eval(...)` for sequential pre-activation propagation.
-- `model.sobolev_norm(domain: IntervalTensor, p: float, iterations: int = 0)`
+- `model.sobolev_norm(domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.5, forward_refine_splits: int = 1, forward_refine_max_cells: int = 256)`
   - Enclosure of a first-order Sobolev-style norm (`|f|^p + |Df|^p`) over the domain.
 
 > Note: these methods are attached by monkey-patching `torch.nn.Module`. If patching is not desired in your application architecture, call `interval_forward(...)` directly for pure forward enclosure and avoid the norm/Jacobian helpers.
@@ -106,6 +107,12 @@ Unsupported modules raise `NotImplementedError` with the offending module type.
 ReLU-specific note:
 
 - For non-positive input intervals, ReLU images are kept exactly as `[0, 0]` (not artificially widened around zero).
+
+`interval_forward_refine(...)`:
+
+- Subdivides a flat input interval into a regular grid and hulls the per-cell `interval_forward(...)` outputs.
+- Conservative by construction and typically tighter than a single forward enclosure.
+- Controlled by `splits_per_dim` and `max_cells` to balance tightness vs runtime.
 
 ## Branch combinators
 
@@ -146,6 +153,8 @@ Important constraints:
 - `p` must be finite and strictly positive.
 - `iterations` must be non-negative.
 - `theta` must satisfy `0 < theta <= 1` (default: `0.5`).
+- `forward_refine_splits` must be an integer `>= 1` (default: `1`, meaning no extra per-box subdivision).
+- `forward_refine_max_cells` limits refinement combinatorics (default: `256`).
 
 ## Jacobian enclosure details
 
@@ -197,9 +206,9 @@ model = nn.Sequential(
 box = IntervalTensor.from_bounds([0.0, -1.0], [1.0, 2.0])
 out = model.eval(box)
 
-lp = model.lpnorm(box, p=2.0, iterations=6)
+lp = model.lpnorm(box, p=2.0, iterations=6, forward_refine_splits=2, forward_refine_max_cells=128)
 jac = model.eval_jacobian(box)
-sob = model.sobolev_norm(box, p=2.0, iterations=6)
+sob = model.sobolev_norm(box, p=2.0, iterations=6, forward_refine_splits=2, forward_refine_max_cells=128)
 ```
 
 ## Exported names
@@ -207,7 +216,7 @@ sob = model.sobolev_norm(box, p=2.0, iterations=6)
 The package-level import surface in `intervalnets.__init__` is:
 
 - Always: `Interval`
-- When PyTorch is importable: `IntervalTensor`, `IntervalAdd`, `IntervalCat`, `enable_interval_eval`, `interval_forward`
+- When PyTorch is importable: `IntervalTensor`, `IntervalAdd`, `IntervalCat`, `enable_interval_eval`, `interval_forward`, `interval_forward_refine`
 
 Prefer importing these from the top-level package for user-facing code:
 

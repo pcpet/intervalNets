@@ -33,10 +33,13 @@ always the tightest possible interval enclosure one could compute with more expe
 - linear and Jacobian propagation are implemented with midpoint-radius matrix formulas for speed; this favors runtime performance over globally minimal box tightness,
 - `model.eval(interval)`, `model.eval_jacobian(...)`, `model.lpnorm(...)`, and `model.sobolev_norm(...)` are attached through a single opt-in monkey patch (`enable_interval_eval()`), and the selected `enclosure_mode` is reused for both `model.eval(interval)` and sequential pre-activation propagation inside `model.eval_jacobian(...)`,
 - `enable_interval_eval(enclosure_mode="slope")` accepts `"box"` or `"slope"` (default: slope-aware affine relaxation for `nn.Sequential` chains of `nn.Linear` + `nn.ReLU`, with conservative fallback to `"box"` for unsupported layers),
+- slope mode is particularly useful for dependency-heavy patterns such as `Linear(rotation) -> ReLU -> Linear(rotation^{-1})`: plain box propagation can overestimate strongly, while slope-aware relaxations keep substantially tighter certified bounds,
+- for additional tightness, `interval_forward_refine(model, interval, enclosure_mode="slope", splits_per_dim=...)` subdivides the input box and hulls sub-box outputs (higher cost, tighter bounds),
 - `model.lpnorm(domain, p, iterations, theta=0.5)` and
   `model.sobolev_norm(domain, p, iterations, theta=0.5)` use
   Dörfler-type bulk marking (with uncertainty indicators) and adaptive
   bisection to return outward-rounded certified norm enclosures; rigorously constant boxes with zero Jacobian are skipped during Sobolev refinement.
+- both norm routines accept optional `forward_refine_splits` / `forward_refine_max_cells` arguments to tighten per-box forward enclosures during integration.
 
 ## Quick start
 
@@ -99,6 +102,23 @@ For worked examples, see:
 - `notebooks/test_suite.ipynb` for quick feature checks and sanity tests,
 - `notebooks/reproduce_lp_w1p_experiments.ipynb` for reproducible certified
   `L^p` and `W^{1,p}` experiments aligned with arXiv:2603.06431 (intentionally excluding `W^{2,p}`).
+
+
+## Numerical experiment figures
+
+Yes—good idea. The notebook pipeline now exports figures under
+`notebooks/notebooks/artifacts/`, and they can be embedded directly in this
+README.
+
+### 1D toy experiments (`L^p` and `W^{1,p}`)
+
+![W1p 1D experiment](notebooks/notebooks/artifacts/figure_a_w1p_1d.png)
+![Lp 1D experiment](notebooks/notebooks/artifacts/figure_b_lp_1d.png)
+
+### 2D experiment diagnostics
+
+![2D curves](notebooks/notebooks/artifacts/figure_cd_2d_curves.png)
+![Local gap heatmaps](notebooks/notebooks/artifacts/figure_d_local_gap_heatmaps.png)
 
 ## Reference
 
