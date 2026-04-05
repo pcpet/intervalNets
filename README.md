@@ -106,7 +106,7 @@ For worked examples, see:
 
 ## Numerical experiment figures
 
-Yes—good idea. The notebook pipeline now exports figures under
+The notebook pipeline now exports figures under
 `notebooks/notebooks/artifacts/`, and they can be embedded directly in this
 README.
 
