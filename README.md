@@ -5,8 +5,8 @@
 1. an overloaded `model.eval(interval)` pathway (enabled via `enable_interval_eval(...)`) for interval
    propagation through neural networks with outward-rounded arithmetic, including roundoff-aware bounds;
 2. rigorous enclosure of Lebesgue/Lp norms over interval domains via `model.lpnorm(domain, p, iterations=...)`;
-3. interval Jacobian enclosure via `model.eval_jacobian(domain)` and Sobolev-style norms via
-   `model.sobolev_norm(domain, p, iterations=...)`.
+3. interval derivative enclosure via `model.eval_jacobian(domain)` / `model.eval_hessian(domain)` and Sobolev-style norms via
+   `model.sobolev_norm(domain, p, order=..., iterations=...)`.
    The current implementation follows the same interval-enclosure + adaptive-refinement strategy outlined in
    the preprint *Certified and accurate computation of function space norms of deep neural networks*
    (arXiv:2603.06431).
@@ -31,14 +31,14 @@ always the tightest possible interval enclosure one could compute with more expe
 - interval propagation currently supports `nn.Sequential`, `nn.Flatten`, `nn.Linear`, `nn.ReLU`, `nn.Sigmoid`, `nn.Tanh`, `nn.Softplus`, `nn.LeakyReLU`, `nn.Softmax`, `nn.Identity`, plus `IntervalAdd`/`IntervalCat` branch combinators,
 - ReLU propagation preserves mathematically exact zero images (`[0, 0]`) for non-positive pre-activation intervals; only non-exact branches are outward-padded,
 - linear and Jacobian propagation are implemented with midpoint-radius matrix formulas for speed; this favors runtime performance over globally minimal box tightness,
-- `model.eval(interval)`, `model.eval_jacobian(...)`, `model.lpnorm(...)`, and `model.sobolev_norm(...)` are attached through a single opt-in monkey patch (`enable_interval_eval()`), and the selected `enclosure_mode` is reused for both `model.eval(interval)` and sequential pre-activation propagation inside `model.eval_jacobian(...)`,
+- `model.eval(interval)`, `model.eval_jacobian(...)`, `model.eval_hessian(...)`, `model.lpnorm(...)`, and `model.sobolev_norm(...)` are attached through a single opt-in monkey patch (`enable_interval_eval()`), and the selected `enclosure_mode` is reused for both `model.eval(interval)` and sequential pre-activation propagation inside derivative enclosures,
 - `enable_interval_eval(enclosure_mode="slope")` accepts `"box"` or `"slope"` (default: slope-aware affine relaxation for `nn.Sequential` chains of `nn.Linear` + `nn.ReLU`, with conservative fallback to `"box"` for unsupported layers),
 - slope mode is particularly useful for dependency-heavy patterns such as `Linear(rotation) -> ReLU -> Linear(rotation^{-1})`: plain box propagation can overestimate strongly, while slope-aware relaxations keep substantially tighter certified bounds,
 - for additional tightness, `interval_forward_refine(model, interval, enclosure_mode="slope", splits_per_dim=...)` subdivides the input box and hulls sub-box outputs (higher cost, tighter bounds),
 - `model.lpnorm(domain, p, iterations, theta=0.5)` and
-  `model.sobolev_norm(domain, p, iterations, theta=0.5)` use
+  `model.sobolev_norm(domain, p, order, iterations, theta=0.5)` use
   Dörfler-type bulk marking (with uncertainty indicators) and adaptive
-  bisection to return outward-rounded certified norm enclosures; rigorously constant boxes with zero Jacobian are skipped during Sobolev refinement.
+  bisection to return outward-rounded certified norm enclosures; rigorously constant boxes with zero Jacobian (and zero Hessian when `order=2`) are skipped during Sobolev refinement.
 - both norm routines accept optional `forward_refine_splits` / `forward_refine_max_cells` arguments to tighten per-box forward enclosures during integration.
 
 ## Quick start
@@ -72,7 +72,8 @@ enable_interval_eval(enclosure_mode="slope")
 
 domain = IntervalTensor.from_bounds([0.0, 0.0], [1.0, 1.0])
 lp_bounds = model.lpnorm(domain, p=2.0, iterations=8)
-w1p_bounds = model.sobolev_norm(domain, p=2.0, iterations=8)
+w1p_bounds = model.sobolev_norm(domain, p=2.0, order=1, iterations=8)
+w2p_bounds = model.sobolev_norm(domain, p=2.0, order=2, iterations=8)
 ```
 
 ### Option 2: run directly from the repo without installing
@@ -101,7 +102,8 @@ For worked examples, see:
 
 - `notebooks/test_suite.ipynb` for quick feature checks and sanity tests,
 - `notebooks/reproduce_lp_w1p_experiments.ipynb` for reproducible certified
-  `L^p` and `W^{1,p}` experiments aligned with arXiv:2603.06431 (intentionally excluding `W^{2,p}`).
+  `L^p` and `W^{1,p}` experiments aligned with arXiv:2603.06431.
+- `notebooks/pinn_aposteriori_square_poisson.ipynb` for a Poisson PINN example with certified residual and boundary terms using Hessian bounds and `W^{2,2}`-compatible tooling.
 
 
 ## Numerical experiment figures

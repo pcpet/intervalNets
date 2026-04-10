@@ -697,6 +697,27 @@ def _interval_derivative_bounds_tanh(value: Interval) -> Interval:
     return Interval.from_bounds(lower_out, upper_out)
 
 
+def _interval_second_derivative_bounds_relu(value: Interval) -> Interval:
+    _ = value
+    return Interval.point(0.0)
+
+
+def _interval_second_derivative_bounds_sigmoid(value: Interval) -> Interval:
+    sigmoid_bounds = _apply_monotone_bounds(IntervalTensor((value.lower,), (value.upper,)), _sigmoid_scalar)
+    sigma = Interval(sigmoid_bounds.lower[0], sigmoid_bounds.upper[0])
+    one = Interval.point(1.0)
+    two = Interval.point(2.0)
+    return sigma * (one - sigma) * (one - (two * sigma))
+
+
+def _interval_second_derivative_bounds_tanh(value: Interval) -> Interval:
+    tanh_bounds = _apply_monotone_bounds(IntervalTensor((value.lower,), (value.upper,)), tanh)
+    tanh_interval = Interval(tanh_bounds.lower[0], tanh_bounds.upper[0])
+    one = Interval.point(1.0)
+    two = Interval.point(2.0)
+    return -(two * tanh_interval * (one - (tanh_interval * tanh_interval)))
+
+
 def _matrix_multiply(left: list[list[Interval]], right: list[list[Interval]]) -> list[list[Interval]]:
     if not left or not right:
         return []
@@ -734,6 +755,64 @@ def _matrix_multiply(left: list[list[Interval]], right: list[list[Interval]]) ->
         [Interval.from_bounds(lower_rows[row_idx][col_idx], upper_rows[row_idx][col_idx]) for col_idx in range(len(lower_rows[row_idx]))]
         for row_idx in range(len(lower_rows))
     ]
+
+
+def _zero_hessian(output_dim: int, input_dim: int) -> list[list[list[Interval]]]:
+    return [
+        [[Interval.point(0.0) for _ in range(input_dim)] for _ in range(input_dim)]
+        for _ in range(output_dim)
+    ]
+
+
+def _outer_product_interval(row_left: list[Interval], row_right: list[Interval]) -> list[list[Interval]]:
+    size = len(row_left)
+    if size != len(row_right):
+        raise ValueError("Rows must have matching lengths for outer-product intervals.")
+    return [
+        [row_left[i] * row_right[j] for j in range(size)]
+        for i in range(size)
+    ]
+
+
+def _hessian_compose(
+    local_jacobian: list[list[Interval]],
+    local_hessian: list[list[list[Interval]]],
+    previous_jacobian: list[list[Interval]],
+    previous_hessian: list[list[list[Interval]]],
+) -> tuple[list[list[Interval]], list[list[list[Interval]]]]:
+    new_jacobian = _matrix_multiply(local_jacobian, previous_jacobian)
+    if not local_jacobian:
+        return new_jacobian, []
+
+    output_dim = len(local_jacobian)
+    layer_input_dim = len(local_jacobian[0])
+    base_input_dim = len(previous_jacobian[0]) if previous_jacobian else 0
+    new_hessian = _zero_hessian(output_dim, base_input_dim)
+
+    for out_idx in range(output_dim):
+        acc = [[Interval.point(0.0) for _ in range(base_input_dim)] for _ in range(base_input_dim)]
+
+        # Chain-rule term: sum_a J_g[k,a] * H_f[a,:,:]
+        for a in range(layer_input_dim):
+            coeff = local_jacobian[out_idx][a]
+            for i in range(base_input_dim):
+                for j in range(base_input_dim):
+                    acc[i][j] = acc[i][j] + (coeff * previous_hessian[a][i][j])
+
+        # Curvature term: sum_{a,b} H_g[k,a,b] * J_f[a,:] ⊗ J_f[b,:]
+        for a in range(layer_input_dim):
+            for b in range(layer_input_dim):
+                coeff_h = local_hessian[out_idx][a][b]
+                if float(coeff_h.lower) == 0.0 and float(coeff_h.upper) == 0.0:
+                    continue
+                outer = _outer_product_interval(previous_jacobian[a], previous_jacobian[b])
+                for i in range(base_input_dim):
+                    for j in range(base_input_dim):
+                        acc[i][j] = acc[i][j] + (coeff_h * outer[i][j])
+
+        new_hessian[out_idx] = acc
+
+    return new_jacobian, new_hessian
 
 
 def _jacobian_for_layer(layer, pre_activation: IntervalTensor) -> list[list[Interval]]:
@@ -786,6 +865,46 @@ def _jacobian_for_layer(layer, pre_activation: IntervalTensor) -> list[list[Inte
     )
 
 
+def _hessian_for_layer(layer, pre_activation: IntervalTensor) -> list[list[list[Interval]]]:
+    if len(pre_activation.shape) != 1:
+        raise NotImplementedError("Interval Hessians currently support flat vectors only.")
+    size = len(pre_activation.lower)
+    if isinstance(layer, nn.Linear):
+        return _zero_hessian(layer.out_features, size)
+    if isinstance(layer, nn.Flatten):
+        return _zero_hessian(size, size)
+    if isinstance(layer, nn.ReLU):
+        second_derivatives = [
+            _interval_second_derivative_bounds_relu(Interval(pre_activation.lower[idx], pre_activation.upper[idx]))
+            for idx in range(size)
+        ]
+        tensor = _zero_hessian(size, size)
+        for idx, val in enumerate(second_derivatives):
+            tensor[idx][idx][idx] = val
+        return tensor
+    if isinstance(layer, nn.Sigmoid):
+        second_derivatives = [
+            _interval_second_derivative_bounds_sigmoid(Interval(pre_activation.lower[idx], pre_activation.upper[idx]))
+            for idx in range(size)
+        ]
+        tensor = _zero_hessian(size, size)
+        for idx, val in enumerate(second_derivatives):
+            tensor[idx][idx][idx] = val
+        return tensor
+    if isinstance(layer, nn.Tanh):
+        second_derivatives = [
+            _interval_second_derivative_bounds_tanh(Interval(pre_activation.lower[idx], pre_activation.upper[idx]))
+            for idx in range(size)
+        ]
+        tensor = _zero_hessian(size, size)
+        for idx, val in enumerate(second_derivatives):
+            tensor[idx][idx][idx] = val
+        return tensor
+    raise NotImplementedError(
+        f"Interval Hessian currently supports nn.Linear, nn.ReLU, nn.Sigmoid, nn.Tanh, and nn.Flatten; got {type(layer).__name__}."
+    )
+
+
 def _sequential_layer_inputs(module: nn.Sequential, domain: IntervalTensor, enclosure_mode: str) -> list[IntervalTensor]:
     children = list(module.children())
     if not children:
@@ -821,15 +940,59 @@ def _eval_jacobian_bounds(model, domain: IntervalTensor, enclosure_mode: str = "
     return IntervalTensor.from_bounds(lower, upper)
 
 
+def _eval_hessian_bounds(model, domain: IntervalTensor, enclosure_mode: str = "box") -> IntervalTensor:
+    if not isinstance(domain, IntervalTensor):
+        raise TypeError("model.eval_hessian(domain) requires an IntervalTensor domain.")
+    if len(domain.shape) != 1:
+        raise NotImplementedError("Interval Hessian evaluation currently supports flat input boxes only.")
+    if enclosure_mode not in {"box", "slope"}:
+        raise ValueError("enclosure_mode must be either 'box' or 'slope'.")
+
+    input_dim = len(domain.lower)
+    if isinstance(model, nn.Sequential):
+        layer_inputs = _sequential_layer_inputs(model, domain, enclosure_mode=enclosure_mode)
+        current_jacobian = _identity_jacobian(input_dim)
+        current_hessian = _zero_hessian(input_dim, input_dim)
+        for child, pre_activation in zip(model, layer_inputs):
+            local_jacobian = _jacobian_for_layer(child, pre_activation)
+            local_hessian = _hessian_for_layer(child, pre_activation)
+            current_jacobian, current_hessian = _hessian_compose(
+                local_jacobian,
+                local_hessian,
+                current_jacobian,
+                current_hessian,
+            )
+    else:
+        local_jacobian = _jacobian_for_layer(model, domain)
+        local_hessian = _hessian_for_layer(model, domain)
+        current_hessian = local_hessian
+
+    lower = tuple(
+        tuple(tuple(entry.lower for entry in row) for row in output_slice)
+        for output_slice in current_hessian
+    )
+    upper = tuple(
+        tuple(tuple(entry.upper for entry in row) for row in output_slice)
+        for output_slice in current_hessian
+    )
+    return IntervalTensor.from_bounds(lower, upper)
+
+
 def _sobolev_pointwise_power_bounds(
     model,
     box: IntervalTensor,
     p: float,
+    order: int = 1,
     output: IntervalTensor | None = None,
     jacobian: IntervalTensor | None = None,
+    hessian: IntervalTensor | None = None,
 ) -> Interval:
+    if order not in {1, 2}:
+        raise ValueError("order must be either 1 or 2.")
     output = output if output is not None else model.eval(box)
     jacobian = jacobian if jacobian is not None else model.eval_jacobian(box)
+    if order == 2:
+        hessian = hessian if hessian is not None else model.eval_hessian(box)
     total = Interval.point(0.0)
 
     for lower, upper in zip(output.lower, output.upper):
@@ -840,6 +1003,13 @@ def _sobolev_pointwise_power_bounds(
         for entry_lower, entry_upper in zip(row_lower, row_upper):
             derivative_component = Interval(entry_lower, entry_upper)
             total = total + _interval_pow_scalar(_interval_abs_bounds(derivative_component), p)
+
+    if order == 2 and hessian is not None:
+        for out_slice_lower, out_slice_upper in zip(hessian.lower, hessian.upper):
+            for row_lower, row_upper in zip(out_slice_lower, out_slice_upper):
+                for entry_lower, entry_upper in zip(row_lower, row_upper):
+                    second_derivative_component = Interval(entry_lower, entry_upper)
+                    total = total + _interval_pow_scalar(_interval_abs_bounds(second_derivative_component), p)
 
     return total
 
@@ -863,23 +1033,34 @@ def _jacobian_is_exact_zero(jacobian: IntervalTensor) -> bool:
     )
 
 
+def _hessian_is_exact_zero(hessian: IntervalTensor) -> bool:
+    return all(
+        float(entry_lower) == 0.0 and float(entry_upper) == 0.0
+        for out_slice_lower, out_slice_upper in zip(hessian.lower, hessian.upper)
+        for row_lower, row_upper in zip(out_slice_lower, out_slice_upper)
+        for entry_lower, entry_upper in zip(row_lower, row_upper)
+    )
+
+
 def _sobolev_pointwise_power_bounds_refined(
     model,
     box: IntervalTensor,
     p: float,
+    order: int,
     forward_refine_splits: int,
     forward_refine_max_cells: int,
 ) -> Interval:
     if forward_refine_splits <= 1:
-        return _sobolev_pointwise_power_bounds(model, box, p)
+        return _sobolev_pointwise_power_bounds(model, box, p, order=order)
     cells = _subdivide_box(box, splits_per_dim=forward_refine_splits, max_cells=forward_refine_max_cells)
-    return _hull_intervals([_sobolev_pointwise_power_bounds(model, cell, p) for cell in cells])
+    return _hull_intervals([_sobolev_pointwise_power_bounds(model, cell, p, order=order) for cell in cells])
 
 
 def _sobolev_norm_bounds(
     model,
     domain: IntervalTensor,
     p: float,
+    order: int,
     iterations: int,
     theta: float,
     forward_refine_splits: int = 1,
@@ -891,6 +1072,8 @@ def _sobolev_norm_bounds(
         raise NotImplementedError("Sobolev integration currently supports flat input boxes only.")
     if not isfinite(p) or p <= 0.0:
         raise ValueError("p must be a positive finite real number.")
+    if order not in {1, 2}:
+        raise ValueError("order must be either 1 or 2.")
     if iterations < 0:
         raise ValueError("iterations must be non-negative.")
     _validate_dorfler_theta(theta)
@@ -907,12 +1090,16 @@ def _sobolev_norm_bounds(
                 model,
                 box,
                 p,
+                order,
                 forward_refine_splits=forward_refine_splits,
                 forward_refine_max_cells=forward_refine_max_cells,
             )
             output = model.eval(box)
             jacobian = model.eval_jacobian(box)
-            if _interval_tensor_is_exact_constant(output) and _jacobian_is_exact_zero(jacobian):
+            hessian = model.eval_hessian(box) if order == 2 else None
+            derivative_zero = _jacobian_is_exact_zero(jacobian)
+            second_derivative_zero = True if hessian is None else _hessian_is_exact_zero(hessian)
+            if _interval_tensor_is_exact_constant(output) and derivative_zero and second_derivative_zero:
                 # A rigorously constant box has zero Sobolev seminorm contribution,
                 # so further refinement is unnecessary for the derivative part.
                 indicators.append(0.0)
@@ -940,6 +1127,7 @@ def _sobolev_norm_bounds(
             model,
             box,
             p,
+            order,
             forward_refine_splits=forward_refine_splits,
             forward_refine_max_cells=forward_refine_max_cells,
         )
@@ -1079,10 +1267,15 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         _ORIGINAL_EVAL(self)
         return _eval_jacobian_bounds(self, domain, enclosure_mode=enclosure_mode)
 
+    def eval_hessian_with_interval(self, domain: IntervalTensor):
+        _ORIGINAL_EVAL(self)
+        return _eval_hessian_bounds(self, domain, enclosure_mode=enclosure_mode)
+
     def sobolev_norm_with_interval(
         self,
         domain: IntervalTensor,
         p: float,
+        order: int = 1,
         iterations: int = 0,
         theta: float = 0.5,
         forward_refine_splits: int = 1,
@@ -1093,6 +1286,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
             self,
             domain,
             p,
+            order,
             iterations,
             theta,
             forward_refine_splits=forward_refine_splits,
@@ -1102,5 +1296,6 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
     nn.Module.eval = eval_with_interval
     nn.Module.lpnorm = lpnorm_with_interval
     nn.Module.eval_jacobian = eval_jacobian_with_interval
+    nn.Module.eval_hessian = eval_hessian_with_interval
     nn.Module.sobolev_norm = sobolev_norm_with_interval
     _PATCHED = True
