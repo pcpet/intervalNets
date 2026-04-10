@@ -13,7 +13,7 @@ from intervalnets import (
     interval_forward,
     interval_forward_refine,
 )
-from intervalnets.pytorch import _eval_jacobian_bounds, _interval_pow_scalar
+from intervalnets.pytorch import _eval_hessian_bounds, _eval_jacobian_bounds, _interval_pow_scalar
 
 
 def test_relu_negative_interval_rounds_outward_to_zero() -> None:
@@ -694,6 +694,52 @@ def test_eval_jacobian_dead_relu_path_stays_exact_zero() -> None:
     assert jacobian.upper[0][0] == 0.0
 
 
+def test_eval_hessian_linear_layer_is_exact_zero_tensor() -> None:
+    enable_interval_eval()
+    layer = nn.Linear(2, 1)
+    with torch.no_grad():
+        layer.weight.copy_(torch.tensor([[1.5, -0.5]]))
+        layer.bias.copy_(torch.tensor([0.2]))
+
+    domain = IntervalTensor.from_bounds([-1.0, -2.0], [0.5, 3.0])
+    hessian = layer.eval_hessian(domain)
+
+    assert hessian.lower[0][0][0] == 0.0
+    assert hessian.upper[0][0][0] == 0.0
+    assert hessian.lower[0][0][1] == 0.0
+    assert hessian.upper[0][0][1] == 0.0
+    assert hessian.lower[0][1][0] == 0.0
+    assert hessian.upper[0][1][0] == 0.0
+    assert hessian.lower[0][1][1] == 0.0
+    assert hessian.upper[0][1][1] == 0.0
+
+
+def test_eval_hessian_tanh_network_encloses_corner_second_derivatives() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(2, 1, bias=False), nn.Tanh())
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.25, -0.75]]))
+
+    domain = IntervalTensor.from_bounds([-0.4, -0.2], [0.5, 0.6])
+    hessian = _eval_hessian_bounds(model, domain, enclosure_mode="slope")
+
+    # For z = w·x and y=tanh(z), Hessian(y) = tanh''(z) * (w ⊗ w)
+    weights = model[0].weight.detach().to(torch.float64)[0]
+    for x0 in (domain.lower[0], domain.upper[0]):
+        for x1 in (domain.lower[1], domain.upper[1]):
+            z = float(weights[0]) * x0 + float(weights[1]) * x1
+            tanh_z = math.tanh(z)
+            tanh_second = -2.0 * tanh_z * (1.0 - tanh_z * tanh_z)
+            expected_00 = tanh_second * float(weights[0]) * float(weights[0])
+            expected_01 = tanh_second * float(weights[0]) * float(weights[1])
+            expected_11 = tanh_second * float(weights[1]) * float(weights[1])
+
+            assert hessian.lower[0][0][0] <= expected_00 <= hessian.upper[0][0][0]
+            assert hessian.lower[0][0][1] <= expected_01 <= hessian.upper[0][0][1]
+            assert hessian.lower[0][1][0] <= expected_01 <= hessian.upper[0][1][0]
+            assert hessian.lower[0][1][1] <= expected_11 <= hessian.upper[0][1][1]
+
+
 def test_sobolev_norm_constant_network_matches_closed_form() -> None:
     enable_interval_eval()
     model = nn.Sequential(nn.Linear(1, 1))
@@ -707,6 +753,36 @@ def test_sobolev_norm_constant_network_matches_closed_form() -> None:
 
     assert bounds.lower <= exact <= bounds.upper
     assert (bounds.upper - bounds.lower) < 1e-10
+
+
+def test_sobolev_norm_order_one_matches_default_behavior() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[0.75]]))
+        model[0].bias.copy_(torch.tensor([0.1]))
+
+    domain = IntervalTensor.from_bounds([-1.0], [1.0])
+    default_order = model.sobolev_norm(domain, p=2.0, iterations=3)
+    order_one = model.sobolev_norm(domain, p=2.0, order=1, iterations=3)
+
+    assert order_one.lower <= default_order.upper
+    assert default_order.lower <= order_one.upper
+
+
+def test_sobolev_norm_order_two_is_at_least_order_one_for_tanh_model() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1), nn.Tanh())
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.2]]))
+        model[0].bias.copy_(torch.tensor([0.0]))
+
+    domain = IntervalTensor.from_bounds([-0.7], [0.9])
+    w12 = model.sobolev_norm(domain, p=2.0, order=1, iterations=4)
+    w22 = model.sobolev_norm(domain, p=2.0, order=2, iterations=4)
+
+    assert w22.lower >= w12.lower
+    assert w22.upper >= w12.upper
 
 
 def test_sobolev_norm_refinement_tightens_interval() -> None:
@@ -849,6 +925,8 @@ def test_sobolev_norm_rejects_invalid_parameters() -> None:
     with pytest.raises(ValueError):
         _ = model.sobolev_norm(domain, p=2.0, iterations=-1)
     with pytest.raises(ValueError):
+        _ = model.sobolev_norm(domain, p=2.0, order=3, iterations=0)
+    with pytest.raises(ValueError):
         _ = model.sobolev_norm(domain, p=2.0, iterations=0, forward_refine_splits=0)
 
 
@@ -871,6 +949,13 @@ def test_eval_jacobian_requires_interval_tensor_domain() -> None:
     model = nn.Sequential(nn.Linear(1, 1))
     with pytest.raises(TypeError):
         _ = model.eval_jacobian([0.0, 1.0])
+
+
+def test_eval_hessian_requires_interval_tensor_domain() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1), nn.Tanh())
+    with pytest.raises(TypeError):
+        _ = model.eval_hessian([0.0, 1.0])
 
 
 def test_softmax_jacobian_encloses_autograd_corner_gradients() -> None:
