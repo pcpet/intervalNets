@@ -122,6 +122,14 @@ README.
 ![2D curves](notebooks/notebooks/artifacts/figure_cd_2d_curves.png)
 ![Local gap heatmaps](notebooks/notebooks/artifacts/figure_d_local_gap_heatmaps.png)
 
+### PINN a-posteriori Poisson example
+
+![PINN Poisson results](notebooks/notebooks/artifacts/figure_pinn_results.png)
+
+Certified interval bounds can be propagated through the PINN residual and
+boundary-condition terms, so the same pipeline can rigorously account for PDE
+interior constraints **and** boundary conditions.
+
 ## Reference
 
 - Johannes Gründler, Moritz Maibaum, Philipp Petersen,
