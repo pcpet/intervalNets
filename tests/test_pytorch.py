@@ -5,6 +5,7 @@ torch = pytest.importorskip("torch")
 from torch import nn
 
 from intervalnets import (
+    AffineTensor,
     Interval,
     IntervalAdd,
     IntervalCat,
@@ -956,6 +957,68 @@ def test_eval_hessian_requires_interval_tensor_domain() -> None:
     model = nn.Sequential(nn.Linear(1, 1), nn.Tanh())
     with pytest.raises(TypeError):
         _ = model.eval_hessian([0.0, 1.0])
+
+
+def test_interval_forward_dispatches_affine_tensor_for_linear_relu() -> None:
+    model = nn.Sequential(nn.Linear(2, 2), nn.ReLU())
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.0, -1.0], [0.5, 2.0]], dtype=torch.float32))
+        model[0].bias.copy_(torch.tensor([0.1, -0.2], dtype=torch.float32))
+    domain = AffineTensor.from_bounds(
+        torch.tensor([-1.0, 0.0], dtype=torch.float32),
+        torch.tensor([1.0, 2.0], dtype=torch.float32),
+    )
+
+    output = interval_forward(model, domain)
+
+    assert isinstance(output, AffineTensor)
+    lower, upper = output.to_bounds()
+    assert lower.shape == torch.Size([2])
+    assert upper.shape == torch.Size([2])
+
+
+def test_interval_forward_refine_rejects_affine_tensor() -> None:
+    model = nn.Linear(1, 1)
+    domain = AffineTensor.from_bounds(
+        torch.tensor([-1.0], dtype=torch.float32),
+        torch.tensor([1.0], dtype=torch.float32),
+    )
+    with pytest.raises(NotImplementedError, match="does not currently support AffineTensor"):
+        _ = interval_forward_refine(model, domain)
+
+
+def test_eval_methods_raise_not_implemented_for_affine_domains() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1), nn.Tanh())
+    domain = AffineTensor.from_bounds(
+        torch.tensor([-0.5], dtype=torch.float32),
+        torch.tensor([0.5], dtype=torch.float32),
+    )
+
+    with pytest.raises(NotImplementedError, match="does not currently support AffineTensor"):
+        _ = model.lpnorm(domain, p=2.0, iterations=0)
+    with pytest.raises(NotImplementedError, match="does not currently support AffineTensor"):
+        _ = model.eval_jacobian(domain)
+    with pytest.raises(NotImplementedError, match="does not currently support AffineTensor"):
+        _ = model.eval_hessian(domain)
+    with pytest.raises(NotImplementedError, match="does not currently support AffineTensor"):
+        _ = model.sobolev_norm(domain, p=2.0, iterations=0)
+
+
+def test_eval_overload_dispatches_affine_domain() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(2, 2), nn.ReLU())
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.0, -1.0], [0.25, 0.5]], dtype=torch.float32))
+        model[0].bias.copy_(torch.tensor([0.0, 0.1], dtype=torch.float32))
+    domain = AffineTensor.from_bounds(
+        torch.tensor([-1.0, 0.0], dtype=torch.float32),
+        torch.tensor([1.0, 1.5], dtype=torch.float32),
+    )
+
+    output = model.eval(domain)
+
+    assert isinstance(output, AffineTensor)
 
 
 def test_softmax_jacobian_encloses_autograd_corner_gradients() -> None:
