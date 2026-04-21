@@ -988,22 +988,73 @@ def test_interval_forward_refine_rejects_affine_tensor() -> None:
         _ = interval_forward_refine(model, domain)
 
 
-def test_eval_methods_raise_not_implemented_for_affine_domains() -> None:
+def test_eval_methods_support_affine_domains_with_finite_ordered_bounds() -> None:
     enable_interval_eval()
-    model = nn.Sequential(nn.Linear(1, 1), nn.Tanh())
+    model = nn.Sequential(nn.Linear(2, 3), nn.Tanh(), nn.Linear(3, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[0.8, -0.4], [0.3, 0.5], [-0.7, 0.2]], dtype=torch.float32))
+        model[0].bias.copy_(torch.tensor([0.1, -0.2, 0.05], dtype=torch.float32))
+        model[2].weight.copy_(torch.tensor([[1.1, -0.3, 0.6]], dtype=torch.float32))
+        model[2].bias.copy_(torch.tensor([0.0], dtype=torch.float32))
     domain = AffineTensor.from_bounds(
-        torch.tensor([-0.5], dtype=torch.float32),
-        torch.tensor([0.5], dtype=torch.float32),
+        torch.tensor([-0.5, -0.25], dtype=torch.float32),
+        torch.tensor([0.5, 0.75], dtype=torch.float32),
     )
 
-    with pytest.raises(NotImplementedError, match="does not currently support AffineTensor"):
-        _ = model.lpnorm(domain, p=2.0, iterations=0)
-    with pytest.raises(NotImplementedError, match="does not currently support AffineTensor"):
-        _ = model.eval_jacobian(domain)
-    with pytest.raises(NotImplementedError, match="does not currently support AffineTensor"):
-        _ = model.eval_hessian(domain)
-    with pytest.raises(NotImplementedError, match="does not currently support AffineTensor"):
-        _ = model.sobolev_norm(domain, p=2.0, iterations=0)
+    lp = model.lpnorm(domain, p=2.0, iterations=1)
+    jacobian = model.eval_jacobian(domain)
+    hessian = model.eval_hessian(domain)
+    sobolev = model.sobolev_norm(domain, p=2.0, iterations=1)
+
+    assert math.isfinite(float(lp.lower))
+    assert math.isfinite(float(lp.upper))
+    assert float(lp.lower) <= float(lp.upper)
+    assert math.isfinite(float(sobolev.lower))
+    assert math.isfinite(float(sobolev.upper))
+    assert float(sobolev.lower) <= float(sobolev.upper)
+
+    assert jacobian.lower[0][0] <= jacobian.upper[0][0]
+    assert jacobian.lower[0][1] <= jacobian.upper[0][1]
+    assert hessian.lower[0][0][0] <= hessian.upper[0][0][0]
+    assert hessian.lower[0][0][1] <= hessian.upper[0][0][1]
+    assert hessian.lower[0][1][0] <= hessian.upper[0][1][0]
+    assert hessian.lower[0][1][1] <= hessian.upper[0][1][1]
+
+
+def test_affine_lpnorm_and_sobolev_are_conservative_against_monte_carlo() -> None:
+    enable_interval_eval()
+    torch.manual_seed(13)
+    model = nn.Sequential(nn.Linear(2, 4), nn.Tanh(), nn.Linear(4, 1))
+    with torch.no_grad():
+        for parameter in model.parameters():
+            nn.init.uniform_(parameter, a=-0.7, b=0.7)
+
+    lower = torch.tensor([-0.4, -0.2], dtype=torch.float32)
+    upper = torch.tensor([0.6, 0.5], dtype=torch.float32)
+    domain = AffineTensor.from_bounds(lower, upper)
+
+    lp_bounds = model.lpnorm(domain, p=2.0, iterations=2)
+    sobolev_bounds = model.sobolev_norm(domain, p=2.0, order=1, iterations=2)
+
+    samples = torch.rand(10000, 2, dtype=torch.float64)
+    samples[:, 0] = samples[:, 0] * float(upper[0] - lower[0]) + float(lower[0])
+    samples[:, 1] = samples[:, 1] * float(upper[1] - lower[1]) + float(lower[1])
+    values = model(samples.to(dtype=torch.float32)).to(dtype=torch.float64).squeeze(-1)
+
+    volume = float((upper[0] - lower[0]) * (upper[1] - lower[1]))
+    lp_estimate = (volume * torch.mean(values.abs().pow(2.0)).item()) ** 0.5
+    assert float(lp_bounds.lower) <= lp_estimate <= float(lp_bounds.upper)
+
+    gradients: list[float] = []
+    for sample in samples[:512]:
+        x = sample.to(dtype=torch.float32).clone().detach().requires_grad_(True)
+        y = model(x.unsqueeze(0)).squeeze()
+        grad = torch.autograd.grad(y, x, create_graph=False)[0].to(dtype=torch.float64)
+        gradients.append(float(torch.sum(grad * grad).item()))
+    grad_sq_mean = sum(gradients) / len(gradients)
+    sobolev_integrand_estimate = torch.mean(values.abs().pow(2.0)).item() + grad_sq_mean
+    sobolev_estimate = (volume * sobolev_integrand_estimate) ** 0.5
+    assert float(sobolev_bounds.lower) <= sobolev_estimate <= float(sobolev_bounds.upper)
 
 
 def test_eval_overload_dispatches_affine_domain() -> None:
