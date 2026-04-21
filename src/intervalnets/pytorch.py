@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from itertools import product
 from math import exp, inf, isfinite, log, nextafter, tanh
-from typing import Any
+from typing import Any, TypeAlias
 
+from .affine import AffineTensor
+from .affine_pytorch import affine_relu_transform, affine_sigmoid_transform, affine_tanh_transform
 from .interval import Interval
 
 try:
@@ -38,6 +40,9 @@ class IntervalTensor(Interval):
             raise ImportError("PyTorch is required for IntervalTensor.to_torch().")
         dtype = dtype or torch.float64
         return torch.tensor(self.lower, dtype=dtype), torch.tensor(self.upper, dtype=dtype)
+
+
+DomainTensor: TypeAlias = IntervalTensor | AffineTensor
 
 
 def _require_torch() -> None:
@@ -254,6 +259,43 @@ def _interval_cat(intervals: list[IntervalTensor], dim: int) -> IntervalTensor:
         lower.extend(float(value) for value in item.lower)
         upper.extend(float(value) for value in item.upper)
     return IntervalTensor.from_bounds(lower, upper)
+
+
+def _affine_add(left: AffineTensor, right: AffineTensor) -> AffineTensor:
+    return left + right
+
+
+def _affine_cat(inputs: list[AffineTensor], dim: int) -> AffineTensor:
+    if not inputs:
+        raise ValueError("IntervalCat requires at least one interval input.")
+    if torch is None:
+        raise ImportError("PyTorch is required for affine concatenation.")
+
+    centers = [item.c for item in inputs]
+    generators = [item.G for item in inputs]
+    if not all(isinstance(center, torch.Tensor) for center in centers) or not all(
+        isinstance(generator, torch.Tensor) for generator in generators
+    ):
+        raise NotImplementedError("Affine IntervalCat currently requires torch-backed AffineTensor inputs.")
+
+    normalized_dim = dim if dim >= 0 else dim + centers[0].ndim
+    concatenated_center = torch.cat(centers, dim=normalized_dim)
+    total_noise = sum(generator.shape[-1] for generator in generators)
+    out_shape = concatenated_center.shape
+    concatenated_generators = torch.zeros(*out_shape, total_noise, dtype=concatenated_center.dtype, device=concatenated_center.device)
+
+    offset = 0
+    axis_offset = 0
+    for center, generator in zip(centers, generators):
+        count = generator.shape[-1]
+        index = [slice(None)] * len(out_shape)
+        axis_stop = axis_offset + center.shape[normalized_dim]
+        index[normalized_dim] = slice(axis_offset, axis_stop)
+        concatenated_generators[tuple(index) + (slice(offset, offset + count),)] = generator
+        offset += count
+        axis_offset = axis_stop
+
+    return AffineTensor(concatenated_center, concatenated_generators)
 
 
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
@@ -1142,7 +1184,7 @@ def _sobolev_norm_bounds(
     return _interval_pow_scalar(non_negative, exponent)
 
 
-def interval_forward(module, x: IntervalTensor, enclosure_mode: str = "box") -> IntervalTensor:
+def _interval_forward(module, x: IntervalTensor, enclosure_mode: str = "box") -> IntervalTensor:
     _require_torch()
     if enclosure_mode not in {"box", "slope"}:
         raise ValueError("enclosure_mode must be either 'box' or 'slope'.")
@@ -1151,7 +1193,7 @@ def interval_forward(module, x: IntervalTensor, enclosure_mode: str = "box") -> 
             return _sequential_linear_relu_relaxation(module, x)
         result = x
         for child in module:
-            result = interval_forward(child, result, enclosure_mode=enclosure_mode)
+            result = _interval_forward(child, result, enclosure_mode=enclosure_mode)
         return result
     if isinstance(module, nn.Flatten):
         return IntervalTensor(tuple(x.lower), tuple(x.upper))
@@ -1172,24 +1214,66 @@ def interval_forward(module, x: IntervalTensor, enclosure_mode: str = "box") -> 
     if isinstance(module, nn.Identity):
         return IntervalTensor(tuple(x.lower), tuple(x.upper))
     if isinstance(module, IntervalAdd):
-        left = interval_forward(module.left, x, enclosure_mode=enclosure_mode)
-        right = interval_forward(module.right, x, enclosure_mode=enclosure_mode)
+        left = _interval_forward(module.left, x, enclosure_mode=enclosure_mode)
+        right = _interval_forward(module.right, x, enclosure_mode=enclosure_mode)
         return _interval_add(left, right)
     if isinstance(module, IntervalCat):
-        parts = [interval_forward(branch, x, enclosure_mode=enclosure_mode) for branch in module.branches]
+        parts = [_interval_forward(branch, x, enclosure_mode=enclosure_mode) for branch in module.branches]
         return _interval_cat(parts, module.dim)
     raise NotImplementedError(
         f"Interval forward currently supports nn.Sequential, nn.Flatten, nn.Linear, nn.ReLU, nn.Sigmoid, nn.Tanh, nn.Softplus, nn.LeakyReLU, nn.Softmax, nn.Identity, IntervalAdd, and IntervalCat only; got {type(module).__name__}."
     )
 
 
+def _affine_forward(module, x: AffineTensor, enclosure_mode: str = "box") -> AffineTensor:
+    _ = enclosure_mode
+    _require_torch()
+    if isinstance(module, nn.Sequential):
+        result = x
+        for child in module:
+            result = _affine_forward(child, result, enclosure_mode=enclosure_mode)
+        return result
+    if isinstance(module, nn.Flatten):
+        return x
+    if isinstance(module, nn.Linear):
+        weight = module.weight.detach()
+        bias = module.bias.detach() if module.bias is not None else None
+        return x.affine_map(weight, bias)
+    if isinstance(module, nn.ReLU):
+        return affine_relu_transform(x)
+    if isinstance(module, nn.Sigmoid):
+        return affine_sigmoid_transform(x)
+    if isinstance(module, nn.Tanh):
+        return affine_tanh_transform(x)
+    if isinstance(module, nn.Identity):
+        return x
+    if isinstance(module, IntervalAdd):
+        left = _affine_forward(module.left, x, enclosure_mode=enclosure_mode)
+        right = _affine_forward(module.right, x, enclosure_mode=enclosure_mode)
+        return _affine_add(left, right)
+    if isinstance(module, IntervalCat):
+        parts = [_affine_forward(branch, x, enclosure_mode=enclosure_mode) for branch in module.branches]
+        return _affine_cat(parts, module.dim)
+    raise NotImplementedError(
+        f"Affine forward currently supports nn.Sequential, nn.Flatten, nn.Linear, nn.ReLU, nn.Sigmoid, nn.Tanh, nn.Identity, IntervalAdd, and IntervalCat only; got {type(module).__name__}."
+    )
+
+
+def interval_forward(module, x: DomainTensor, enclosure_mode: str = "box") -> DomainTensor:
+    if isinstance(x, IntervalTensor):
+        return _interval_forward(module, x, enclosure_mode=enclosure_mode)
+    if isinstance(x, AffineTensor):
+        return _affine_forward(module, x, enclosure_mode=enclosure_mode)
+    raise TypeError("interval_forward(module, x) requires x to be an IntervalTensor or AffineTensor.")
+
+
 def interval_forward_refine(
     module,
-    x: IntervalTensor,
+    x: DomainTensor,
     enclosure_mode: str = "slope",
     splits_per_dim: int = 2,
     max_cells: int = 256,
-) -> IntervalTensor:
+) -> DomainTensor:
     """Refine interval forward bounds by subdividing the input box.
 
     This helper computes interval bounds on multiple sub-boxes and returns the
@@ -1197,6 +1281,13 @@ def interval_forward_refine(
     `interval_forward(...)` once on the full input box.
     """
     _require_torch()
+    if isinstance(x, AffineTensor):
+        raise NotImplementedError(
+            "interval_forward_refine does not currently support AffineTensor inputs; "
+            "affine subdivision refinement is not implemented."
+        )
+    if not isinstance(x, IntervalTensor):
+        raise TypeError("interval_forward_refine(module, x, ...) requires x to be an IntervalTensor or AffineTensor.")
     if len(x.shape) != 1:
         raise NotImplementedError("interval_forward_refine currently supports flat vectors only.")
     if splits_per_dim < 1:
@@ -1207,7 +1298,7 @@ def interval_forward_refine(
     hull_upper: tuple[float, ...] | None = None
 
     for cell in cells:
-        cell_out = interval_forward(module, cell, enclosure_mode=enclosure_mode)
+        cell_out = _interval_forward(module, cell, enclosure_mode=enclosure_mode)
         lower = tuple(float(v) for v in cell_out.lower)
         upper = tuple(float(v) for v in cell_out.upper)
 
@@ -1235,17 +1326,17 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
     if _PATCHED:
         return
 
-    def eval_with_interval(self, interval: IntervalTensor | None = None):
+    def eval_with_interval(self, interval: DomainTensor | None = None):
         result = _ORIGINAL_EVAL(self)
         if interval is None:
             return result
-        if not isinstance(interval, IntervalTensor):
-            raise TypeError("model.eval(interval) requires an IntervalTensor input.")
+        if not isinstance(interval, (IntervalTensor, AffineTensor)):
+            raise TypeError("model.eval(interval) requires an IntervalTensor or AffineTensor input.")
         return interval_forward(self, interval, enclosure_mode=enclosure_mode)
 
     def lpnorm_with_interval(
         self,
-        domain: IntervalTensor,
+        domain: DomainTensor,
         p: float,
         iterations: int = 0,
         theta: float = 0.5,
@@ -1253,6 +1344,10 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         forward_refine_max_cells: int = 256,
     ):
         _ORIGINAL_EVAL(self)
+        if isinstance(domain, AffineTensor):
+            raise NotImplementedError(
+                "model.lpnorm(domain, ...) does not currently support AffineTensor domains."
+            )
         return _lpnorm_bounds(
             self,
             domain,
@@ -1263,17 +1358,25 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
             forward_refine_max_cells=forward_refine_max_cells,
         )
 
-    def eval_jacobian_with_interval(self, domain: IntervalTensor):
+    def eval_jacobian_with_interval(self, domain: DomainTensor):
         _ORIGINAL_EVAL(self)
+        if isinstance(domain, AffineTensor):
+            raise NotImplementedError(
+                "model.eval_jacobian(domain) does not currently support AffineTensor domains."
+            )
         return _eval_jacobian_bounds(self, domain, enclosure_mode=enclosure_mode)
 
-    def eval_hessian_with_interval(self, domain: IntervalTensor):
+    def eval_hessian_with_interval(self, domain: DomainTensor):
         _ORIGINAL_EVAL(self)
+        if isinstance(domain, AffineTensor):
+            raise NotImplementedError(
+                "model.eval_hessian(domain) does not currently support AffineTensor domains."
+            )
         return _eval_hessian_bounds(self, domain, enclosure_mode=enclosure_mode)
 
     def sobolev_norm_with_interval(
         self,
-        domain: IntervalTensor,
+        domain: DomainTensor,
         p: float,
         order: int = 1,
         iterations: int = 0,
@@ -1282,6 +1385,10 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         forward_refine_max_cells: int = 256,
     ):
         _ORIGINAL_EVAL(self)
+        if isinstance(domain, AffineTensor):
+            raise NotImplementedError(
+                "model.sobolev_norm(domain, ...) does not currently support AffineTensor domains."
+            )
         return _sobolev_norm_bounds(
             self,
             domain,
