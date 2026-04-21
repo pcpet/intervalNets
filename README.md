@@ -92,6 +92,56 @@ sys.path.insert(0, str(repo_root / "src"))
 
 After that, `from intervalnets import ...` will work from the checkout as well.
 
+
+## Affine arithmetic (zonotope) usage
+
+`AffineTensor` represents a zonotope in the form
+
+\[
+Z = c + G\varepsilon,\quad \varepsilon_i \in [-1,1].
+\]
+
+For linear layers with weight matrix `W` and bias `b`, propagation follows the affine map
+
+\[
+WZ + b = (Wc + b) + (WG)\varepsilon.
+\]
+
+```python
+import torch
+from torch import nn
+from intervalnets import AffineTensor, affine_forward
+
+# input box -> affine zonotope
+z = AffineTensor.from_bounds(
+    torch.tensor([-1.0, 0.0]),
+    torch.tensor([1.0, 2.0]),
+)
+
+layer = nn.Linear(2, 3)
+out = affine_forward(layer, z)
+
+# center/generator semantics
+assert torch.allclose(out.c, layer.weight @ z.c + layer.bias)
+assert torch.allclose(out.G, layer.weight @ z.G)
+```
+
+Affine nonlinear enclosures currently support:
+
+- `nn.ReLU`
+- `nn.Tanh`
+- `nn.Sigmoid`
+
+These are implemented as conservative affine (Chebyshev-style) enclosures with fresh error generators, so `out.to_bounds()` rigorously contains the exact activation image over the input domain.
+
+```python
+model = nn.Sequential(nn.Linear(2, 2), nn.ReLU(), nn.Linear(2, 1))
+affine_out = affine_forward(model, z)
+lower, upper = affine_out.to_bounds()
+```
+
+`interval_forward(model, x)` and `model.eval(x)` accept both `IntervalTensor` and `AffineTensor`.
+
 ## Installation notes
 
 - the core `Interval` type uses only the Python standard library,

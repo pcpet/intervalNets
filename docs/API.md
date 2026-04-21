@@ -10,6 +10,9 @@ This document describes the public Python API exposed by `intervalnets` and how 
 - `intervalnets.pytorch.interval_forward(module, x, enclosure_mode="box")`: interval propagation backend used by patched `model.eval(interval)`.
 - `intervalnets.pytorch.interval_forward_refine(module, x, enclosure_mode="slope", splits_per_dim=2, max_cells=256)`: optional subdivision-based forward refinement.
 - `intervalnets.pytorch.IntervalAdd`, `intervalnets.pytorch.IntervalCat`: helper combinators for branched interval models.
+- `intervalnets.affine.AffineTensor`: affine arithmetic container `Z = c + Gε` with `ε_i ∈ [-1,1]`.
+- `intervalnets.pytorch.affine_forward(module, x)`: affine propagation backend for `AffineTensor` domains.
+- `intervalnets.affine_pytorch.affine_relu_transform`, `affine_tanh_transform`, `affine_sigmoid_transform`: affine activation enclosures for ReLU/Tanh/Sigmoid.
 
 ## Core interval arithmetic (`Interval`)
 
@@ -134,6 +137,64 @@ Runs each branch on the same input interval and concatenates outputs.
 - Requires at least one branch.
 - Current interval backend supports 1D vector outputs and `dim in {0, -1}`.
 
+
+## Affine arithmetic (`AffineTensor`)
+
+### Construction and bounds
+
+- `AffineTensor.point(value)`
+  - Degenerate affine element with zero generators.
+- `AffineTensor.from_bounds(lower, upper)` (alias: `from_interval`)
+  - Converts a box domain to affine form (`c` midpoint, interval-diagonal `G`).
+- `to_bounds()`
+  - Returns outward-rounded interval bounds enclosing all affine realizations.
+
+### Core operations
+
+- `+`, `-`, unary `-`
+  - Combines affine centers and concatenates generator columns (with sign flip for subtraction).
+- `affine_map(W, b=None)`
+  - Applies the affine linear map:
+
+\[
+Z = c + G\varepsilon \quad\Rightarrow\quad WZ + b = (Wc + b) + (WG)\varepsilon.
+\]
+
+### Activation enclosures
+
+Affine PyTorch propagation supports the following nonlinearities:
+
+- `nn.ReLU` via `affine_relu_transform`
+- `nn.Tanh` via `affine_tanh_transform`
+- `nn.Sigmoid` via `affine_sigmoid_transform`
+
+Each transform computes an affine enclosure and appends fresh error generators so that
+`transform(x).to_bounds()` conservatively encloses the true activation image over the input domain.
+
+### Minimal affine example
+
+```python
+import torch
+from torch import nn
+from intervalnets import AffineTensor, affine_forward
+
+domain = AffineTensor.from_bounds(
+    torch.tensor([-1.0, 0.0]),
+    torch.tensor([1.0, 2.0]),
+)
+
+model = nn.Sequential(
+    nn.Linear(2, 2),
+    nn.Tanh(),
+    nn.Linear(2, 1),
+)
+
+out = affine_forward(model, domain)
+lower, upper = out.to_bounds()
+```
+
+`interval_forward(module, x)` and the patched `model.eval(x)` both accept `IntervalTensor` and `AffineTensor`.
+
 ## Certified norm computation details
 
 `model.lpnorm(..., theta=0.5)` and `model.sobolev_norm(..., theta=0.5)` use adaptive box subdivision with Dörfler-type marking:
@@ -236,8 +297,8 @@ sob = model.sobolev_norm(box, p=2.0, iterations=6, forward_refine_splits=2, forw
 
 The package-level import surface in `intervalnets.__init__` is:
 
-- Always: `Interval`
-- When PyTorch is importable: `IntervalTensor`, `IntervalAdd`, `IntervalCat`, `enable_interval_eval`, `interval_forward`, `interval_forward_refine`
+- Always: `Interval`, `AffineTensor`
+- When PyTorch is importable: `IntervalTensor`, `IntervalAdd`, `IntervalCat`, `enable_interval_eval`, `interval_forward`, `interval_forward_refine`, `affine_forward`, `affine_relu_transform`, `affine_tanh_transform`, `affine_sigmoid_transform`
 
 Prefer importing these from the top-level package for user-facing code:
 
