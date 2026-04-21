@@ -1073,6 +1073,21 @@ def test_eval_overload_dispatches_affine_domain() -> None:
     assert isinstance(output, AffineTensor)
 
 
+def test_sobolev_norm_order_one_accepts_fallback_affine_domain_with_torch_model() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(2, 3), nn.Tanh(), nn.Linear(3, 1))
+    with torch.no_grad():
+        for parameter in model.parameters():
+            nn.init.uniform_(parameter, a=-0.5, b=0.5)
+
+    domain = AffineTensor.from_bounds((-0.25, -0.75), (0.5, 0.25))
+    bounds = model.sobolev_norm(domain, p=2.0, order=1, iterations=1)
+
+    assert math.isfinite(float(bounds.lower))
+    assert math.isfinite(float(bounds.upper))
+    assert float(bounds.lower) <= float(bounds.upper)
+
+
 def test_softmax_jacobian_encloses_autograd_corner_gradients() -> None:
     enable_interval_eval()
     softmax = nn.Softmax(dim=-1)

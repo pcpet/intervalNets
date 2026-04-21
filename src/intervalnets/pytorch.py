@@ -1337,8 +1337,30 @@ def _affine_bounds_to_interval_tensor(value: AffineTensor) -> IntervalTensor:
     return IntervalTensor.from_bounds(lower, upper)
 
 
-def _interval_box_to_affine_box(box: IntervalTensor, template: AffineTensor) -> AffineTensor:
+def _model_parameter_backend_hint(model) -> tuple[Any, Any] | None:
+    """Return preferred (dtype, device) from the model's first parameter, when available."""
+    if torch is None:
+        return None
+    try:
+        parameter = next(model.parameters())
+    except (AttributeError, StopIteration, TypeError):
+        return None
+    if not isinstance(parameter, torch.Tensor):
+        return None
+    return parameter.dtype, parameter.device
+
+
+def _interval_box_to_affine_box(
+    box: IntervalTensor,
+    template: AffineTensor,
+    backend_hint: tuple[Any, Any] | None = None,
+) -> AffineTensor:
     """Lift an interval box into affine form while preserving backend conventions."""
+    if torch is not None and backend_hint is not None:
+        dtype, device = backend_hint
+        lower = torch.tensor(box.lower, dtype=dtype, device=device)
+        upper = torch.tensor(box.upper, dtype=dtype, device=device)
+        return AffineTensor.from_bounds(lower, upper)
     if torch is not None and isinstance(template.c, torch.Tensor):
         lower = torch.tensor(box.lower, dtype=template.c.dtype, device=template.c.device)
         upper = torch.tensor(box.upper, dtype=template.c.dtype, device=template.c.device)
@@ -1347,7 +1369,8 @@ def _interval_box_to_affine_box(box: IntervalTensor, template: AffineTensor) -> 
 
 
 def _lp_pointwise_power_bounds_affine(model, box: IntervalTensor, p: float, template: AffineTensor) -> Interval:
-    affine_box = _interval_box_to_affine_box(box, template)
+    backend_hint = _model_parameter_backend_hint(model)
+    affine_box = _interval_box_to_affine_box(box, template, backend_hint=backend_hint)
     output_affine = affine_forward(model, affine_box)
     output = _affine_bounds_to_interval_tensor(output_affine)
     total = Interval.point(0.0)
@@ -1433,7 +1456,8 @@ def _sobolev_pointwise_power_bounds_affine_order1(model, box: IntervalTensor, p:
     Function values use affine propagation and concretization. Derivatives use a
     conservative fallback by evaluating Jacobian bounds on the interval box.
     """
-    affine_box = _interval_box_to_affine_box(box, template)
+    backend_hint = _model_parameter_backend_hint(model)
+    affine_box = _interval_box_to_affine_box(box, template, backend_hint=backend_hint)
     output = _affine_bounds_to_interval_tensor(affine_forward(model, affine_box))
     jacobian = _eval_jacobian_bounds(model, box)
 
