@@ -1238,11 +1238,16 @@ def _affine_forward(module, x: AffineTensor, enclosure_mode: str = "box") -> Aff
     if isinstance(module, nn.Linear):
         weight = module.weight.detach()
         bias = module.bias.detach() if module.bias is not None else None
-        if torch is not None and isinstance(x.c, torch.Tensor):
+        is_torch_backend = torch is not None and isinstance(x.c, torch.Tensor)
+        if is_torch_backend:
             weight = weight.to(dtype=x.c.dtype, device=x.c.device)
             if bias is not None:
                 bias = bias.to(dtype=x.c.dtype, device=x.c.device)
-        return x.affine_map(weight, bias)
+            return x.affine_map(weight, bias)
+
+        weight_2d = weight.cpu().tolist()
+        bias_1d = bias.cpu().tolist() if bias is not None else None
+        return x.affine_map(weight_2d, bias_1d)
     if isinstance(module, nn.ReLU):
         return affine_relu_transform(x)
     if isinstance(module, nn.Sigmoid):

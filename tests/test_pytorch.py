@@ -1153,6 +1153,26 @@ def test_affine_torch_map_matches_wc_plus_b_and_wg() -> None:
     assert torch.allclose(mapped.G, W @ x.G)
 
 
+def test_affine_forward_supports_torch_and_fallback_linear_backends() -> None:
+    model = nn.Sequential(nn.Linear(2, 2), nn.Tanh())
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.5, -0.5], [0.25, 2.0]], dtype=torch.float64))
+        model[0].bias.copy_(torch.tensor([0.1, -0.2], dtype=torch.float64))
+
+    torch_domain = AffineTensor.from_bounds(
+        torch.tensor([-1.0, 0.25], dtype=torch.float64),
+        torch.tensor([0.5, 1.75], dtype=torch.float64),
+    )
+    torch_output = affine_forward(model, torch_domain)
+    torch_lower, torch_upper = torch_output.to_bounds()
+    assert torch.all(torch_lower <= torch_upper)
+
+    fallback_domain = AffineTensor.from_bounds(tuple([-1.0, 0.25]), tuple([0.5, 1.75]))
+    fallback_output = affine_forward(model[0], fallback_domain)
+    fallback_lower, fallback_upper = fallback_output.to_bounds()
+    assert all(lower <= upper for lower, upper in zip(fallback_lower, fallback_upper))
+
+
 def _assert_affine_activation_encloses_pointwise(
     layer: nn.Module,
     activation,
