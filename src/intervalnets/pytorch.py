@@ -1259,6 +1259,10 @@ def _affine_forward(module, x: AffineTensor, enclosure_mode: str = "box") -> Aff
     )
 
 
+def affine_forward(module, x: AffineTensor, enclosure_mode: str = "box") -> AffineTensor:
+    return _affine_forward(module, x, enclosure_mode=enclosure_mode)
+
+
 def interval_forward(module, x: DomainTensor, enclosure_mode: str = "box") -> DomainTensor:
     if isinstance(x, IntervalTensor):
         return _interval_forward(module, x, enclosure_mode=enclosure_mode)

@@ -11,6 +11,7 @@ from intervalnets import (
     IntervalCat,
     IntervalTensor,
     enable_interval_eval,
+    affine_forward,
     interval_forward,
     interval_forward_refine,
 )
@@ -1085,3 +1086,85 @@ def test_tanh_jacobian_encloses_autograd_corner_gradients() -> None:
                 for col in range(2):
                     exact = float(grad[col].item())
                     assert jacobian.lower[row][col] <= exact <= jacobian.upper[row][col]
+
+
+def test_affine_torch_map_matches_wc_plus_b_and_wg() -> None:
+    x = AffineTensor.from_bounds(
+        torch.tensor([-1.0, 2.0], dtype=torch.float64),
+        torch.tensor([3.0, 4.0], dtype=torch.float64),
+    )
+    W = torch.tensor([[2.0, -1.0], [0.5, 3.0]], dtype=torch.float64)
+    b = torch.tensor([0.25, -0.75], dtype=torch.float64)
+
+    mapped = x.affine_map(W, b)
+
+    assert torch.allclose(mapped.c, W @ x.c + b)
+    assert torch.allclose(mapped.G, W @ x.G)
+
+
+def _assert_affine_activation_encloses_pointwise(
+    layer: nn.Module,
+    activation,
+    lower: torch.Tensor,
+    upper: torch.Tensor,
+) -> None:
+    domain = AffineTensor.from_bounds(lower, upper)
+    transformed = affine_forward(layer, domain)
+    transformed_lower, transformed_upper = transformed.to_bounds()
+
+    for alpha in torch.linspace(0.0, 1.0, steps=41, dtype=torch.float64):
+        point = lower + alpha * (upper - lower)
+        expected = activation(point)
+        assert torch.all(transformed_lower <= expected)
+        assert torch.all(expected <= transformed_upper)
+
+
+def test_affine_relu_chebyshev_enclosure_contains_samples() -> None:
+    _assert_affine_activation_encloses_pointwise(
+        layer=nn.ReLU(),
+        activation=torch.relu,
+        lower=torch.tensor([-2.0, -0.5], dtype=torch.float64),
+        upper=torch.tensor([1.5, 2.0], dtype=torch.float64),
+    )
+
+
+def test_affine_tanh_chebyshev_enclosure_contains_samples() -> None:
+    _assert_affine_activation_encloses_pointwise(
+        layer=nn.Tanh(),
+        activation=torch.tanh,
+        lower=torch.tensor([-1.75, -0.5], dtype=torch.float64),
+        upper=torch.tensor([0.25, 1.2], dtype=torch.float64),
+    )
+
+
+def test_affine_sigmoid_chebyshev_enclosure_contains_samples() -> None:
+    _assert_affine_activation_encloses_pointwise(
+        layer=nn.Sigmoid(),
+        activation=torch.sigmoid,
+        lower=torch.tensor([-3.0, -0.25], dtype=torch.float64),
+        upper=torch.tensor([0.5, 2.0], dtype=torch.float64),
+    )
+
+
+def test_interval_and_affine_inputs_are_both_accepted_by_interval_forward_and_eval() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(2, 2), nn.ReLU())
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.0, -0.5], [0.5, 2.0]], dtype=torch.float32))
+        model[0].bias.copy_(torch.tensor([0.0, 0.2], dtype=torch.float32))
+
+    interval_domain = IntervalTensor.from_bounds([-1.0, 0.0], [1.0, 2.0])
+    affine_domain = AffineTensor.from_bounds(
+        torch.tensor([-1.0, 0.0], dtype=torch.float32),
+        torch.tensor([1.0, 2.0], dtype=torch.float32),
+    )
+
+    interval_out = interval_forward(model, interval_domain)
+    affine_out = interval_forward(model, affine_domain)
+    eval_interval_out = model.eval(interval_domain)
+    eval_affine_out = model.eval(affine_domain)
+
+    assert isinstance(interval_out, IntervalTensor)
+    assert isinstance(affine_out, AffineTensor)
+    assert isinstance(eval_interval_out, IntervalTensor)
+    assert isinstance(eval_affine_out, AffineTensor)
