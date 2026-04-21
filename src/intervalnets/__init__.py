@@ -1,8 +1,9 @@
 """Interval arithmetic utilities for neural network evaluation."""
 
+from .affine import AffineTensor
 from .interval import Interval
 
-__all__ = ["Interval"]
+__all__ = ["Interval", "AffineTensor"]
 
 try:
     from .pytorch import (
