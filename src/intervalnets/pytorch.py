@@ -1352,6 +1352,8 @@ def interval_forward_refine(
 
 _ORIGINAL_EVAL = getattr(nn.Module, "eval", None) if nn is not None else None
 _PATCHED = False
+_ACTIVE_ENCLOSURE_MODE = "slope"
+_ACTIVE_AFFINE_TANH_MODE = "min_range"
 
 
 def _affine_bounds_to_interval_tensor(value: AffineTensor) -> IntervalTensor:
@@ -1391,10 +1393,16 @@ def _interval_box_to_affine_box(
     return AffineTensor.from_bounds(box.lower, box.upper)
 
 
-def _lp_pointwise_power_bounds_affine(model, box: IntervalTensor, p: float, template: AffineTensor) -> Interval:
+def _lp_pointwise_power_bounds_affine(
+    model,
+    box: IntervalTensor,
+    p: float,
+    template: AffineTensor,
+    affine_tanh_mode: str = "min_range",
+) -> Interval:
     backend_hint = _model_parameter_backend_hint(model)
     affine_box = _interval_box_to_affine_box(box, template, backend_hint=backend_hint)
-    output_affine = affine_forward(model, affine_box)
+    output_affine = affine_forward(model, affine_box, affine_tanh_mode=affine_tanh_mode)
     output = _affine_bounds_to_interval_tensor(output_affine)
     total = Interval.point(0.0)
     for lower, upper in zip(output.lower, output.upper):
@@ -1411,6 +1419,7 @@ def _lpnorm_bounds_affine(
     theta: float,
     forward_refine_splits: int = 1,
     forward_refine_max_cells: int = 256,
+    affine_tanh_mode: str = "min_range",
 ) -> Interval:
     """Conservative Lp enclosure for affine domains using affine forward concretization."""
     domain_box = _affine_bounds_to_interval_tensor(domain)
@@ -1431,11 +1440,18 @@ def _lpnorm_bounds_affine(
         split_dims: list[int] = []
         for box in boxes:
             if forward_refine_splits <= 1:
-                integrand_bounds = _lp_pointwise_power_bounds_affine(model, box, p, domain)
+                integrand_bounds = _lp_pointwise_power_bounds_affine(
+                    model, box, p, domain, affine_tanh_mode=affine_tanh_mode
+                )
             else:
                 cells = _subdivide_box(box, splits_per_dim=forward_refine_splits, max_cells=forward_refine_max_cells)
                 integrand_bounds = _hull_intervals(
-                    [_lp_pointwise_power_bounds_affine(model, cell, p, domain) for cell in cells]
+                    [
+                        _lp_pointwise_power_bounds_affine(
+                            model, cell, p, domain, affine_tanh_mode=affine_tanh_mode
+                        )
+                        for cell in cells
+                    ]
                 )
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
             indicators.append(width * _box_volume(box))
@@ -1459,10 +1475,17 @@ def _lpnorm_bounds_affine(
     integral = Interval.point(0.0)
     for box in boxes:
         if forward_refine_splits <= 1:
-            integrand_bounds = _lp_pointwise_power_bounds_affine(model, box, p, domain)
+            integrand_bounds = _lp_pointwise_power_bounds_affine(
+                model, box, p, domain, affine_tanh_mode=affine_tanh_mode
+            )
         else:
             cells = _subdivide_box(box, splits_per_dim=forward_refine_splits, max_cells=forward_refine_max_cells)
-            integrand_bounds = _hull_intervals([_lp_pointwise_power_bounds_affine(model, cell, p, domain) for cell in cells])
+            integrand_bounds = _hull_intervals(
+                [
+                    _lp_pointwise_power_bounds_affine(model, cell, p, domain, affine_tanh_mode=affine_tanh_mode)
+                    for cell in cells
+                ]
+            )
         weighted = Interval.from_bounds(
             float(integrand_bounds.lower) * _box_volume(box),
             float(integrand_bounds.upper) * _box_volume(box),
@@ -1473,7 +1496,14 @@ def _lpnorm_bounds_affine(
     return _interval_pow_scalar(non_negative, 1.0 / p)
 
 
-def _sobolev_pointwise_power_bounds_affine_order1(model, box: IntervalTensor, p: float, template: AffineTensor) -> Interval:
+def _sobolev_pointwise_power_bounds_affine_order1(
+    model,
+    box: IntervalTensor,
+    p: float,
+    template: AffineTensor,
+    enclosure_mode: str = "slope",
+    affine_tanh_mode: str = "min_range",
+) -> Interval:
     """Order-1 Sobolev integrand enclosure using affine outputs and boxed Jacobians.
 
     Function values use affine propagation and concretization. Derivatives use a
@@ -1481,8 +1511,8 @@ def _sobolev_pointwise_power_bounds_affine_order1(model, box: IntervalTensor, p:
     """
     backend_hint = _model_parameter_backend_hint(model)
     affine_box = _interval_box_to_affine_box(box, template, backend_hint=backend_hint)
-    output = _affine_bounds_to_interval_tensor(affine_forward(model, affine_box))
-    jacobian = _eval_jacobian_bounds(model, box)
+    output = _affine_bounds_to_interval_tensor(affine_forward(model, affine_box, affine_tanh_mode=affine_tanh_mode))
+    jacobian = _eval_jacobian_bounds(model, box, enclosure_mode=enclosure_mode)
 
     total = Interval.point(0.0)
     for lower, upper in zip(output.lower, output.upper):
@@ -1506,6 +1536,8 @@ def _sobolev_norm_bounds_affine(
     theta: float,
     forward_refine_splits: int = 1,
     forward_refine_max_cells: int = 256,
+    enclosure_mode: str = "slope",
+    affine_tanh_mode: str = "min_range",
 ) -> Interval:
     if not isfinite(p) or p <= 0.0:
         raise ValueError("p must be a positive finite real number.")
@@ -1528,6 +1560,7 @@ def _sobolev_norm_bounds_affine(
             order,
             iterations,
             theta,
+            enclosure_mode=enclosure_mode,
             forward_refine_splits=forward_refine_splits,
             forward_refine_max_cells=forward_refine_max_cells,
         )
@@ -1543,16 +1576,33 @@ def _sobolev_norm_bounds_affine(
         split_dims: list[int] = []
         for box in boxes:
             if forward_refine_splits <= 1:
-                integrand_bounds = _sobolev_pointwise_power_bounds_affine_order1(model, box, p, domain)
+                integrand_bounds = _sobolev_pointwise_power_bounds_affine_order1(
+                    model,
+                    box,
+                    p,
+                    domain,
+                    enclosure_mode=enclosure_mode,
+                    affine_tanh_mode=affine_tanh_mode,
+                )
             else:
                 cells = _subdivide_box(box, splits_per_dim=forward_refine_splits, max_cells=forward_refine_max_cells)
                 integrand_bounds = _hull_intervals(
-                    [_sobolev_pointwise_power_bounds_affine_order1(model, cell, p, domain) for cell in cells]
+                    [
+                        _sobolev_pointwise_power_bounds_affine_order1(
+                            model,
+                            cell,
+                            p,
+                            domain,
+                            enclosure_mode=enclosure_mode,
+                            affine_tanh_mode=affine_tanh_mode,
+                        )
+                        for cell in cells
+                    ]
                 )
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
             indicators.append(width * _box_volume(box))
             if use_jacobian_splitting:
-                jacobian = _eval_jacobian_bounds(model, box)
+                jacobian = _eval_jacobian_bounds(model, box, enclosure_mode=enclosure_mode)
                 split_dims.append(_choose_split_dim(box, jacobian))
             else:
                 split_dims.append(_choose_split_dim(box, None))
@@ -1570,11 +1620,28 @@ def _sobolev_norm_bounds_affine(
     integral = Interval.point(0.0)
     for box in boxes:
         if forward_refine_splits <= 1:
-            integrand_bounds = _sobolev_pointwise_power_bounds_affine_order1(model, box, p, domain)
+            integrand_bounds = _sobolev_pointwise_power_bounds_affine_order1(
+                model,
+                box,
+                p,
+                domain,
+                enclosure_mode=enclosure_mode,
+                affine_tanh_mode=affine_tanh_mode,
+            )
         else:
             cells = _subdivide_box(box, splits_per_dim=forward_refine_splits, max_cells=forward_refine_max_cells)
             integrand_bounds = _hull_intervals(
-                [_sobolev_pointwise_power_bounds_affine_order1(model, cell, p, domain) for cell in cells]
+                [
+                    _sobolev_pointwise_power_bounds_affine_order1(
+                        model,
+                        cell,
+                        p,
+                        domain,
+                        enclosure_mode=enclosure_mode,
+                        affine_tanh_mode=affine_tanh_mode,
+                    )
+                    for cell in cells
+                ]
             )
         weighted = Interval.from_bounds(
             float(integrand_bounds.lower) * _box_volume(box),
@@ -1588,9 +1655,13 @@ def _sobolev_norm_bounds_affine(
 
 def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = "min_range") -> None:
     _require_torch()
-    global _PATCHED
+    global _PATCHED, _ACTIVE_ENCLOSURE_MODE, _ACTIVE_AFFINE_TANH_MODE
     if enclosure_mode not in {"box", "slope"}:
         raise ValueError("enclosure_mode must be either 'box' or 'slope'.")
+    if affine_tanh_mode not in {"min_range", "chebyshev"}:
+        raise ValueError("affine_tanh_mode must be either 'min_range' or 'chebyshev'.")
+    _ACTIVE_ENCLOSURE_MODE = enclosure_mode
+    _ACTIVE_AFFINE_TANH_MODE = affine_tanh_mode
     if _PATCHED:
         return
 
@@ -1603,8 +1674,8 @@ def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = 
         return interval_forward(
             self,
             interval,
-            enclosure_mode=enclosure_mode,
-            affine_tanh_mode=affine_tanh_mode,
+            enclosure_mode=_ACTIVE_ENCLOSURE_MODE,
+            affine_tanh_mode=_ACTIVE_AFFINE_TANH_MODE,
         )
 
     def lpnorm_with_interval(
@@ -1624,6 +1695,7 @@ def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = 
                 p,
                 iterations,
                 theta,
+                affine_tanh_mode=_ACTIVE_AFFINE_TANH_MODE,
                 forward_refine_splits=forward_refine_splits,
                 forward_refine_max_cells=forward_refine_max_cells,
             )
@@ -1633,6 +1705,7 @@ def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = 
             p,
             iterations,
             theta,
+            enclosure_mode=_ACTIVE_ENCLOSURE_MODE,
             forward_refine_splits=forward_refine_splits,
             forward_refine_max_cells=forward_refine_max_cells,
         )
@@ -1644,8 +1717,8 @@ def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = 
             # of the affine domain until exact affine derivative propagation
             # is implemented.
             boxed = _affine_bounds_to_interval_tensor(domain)
-            return _eval_jacobian_bounds(self, boxed, enclosure_mode=enclosure_mode)
-        return _eval_jacobian_bounds(self, domain, enclosure_mode=enclosure_mode)
+            return _eval_jacobian_bounds(self, boxed, enclosure_mode=_ACTIVE_ENCLOSURE_MODE)
+        return _eval_jacobian_bounds(self, domain, enclosure_mode=_ACTIVE_ENCLOSURE_MODE)
 
     def eval_hessian_with_interval(self, domain: DomainTensor):
         _ORIGINAL_EVAL(self)
@@ -1654,8 +1727,8 @@ def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = 
             # of the affine domain until exact affine second-order propagation
             # is implemented.
             boxed = _affine_bounds_to_interval_tensor(domain)
-            return _eval_hessian_bounds(self, boxed, enclosure_mode=enclosure_mode)
-        return _eval_hessian_bounds(self, domain, enclosure_mode=enclosure_mode)
+            return _eval_hessian_bounds(self, boxed, enclosure_mode=_ACTIVE_ENCLOSURE_MODE)
+        return _eval_hessian_bounds(self, domain, enclosure_mode=_ACTIVE_ENCLOSURE_MODE)
 
     def sobolev_norm_with_interval(
         self,
@@ -1676,6 +1749,8 @@ def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = 
                 order,
                 iterations,
                 theta,
+                enclosure_mode=_ACTIVE_ENCLOSURE_MODE,
+                affine_tanh_mode=_ACTIVE_AFFINE_TANH_MODE,
                 forward_refine_splits=forward_refine_splits,
                 forward_refine_max_cells=forward_refine_max_cells,
             )
@@ -1686,6 +1761,7 @@ def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = 
             order,
             iterations,
             theta,
+            enclosure_mode=_ACTIVE_ENCLOSURE_MODE,
             forward_refine_splits=forward_refine_splits,
             forward_refine_max_cells=forward_refine_max_cells,
         )
