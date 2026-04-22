@@ -6,13 +6,13 @@ This document describes the public Python API exposed by `intervalnets` and how 
 
 - `intervalnets.interval.Interval`: core immutable interval type with outward-rounded scalar/tuple arithmetic.
 - `intervalnets.pytorch.IntervalTensor`: interval type specialized for PyTorch interoperability.
-- `intervalnets.pytorch.enable_interval_eval(enclosure_mode="slope")`: monkey patch that adds interval-aware methods onto `torch.nn.Module`.
-- `intervalnets.pytorch.interval_forward(module, x, enclosure_mode="box")`: interval propagation backend used by patched `model.eval(interval)`.
+- `intervalnets.pytorch.enable_interval_eval(enclosure_mode="slope", affine_tanh_mode="min_range")`: monkey patch that adds interval-aware methods onto `torch.nn.Module`.
+- `intervalnets.pytorch.interval_forward(module, x, enclosure_mode="box", affine_tanh_mode="min_range")`: interval propagation backend used by patched `model.eval(interval)`.
 - `intervalnets.pytorch.interval_forward_refine(module, x, enclosure_mode="slope", splits_per_dim=2, max_cells=256)`: optional subdivision-based forward refinement.
 - `intervalnets.pytorch.IntervalAdd`, `intervalnets.pytorch.IntervalCat`: helper combinators for branched interval models.
 - `intervalnets.affine.AffineTensor`: affine arithmetic container `Z = c + Gε` with `ε_i ∈ [-1,1]`.
-- `intervalnets.pytorch.affine_forward(module, x)`: affine propagation backend for `AffineTensor` domains.
-- `intervalnets.affine_pytorch.affine_relu_transform`, `affine_tanh_transform`, `affine_sigmoid_transform`: affine activation enclosures for ReLU/Tanh/Sigmoid.
+- `intervalnets.pytorch.affine_forward(module, x, affine_tanh_mode="min_range")`: affine propagation backend for `AffineTensor` domains.
+- `intervalnets.affine_pytorch.affine_relu_transform`, `affine_tanh_transform(mode="min_range")`, `affine_sigmoid_transform`: affine activation enclosures for ReLU/Tanh/Sigmoid.
 
 ## Core interval arithmetic (`Interval`)
 
@@ -193,7 +193,12 @@ out = affine_forward(model, domain)
 lower, upper = out.to_bounds()
 ```
 
-`interval_forward(module, x)` and the patched `model.eval(x)` both accept `IntervalTensor` and `AffineTensor`.
+`interval_forward(module, x, affine_tanh_mode="min_range")` and the patched `model.eval(x)` both accept `IntervalTensor` and `AffineTensor`.
+
+For affine `nn.Tanh` layers, `affine_tanh_mode` selects the objective used for the slope search:
+
+- `"min_range"` (default): minimize `p * ((u-l)/2) + Δ` to reduce propagated range.
+- `"chebyshev"`: minimize `Δ` (uniform residual error).
 
 ## Certified norm computation details
 

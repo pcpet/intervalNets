@@ -1225,13 +1225,23 @@ def _interval_forward(module, x: IntervalTensor, enclosure_mode: str = "box") ->
     )
 
 
-def _affine_forward(module, x: AffineTensor, enclosure_mode: str = "box") -> AffineTensor:
+def _affine_forward(
+    module,
+    x: AffineTensor,
+    enclosure_mode: str = "box",
+    affine_tanh_mode: str = "min_range",
+) -> AffineTensor:
     _ = enclosure_mode
     _require_torch()
     if isinstance(module, nn.Sequential):
         result = x
         for child in module:
-            result = _affine_forward(child, result, enclosure_mode=enclosure_mode)
+            result = _affine_forward(
+                child,
+                result,
+                enclosure_mode=enclosure_mode,
+                affine_tanh_mode=affine_tanh_mode,
+            )
         return result
     if isinstance(module, nn.Flatten):
         return x
@@ -1253,30 +1263,43 @@ def _affine_forward(module, x: AffineTensor, enclosure_mode: str = "box") -> Aff
     if isinstance(module, nn.Sigmoid):
         return affine_sigmoid_transform(x)
     if isinstance(module, nn.Tanh):
-        return affine_tanh_transform(x)
+        return affine_tanh_transform(x, mode=affine_tanh_mode)
     if isinstance(module, nn.Identity):
         return x
     if isinstance(module, IntervalAdd):
-        left = _affine_forward(module.left, x, enclosure_mode=enclosure_mode)
-        right = _affine_forward(module.right, x, enclosure_mode=enclosure_mode)
+        left = _affine_forward(module.left, x, enclosure_mode=enclosure_mode, affine_tanh_mode=affine_tanh_mode)
+        right = _affine_forward(module.right, x, enclosure_mode=enclosure_mode, affine_tanh_mode=affine_tanh_mode)
         return _affine_add(left, right)
     if isinstance(module, IntervalCat):
-        parts = [_affine_forward(branch, x, enclosure_mode=enclosure_mode) for branch in module.branches]
+        parts = [
+            _affine_forward(branch, x, enclosure_mode=enclosure_mode, affine_tanh_mode=affine_tanh_mode)
+            for branch in module.branches
+        ]
         return _affine_cat(parts, module.dim)
     raise NotImplementedError(
         f"Affine forward currently supports nn.Sequential, nn.Flatten, nn.Linear, nn.ReLU, nn.Sigmoid, nn.Tanh, nn.Identity, IntervalAdd, and IntervalCat only; got {type(module).__name__}."
     )
 
 
-def affine_forward(module, x: AffineTensor, enclosure_mode: str = "box") -> AffineTensor:
-    return _affine_forward(module, x, enclosure_mode=enclosure_mode)
+def affine_forward(
+    module,
+    x: AffineTensor,
+    enclosure_mode: str = "box",
+    affine_tanh_mode: str = "min_range",
+) -> AffineTensor:
+    return _affine_forward(module, x, enclosure_mode=enclosure_mode, affine_tanh_mode=affine_tanh_mode)
 
 
-def interval_forward(module, x: DomainTensor, enclosure_mode: str = "box") -> DomainTensor:
+def interval_forward(
+    module,
+    x: DomainTensor,
+    enclosure_mode: str = "box",
+    affine_tanh_mode: str = "min_range",
+) -> DomainTensor:
     if isinstance(x, IntervalTensor):
         return _interval_forward(module, x, enclosure_mode=enclosure_mode)
     if isinstance(x, AffineTensor):
-        return _affine_forward(module, x, enclosure_mode=enclosure_mode)
+        return _affine_forward(module, x, enclosure_mode=enclosure_mode, affine_tanh_mode=affine_tanh_mode)
     raise TypeError("interval_forward(module, x) requires x to be an IntervalTensor or AffineTensor.")
 
 
@@ -1563,7 +1586,7 @@ def _sobolev_norm_bounds_affine(
     return _interval_pow_scalar(non_negative, 1.0 / p)
 
 
-def enable_interval_eval(enclosure_mode: str = "slope") -> None:
+def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = "min_range") -> None:
     _require_torch()
     global _PATCHED
     if enclosure_mode not in {"box", "slope"}:
@@ -1577,7 +1600,12 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
             return result
         if not isinstance(interval, (IntervalTensor, AffineTensor)):
             raise TypeError("model.eval(interval) requires an IntervalTensor or AffineTensor input.")
-        return interval_forward(self, interval, enclosure_mode=enclosure_mode)
+        return interval_forward(
+            self,
+            interval,
+            enclosure_mode=enclosure_mode,
+            affine_tanh_mode=affine_tanh_mode,
+        )
 
     def lpnorm_with_interval(
         self,
