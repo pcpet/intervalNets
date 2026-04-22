@@ -5,7 +5,12 @@ from math import exp, inf, isfinite, log, nextafter, tanh
 from typing import Any, TypeAlias
 
 from .affine import AffineTensor
-from .affine_pytorch import affine_relu_transform, affine_sigmoid_transform, affine_tanh_transform
+from .affine_pytorch import (
+    _tanh_affine_parameters,
+    affine_relu_transform,
+    affine_sigmoid_transform,
+    affine_tanh_transform,
+)
 from .interval import Interval
 
 try:
@@ -739,6 +744,33 @@ def _interval_derivative_bounds_tanh(value: Interval) -> Interval:
     return Interval.from_bounds(lower_out, upper_out)
 
 
+def _interval_derivative_bounds_tanh_affine(value: Interval, affine_tanh_mode: str) -> Interval:
+    if affine_tanh_mode not in {"min_range", "chebyshev"}:
+        raise ValueError("affine_tanh_mode must be either 'min_range' or 'chebyshev'.")
+
+    exact = _interval_derivative_bounds_tanh(value)
+    lower_exact = float(exact.lower)
+    upper_exact = float(exact.upper)
+    lower = float(value.lower)
+    upper = float(value.upper)
+    if lower == upper:
+        return exact
+    if torch is None:
+        return exact
+
+    slope, _, _ = _tanh_affine_parameters(
+        torch.tensor([lower], dtype=torch.float64),
+        torch.tensor([upper], dtype=torch.float64),
+        mode=affine_tanh_mode,
+    )
+    alpha = float(slope[0].item())
+    radius = max(abs(lower_exact - alpha), abs(upper_exact - alpha))
+
+    lower_out = _pad_outward(max(0.0, alpha - radius), -inf, include_float32=True)
+    upper_out = _pad_outward(min(1.0, alpha + radius), inf, include_float32=True)
+    return Interval.from_bounds(lower_out, upper_out)
+
+
 def _interval_second_derivative_bounds_relu(value: Interval) -> Interval:
     _ = value
     return Interval.point(0.0)
@@ -957,6 +989,67 @@ def _sequential_layer_inputs(module: nn.Sequential, domain: IntervalTensor, encl
         prefix = nn.Sequential(*children[:idx])
         layer_inputs.append(interval_forward(prefix, domain, enclosure_mode=enclosure_mode))
     return layer_inputs
+
+
+def _affine_jacobian_for_layer(
+    layer,
+    pre_activation: IntervalTensor,
+    affine_tanh_mode: str,
+) -> list[list[Interval]]:
+    if isinstance(layer, nn.Tanh):
+        derivatives = [
+            _interval_derivative_bounds_tanh_affine(
+                Interval(pre_activation.lower[idx], pre_activation.upper[idx]),
+                affine_tanh_mode=affine_tanh_mode,
+            )
+            for idx in range(len(pre_activation.lower))
+        ]
+        size = len(derivatives)
+        return [
+            [derivatives[row_idx] if row_idx == col_idx else Interval.point(0.0) for col_idx in range(size)]
+            for row_idx in range(size)
+        ]
+    return _jacobian_for_layer(layer, pre_activation)
+
+
+def _eval_jacobian_bounds_affine(
+    model,
+    domain: IntervalTensor,
+    template: AffineTensor,
+    enclosure_mode: str = "box",
+    affine_tanh_mode: str = "min_range",
+) -> IntervalTensor:
+    if not isinstance(domain, IntervalTensor):
+        raise TypeError("Affine Jacobian evaluation requires an IntervalTensor box domain.")
+    if len(domain.shape) != 1:
+        raise NotImplementedError("Affine Jacobian evaluation currently supports flat input boxes only.")
+    if enclosure_mode not in {"box", "slope"}:
+        raise ValueError("enclosure_mode must be either 'box' or 'slope'.")
+
+    if isinstance(model, nn.Sequential):
+        backend_hint = _model_parameter_backend_hint(model)
+        affine_state = _interval_box_to_affine_box(domain, template, backend_hint=backend_hint)
+        current_jacobian = _identity_jacobian(len(domain.lower))
+
+        for child in model:
+            pre_activation = _affine_bounds_to_interval_tensor(affine_state)
+            local_jacobian = _affine_jacobian_for_layer(child, pre_activation, affine_tanh_mode=affine_tanh_mode)
+            current_jacobian = _matrix_multiply(local_jacobian, current_jacobian)
+            affine_state = _affine_forward(
+                child,
+                affine_state,
+                enclosure_mode=enclosure_mode,
+                affine_tanh_mode=affine_tanh_mode,
+            )
+    else:
+        backend_hint = _model_parameter_backend_hint(model)
+        affine_domain = _interval_box_to_affine_box(domain, template, backend_hint=backend_hint)
+        pre_activation = _affine_bounds_to_interval_tensor(affine_domain)
+        current_jacobian = _affine_jacobian_for_layer(model, pre_activation, affine_tanh_mode=affine_tanh_mode)
+
+    lower = tuple(tuple(entry.lower for entry in row) for row in current_jacobian)
+    upper = tuple(tuple(entry.upper for entry in row) for row in current_jacobian)
+    return IntervalTensor.from_bounds(lower, upper)
 
 
 def _eval_jacobian_bounds(model, domain: IntervalTensor, enclosure_mode: str = "box") -> IntervalTensor:
@@ -1504,15 +1597,17 @@ def _sobolev_pointwise_power_bounds_affine_order1(
     enclosure_mode: str = "slope",
     affine_tanh_mode: str = "min_range",
 ) -> Interval:
-    """Order-1 Sobolev integrand enclosure using affine outputs and boxed Jacobians.
-
-    Function values use affine propagation and concretization. Derivatives use a
-    conservative fallback by evaluating Jacobian bounds on the interval box.
-    """
+    """Order-1 Sobolev integrand enclosure using affine value/derivative propagation."""
     backend_hint = _model_parameter_backend_hint(model)
     affine_box = _interval_box_to_affine_box(box, template, backend_hint=backend_hint)
     output = _affine_bounds_to_interval_tensor(affine_forward(model, affine_box, affine_tanh_mode=affine_tanh_mode))
-    jacobian = _eval_jacobian_bounds(model, box, enclosure_mode=enclosure_mode)
+    jacobian = _eval_jacobian_bounds_affine(
+        model,
+        box,
+        template=template,
+        enclosure_mode=enclosure_mode,
+        affine_tanh_mode=affine_tanh_mode,
+    )
 
     total = Interval.point(0.0)
     for lower, upper in zip(output.lower, output.upper):
@@ -1602,7 +1697,13 @@ def _sobolev_norm_bounds_affine(
             width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
             indicators.append(width * _box_volume(box))
             if use_jacobian_splitting:
-                jacobian = _eval_jacobian_bounds(model, box, enclosure_mode=enclosure_mode)
+                jacobian = _eval_jacobian_bounds_affine(
+                    model,
+                    box,
+                    template=domain,
+                    enclosure_mode=enclosure_mode,
+                    affine_tanh_mode=affine_tanh_mode,
+                )
                 split_dims.append(_choose_split_dim(box, jacobian))
             else:
                 split_dims.append(_choose_split_dim(box, None))
