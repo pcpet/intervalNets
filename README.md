@@ -132,15 +132,19 @@ Affine nonlinear enclosures currently support:
 - `nn.Tanh`
 - `nn.Sigmoid`
 
-These are implemented as conservative affine (Chebyshev-style) enclosures with fresh error generators, so `out.to_bounds()` rigorously contains the exact activation image over the input domain.
+These are implemented as conservative affine enclosures with fresh error generators, so `out.to_bounds()` rigorously contains the exact activation image over the input domain.
+For `nn.Tanh`, the affine backend defaults to `affine_tanh_mode="min_range"` (range-aware objective) and also supports `affine_tanh_mode="chebyshev"`.
 
 ```python
 model = nn.Sequential(nn.Linear(2, 2), nn.ReLU(), nn.Linear(2, 1))
 affine_out = affine_forward(model, z)
 lower, upper = affine_out.to_bounds()
+
+# choose a tanh affine objective if the model includes nn.Tanh
+tanh_out = affine_forward(model, z, affine_tanh_mode="chebyshev")
 ```
 
-`interval_forward(model, x)` and `model.eval(x)` accept both `IntervalTensor` and `AffineTensor`.
+`interval_forward(model, x, affine_tanh_mode="min_range")` and `model.eval(x)` accept both `IntervalTensor` and `AffineTensor`.
 
 ## Installation notes
 

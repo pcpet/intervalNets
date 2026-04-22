@@ -1223,6 +1223,44 @@ def test_affine_tanh_chebyshev_enclosure_contains_samples() -> None:
     )
 
 
+@pytest.mark.parametrize("mode", ["chebyshev", "min_range"])
+def test_affine_tanh_modes_enclose_sampled_outputs(mode: str) -> None:
+    layer = nn.Tanh()
+    lower = torch.tensor([-2.0, -0.75], dtype=torch.float64)
+    upper = torch.tensor([1.25, 1.5], dtype=torch.float64)
+    domain = AffineTensor.from_bounds(lower, upper)
+
+    transformed = affine_forward(layer, domain, affine_tanh_mode=mode)
+    transformed_lower, transformed_upper = transformed.to_bounds()
+
+    for alpha in torch.linspace(0.0, 1.0, steps=121, dtype=torch.float64):
+        point = lower + alpha * (upper - lower)
+        expected = torch.tanh(point)
+        assert torch.all(transformed_lower <= expected)
+        assert torch.all(expected <= transformed_upper)
+
+
+def test_affine_tanh_mode_validation_rejects_unknown_mode() -> None:
+    domain = AffineTensor.from_bounds(
+        torch.tensor([-1.0], dtype=torch.float64),
+        torch.tensor([1.0], dtype=torch.float64),
+    )
+    with pytest.raises(ValueError, match="mode must be either 'chebyshev' or 'min_range'"):
+        affine_forward(nn.Tanh(), domain, affine_tanh_mode="invalid")
+
+
+def test_affine_tanh_modes_produce_different_noise_on_crossing_interval() -> None:
+    domain = AffineTensor.from_bounds(
+        torch.tensor([-1.5], dtype=torch.float64),
+        torch.tensor([1.0], dtype=torch.float64),
+    )
+
+    chebyshev = affine_forward(nn.Tanh(), domain, affine_tanh_mode="chebyshev")
+    min_range = affine_forward(nn.Tanh(), domain, affine_tanh_mode="min_range")
+
+    assert not torch.allclose(chebyshev.G, min_range.G)
+
+
 def test_affine_sigmoid_chebyshev_enclosure_contains_samples() -> None:
     _assert_affine_activation_encloses_pointwise(
         layer=nn.Sigmoid(),
