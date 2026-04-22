@@ -15,7 +15,12 @@ from intervalnets import (
     interval_forward,
     interval_forward_refine,
 )
-from intervalnets.pytorch import _eval_hessian_bounds, _eval_jacobian_bounds, _interval_pow_scalar
+from intervalnets.pytorch import (
+    _eval_hessian_bounds,
+    _eval_jacobian_bounds,
+    _interval_pow_scalar,
+    _sobolev_pointwise_power_bounds_affine_order1,
+)
 
 
 def test_relu_negative_interval_rounds_outward_to_zero() -> None:
@@ -1259,6 +1264,73 @@ def test_affine_tanh_modes_produce_different_noise_on_crossing_interval() -> Non
     min_range = affine_forward(nn.Tanh(), domain, affine_tanh_mode="min_range")
 
     assert not torch.allclose(chebyshev.G, min_range.G)
+
+
+def test_affine_sobolev_pointwise_order_one_depends_on_tanh_mode() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 3), nn.Tanh(), nn.Linear(3, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.1], [-0.8], [0.6]], dtype=torch.float32))
+        model[0].bias.copy_(torch.tensor([0.15, -0.2, 0.05], dtype=torch.float32))
+        model[2].weight.copy_(torch.tensor([[0.9, -0.5, 0.7]], dtype=torch.float32))
+        model[2].bias.copy_(torch.tensor([0.0], dtype=torch.float32))
+
+    domain = AffineTensor.from_bounds(
+        torch.tensor([-1.25], dtype=torch.float64),
+        torch.tensor([0.85], dtype=torch.float64),
+    )
+    box = IntervalTensor.from_bounds([-1.25], [0.85])
+
+    min_range = _sobolev_pointwise_power_bounds_affine_order1(
+        model,
+        box,
+        p=2.0,
+        template=domain,
+        affine_tanh_mode="min_range",
+    )
+    chebyshev = _sobolev_pointwise_power_bounds_affine_order1(
+        model,
+        box,
+        p=2.0,
+        template=domain,
+        affine_tanh_mode="chebyshev",
+    )
+
+    assert float(min_range.upper) > 0.0
+    assert float(chebyshev.upper) > 0.0
+    assert (
+        not math.isclose(float(min_range.lower), float(chebyshev.lower), rel_tol=1e-10, abs_tol=1e-12)
+        or not math.isclose(float(min_range.upper), float(chebyshev.upper), rel_tol=1e-10, abs_tol=1e-12)
+    )
+
+
+def test_affine_sobolev_norm_order_one_differs_between_tanh_modes() -> None:
+    model = nn.Sequential(nn.Linear(1, 4), nn.Tanh(), nn.Linear(4, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.0], [-0.9], [0.5], [1.3]], dtype=torch.float32))
+        model[0].bias.copy_(torch.tensor([0.2, -0.1, 0.05, -0.15], dtype=torch.float32))
+        model[2].weight.copy_(torch.tensor([[0.8, -0.3, 0.6, 0.4]], dtype=torch.float32))
+        model[2].bias.copy_(torch.tensor([0.05], dtype=torch.float32))
+
+    domain = AffineTensor.from_bounds(
+        torch.tensor([-1.0], dtype=torch.float64),
+        torch.tensor([1.1], dtype=torch.float64),
+    )
+
+    enable_interval_eval(affine_tanh_mode="min_range")
+    min_range_bounds = model.sobolev_norm(domain, p=2.0, order=1, iterations=1)
+    min_range_lp = model.lpnorm(domain, p=2.0, iterations=1)
+
+    enable_interval_eval(affine_tanh_mode="chebyshev")
+    chebyshev_bounds = model.sobolev_norm(domain, p=2.0, order=1, iterations=1)
+    chebyshev_lp = model.lpnorm(domain, p=2.0, iterations=1)
+
+    assert float(min_range_bounds.upper) >= float(min_range_lp.upper)
+    assert float(chebyshev_bounds.upper) >= float(chebyshev_lp.upper)
+    assert (
+        not math.isclose(float(min_range_bounds.lower), float(chebyshev_bounds.lower), rel_tol=1e-10, abs_tol=1e-12)
+        or not math.isclose(float(min_range_bounds.upper), float(chebyshev_bounds.upper), rel_tol=1e-10, abs_tol=1e-12)
+    )
 
 
 def test_affine_sigmoid_chebyshev_enclosure_contains_samples() -> None:
