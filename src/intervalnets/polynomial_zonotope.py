@@ -59,6 +59,22 @@ def _fallback_zip(left: Any, right: Any, op):
     return op(left, right)
 
 
+def _fallback_linear_contract(matrix: Any, coeff: Any):
+    rows = tuple(tuple(float(value) for value in row) for row in matrix)
+    if not isinstance(coeff, tuple):
+        raise ValueError("linear_map expects coefficients with a leading input axis.")
+    if any(len(row) != len(coeff) for row in rows):
+        raise ValueError("Linear map weight/input dimension mismatch.")
+    outputs = []
+    for row in rows:
+        acc = None
+        for weight, item in zip(row, coeff):
+            term = _mul_coeff(item, weight)
+            acc = term if acc is None else _add_coeff(acc, term)
+        outputs.append(acc if acc is not None else 0.0)
+    return tuple(outputs)
+
+
 def _zero_like(value: Any):
     if torch is not None and isinstance(value, torch.Tensor):
         return torch.zeros_like(value)
@@ -260,6 +276,39 @@ class PolynomialZonotope:
         return PolynomialZonotope(_mul_coeff(left.center, right.center), terms, num_noise=left.num_noise)
 
     __rmul__ = __mul__
+
+    def linear_map(self, matrix: Any, bias: Any | None = None) -> "PolynomialZonotope":
+        """Apply a linear map along the leading coefficient axis.
+
+        For a weight matrix ``A`` with shape ``(m, n)``, coefficients with
+        shape ``(n,)``, ``(n, d_in)``, or ``(n, d_in, d_in)`` are mapped to
+        ``(m,)``, ``(m, d_in)``, or ``(m, d_in, d_in)`` by contracting over
+        the leading/output axis. ``bias`` is added to the center only.
+        """
+
+        if torch is not None and isinstance(self.center, torch.Tensor):
+            weight = _as_tensor(matrix, dtype=self.center.dtype, device=self.center.device)
+            if weight.ndim != 2:
+                raise ValueError("linear_map weight must be a 2-D matrix.")
+            if self.center.ndim < 1 or self.center.shape[0] != weight.shape[1]:
+                raise ValueError("Linear map weight/input dimension mismatch.")
+
+            def apply(coeff: Any):
+                return torch.einsum("ij,j...->i...", weight, coeff)
+
+            center = apply(self.center)
+            if bias is not None:
+                center = center + _as_tensor(bias, dtype=self.center.dtype, device=self.center.device)
+            return PolynomialZonotope(center, {exp: apply(coeff) for exp, coeff in self.terms.items()}, num_noise=self.num_noise)
+
+        mapped_center = _fallback_linear_contract(matrix, self.center)
+        if bias is not None:
+            mapped_center = _add_coeff(mapped_center, _to_fallback(bias))
+        return PolynomialZonotope(
+            mapped_center,
+            {exp: _fallback_linear_contract(matrix, coeff) for exp, coeff in self.terms.items()},
+            num_noise=self.num_noise,
+        )
 
     def tensor_product(self, other: "PolynomialZonotope") -> "PolynomialZonotope":
         if torch is None or not isinstance(self.center, torch.Tensor) or not isinstance(other.center, torch.Tensor):

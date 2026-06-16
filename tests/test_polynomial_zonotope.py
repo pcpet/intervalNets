@@ -81,3 +81,52 @@ def test_pz_twojet_from_input_initializes_physical_input_derivatives():
     assert jet.H.terms == {}
     assert torch.allclose(jet.J.center, torch.eye(2, dtype=torch.float64))
     assert torch.allclose(jet.H.center, torch.zeros(2, 2, 2, dtype=torch.float64))
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_linear_map_contracts_value_jacobian_and_hessian_shapes():
+    center = torch.tensor([1.0, -2.0], dtype=torch.float64)
+    coeff = torch.tensor([0.5, 1.5], dtype=torch.float64)
+    z = PolynomialZonotope(center, {(1,): coeff}, num_noise=1)
+    weight = torch.tensor([[2.0, -1.0], [0.0, 3.0], [1.0, 1.0]], dtype=torch.float64)
+    bias = torch.tensor([0.25, -0.5, 1.0], dtype=torch.float64)
+
+    out = z.linear_map(weight, bias)
+
+    assert out.shape == (3,)
+    assert torch.allclose(out.center, weight.matmul(center) + bias)
+    assert torch.allclose(out.terms[(1,)], weight.matmul(coeff))
+
+    jac = PolynomialZonotope.constant(torch.arange(6, dtype=torch.float64).reshape(2, 3), num_noise=1)
+    jac_out = jac.linear_map(weight, bias=None)
+    assert jac_out.shape == (3, 3)
+    assert torch.allclose(jac_out.center, torch.einsum("ij,jk->ik", weight, jac.center))
+
+    hess = PolynomialZonotope.constant(torch.arange(18, dtype=torch.float64).reshape(2, 3, 3), num_noise=1)
+    hess_out = hess.linear_map(weight, bias=None)
+    assert hess_out.shape == (3, 3, 3)
+    assert torch.allclose(hess_out.center, torch.einsum("ij,jkl->ikl", weight, hess.center))
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_pz_twojet_linear_forward_matches_layer_affine_map():
+    from torch import nn
+    from intervalnets.pytorch import _pz_twojet_linear_forward
+
+    layer = nn.Linear(2, 3, dtype=torch.float64)
+    with torch.no_grad():
+        layer.weight.copy_(torch.tensor([[1.0, 2.0], [-1.0, 0.5], [3.0, -2.0]], dtype=torch.float64))
+        layer.bias.copy_(torch.tensor([0.1, -0.2, 0.3], dtype=torch.float64))
+
+    X = PolynomialZonotope.from_box(torch.tensor([-1.0, 0.0], dtype=torch.float64), torch.tensor([1.0, 2.0], dtype=torch.float64))
+    jet = PZTwoJet.from_input(X, input_dim=2)
+    out = _pz_twojet_linear_forward(layer, jet)
+
+    assert out.Y.shape == (3,)
+    assert out.J.shape == (3, 2)
+    assert out.H.shape == (3, 2, 2)
+    assert torch.allclose(out.Y.center, layer.weight.detach().matmul(X.center) + layer.bias.detach())
+    assert torch.allclose(out.J.center, layer.weight.detach())
+    assert torch.allclose(out.H.center, torch.zeros(3, 2, 2, dtype=torch.float64))
+    for exp, coeff in X.terms.items():
+        assert torch.allclose(out.Y.terms[exp], layer.weight.detach().matmul(coeff))
