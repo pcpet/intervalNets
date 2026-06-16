@@ -277,6 +277,54 @@ class PolynomialZonotope:
 
     __rmul__ = __mul__
 
+
+    def evaluate_polynomial(self, coeffs: Any) -> "PolynomialZonotope":
+        """Evaluate a scalar power-basis polynomial on this zonotope.
+
+        ``coeffs`` are in ascending power order: ``c0, c1, ...``.  The
+        implementation uses Horner evaluation and preserves all existing
+        polynomial dependencies.
+        """
+
+        coeff_tuple = tuple(coeffs)
+        if not coeff_tuple:
+            raise ValueError("coeffs must not be empty.")
+        result = PolynomialZonotope.constant(coeff_tuple[-1], num_noise=self.num_noise)
+        for coeff in reversed(coeff_tuple[:-1]):
+            result = result * self + coeff
+        return result
+
+    def add_independent_error(self, radius: Any, target_shape: tuple[int, ...] = ()) -> "PolynomialZonotope":
+        """Add a fresh independent error variable with the given radius.
+
+        Existing exponent vectors are extended by one zero entry, while the new
+        error term receives exponent ``(0, ..., 0, 1)``.  For tensor-backed
+        zonotopes, ``target_shape`` may be supplied to create a coefficient of
+        that shape; it must match the zonotope shape so the resulting object is
+        well-formed.
+        """
+
+        new_noise = self.num_noise + 1
+        terms = {exp + (0,): coeff for exp, coeff in self.terms.items()}
+        if torch is not None and isinstance(self.center, torch.Tensor):
+            shape = tuple(target_shape) if target_shape else self.shape
+            if shape != self.shape:
+                raise ValueError("target_shape must match this zonotope's coefficient shape.")
+            coeff = torch.as_tensor(radius, dtype=self.center.dtype, device=self.center.device)
+            if tuple(coeff.shape) == () and self.shape != ():
+                coeff = torch.full_like(self.center, float(coeff.item()))
+            else:
+                coeff = coeff.to(dtype=self.center.dtype, device=self.center.device)
+                if tuple(coeff.shape) != self.shape:
+                    coeff = torch.broadcast_to(coeff, self.shape).clone()
+        else:
+            if target_shape and tuple(target_shape) != self.shape:
+                raise ValueError("target_shape must match this zonotope's coefficient shape.")
+            coeff = _mul_coeff(_zero_like(self.center), 0.0)
+            coeff = _add_coeff(coeff, _to_fallback(radius)) if self.shape == () else _fallback_map(self.center, lambda _: float(radius))
+        terms[(0,) * self.num_noise + (1,)] = coeff
+        return PolynomialZonotope(self.center, terms, num_noise=new_noise)
+
     def linear_map(self, matrix: Any, bias: Any | None = None) -> "PolynomialZonotope":
         """Apply a linear map along the leading coefficient axis.
 
