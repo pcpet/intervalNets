@@ -2,8 +2,9 @@
 
 from .affine import AffineTensor
 from .interval import Interval
+from .polynomial_zonotope import PolynomialZonotope
 
-__all__ = ["Interval", "AffineTensor"]
+__all__ = ["Interval", "AffineTensor", "PolynomialZonotope"]
 
 try:
     from .pytorch import (
