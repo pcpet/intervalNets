@@ -303,3 +303,41 @@ class PolynomialZonotope:
         except ImportError:  # pragma: no cover
             pass
         return Interval.from_bounds(lower, upper)
+
+
+@dataclass(frozen=True)
+class PZTwoJet:
+    """Polynomial-zonotope value/Jacobian/Hessian two-jet.
+
+    ``J`` and ``H`` are derivatives with respect to the physical input
+    variable ``x``, not derivatives with respect to polynomial-zonotope noise
+    variables.
+    """
+
+    Y: PolynomialZonotope
+    J: PolynomialZonotope
+    H: PolynomialZonotope
+
+    @classmethod
+    def from_input(cls, X: PolynomialZonotope, input_dim: int) -> "PZTwoJet":
+        """Initialize the two-jet for an input polynomial zonotope.
+
+        The value component is the input zonotope itself. The Jacobian is the
+        constant identity with shape ``(input_dim, input_dim)`` and the Hessian
+        is the constant zero tensor with shape
+        ``(input_dim, input_dim, input_dim)``. Both constants use ``X``'s noise
+        dimension so future propagation keeps dependencies aligned.
+        """
+
+        if torch is None:
+            raise ImportError("PyTorch is required to initialize PZTwoJet constants.")
+        if input_dim < 0:
+            raise ValueError("input_dim must be non-negative.")
+        kwargs = {}
+        if isinstance(X.center, torch.Tensor):
+            kwargs = {"dtype": X.center.dtype, "device": X.center.device}
+        return cls(
+            Y=X,
+            J=PolynomialZonotope.constant(torch.eye(input_dim, **kwargs), num_noise=X.num_noise),
+            H=PolynomialZonotope.constant(torch.zeros(input_dim, input_dim, input_dim, **kwargs), num_noise=X.num_noise),
+        )
