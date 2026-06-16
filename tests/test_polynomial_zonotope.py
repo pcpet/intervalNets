@@ -175,3 +175,45 @@ def test_tanh_pz_scalar_adds_certified_fresh_noise_and_encloses_samples():
     for value in torch.linspace(-0.5, 0.75, steps=9, dtype=torch.float64):
         expected = torch.tanh(value)
         assert lo <= expected <= hi
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_pz_twojet_tanh_forward_preserves_shapes_and_encloses_autograd_samples():
+    from intervalnets.pytorch import _pz_twojet_tanh_forward
+
+    lower = torch.tensor([-0.4, 0.2], dtype=torch.float64)
+    upper = torch.tensor([0.6, 0.8], dtype=torch.float64)
+    X = PolynomialZonotope.from_box(lower, upper)
+    jet = PZTwoJet.from_input(X, input_dim=2)
+
+    out = _pz_twojet_tanh_forward(jet, remez_degree=5, residual_subdivisions=64)
+
+    assert out.Y.shape == (2,)
+    assert out.J.shape == (2, 2)
+    assert out.H.shape == (2, 2, 2)
+    assert out.Y.num_noise == X.num_noise + 2
+    assert out.J.num_noise == out.Y.num_noise
+    assert out.H.num_noise == out.Y.num_noise
+
+    y_lo, y_hi = out.Y.interval_enclosure().to_torch(dtype=torch.float64)
+    j_lo, j_hi = out.J.interval_enclosure().to_torch(dtype=torch.float64)
+    h_lo, h_hi = out.H.interval_enclosure().to_torch(dtype=torch.float64)
+
+    for x0 in torch.linspace(float(lower[0]), float(upper[0]), steps=5, dtype=torch.float64):
+        for x1 in torch.linspace(float(lower[1]), float(upper[1]), steps=5, dtype=torch.float64):
+            point = torch.stack((x0, x1)).requires_grad_(True)
+            value = torch.tanh(point)
+            rows = []
+            hessians = []
+            for i in range(2):
+                grad = torch.autograd.grad(value[i], point, create_graph=True, retain_graph=True)[0]
+                rows.append(grad)
+                h_rows = []
+                for j in range(2):
+                    h_rows.append(torch.autograd.grad(grad[j], point, retain_graph=True)[0])
+                hessians.append(torch.stack(h_rows))
+            jac = torch.stack(rows)
+            hess = torch.stack(hessians)
+            assert torch.all(y_lo <= value.detach()) and torch.all(value.detach() <= y_hi)
+            assert torch.all(j_lo <= jac.detach()) and torch.all(jac.detach() <= j_hi)
+            assert torch.all(h_lo <= hess.detach()) and torch.all(hess.detach() <= h_hi)
