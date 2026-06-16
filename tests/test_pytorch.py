@@ -1364,3 +1364,47 @@ def test_interval_and_affine_inputs_are_both_accepted_by_interval_forward_and_ev
     assert isinstance(affine_out, AffineTensor)
     assert isinstance(eval_interval_out, IntervalTensor)
     assert isinstance(eval_affine_out, AffineTensor)
+
+
+def test_pz_twojet_forward_sequential_linear_tanh_identity_returns_twojet() -> None:
+    from intervalnets import PZTwoJet, PolynomialZonotope, pz_twojet_forward
+
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Identity(), nn.Linear(2, 3), nn.Tanh(), nn.Linear(3, 1))
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.2, 0.1], dtype=torch.float64),
+        torch.tensor([0.3, 0.4], dtype=torch.float64),
+    )
+
+    out = pz_twojet_forward(model.double(), domain, residual_subdivisions=32)
+
+    assert isinstance(out, PZTwoJet)
+    assert out.Y.shape == (1,)
+    assert out.J.shape == (1, 2)
+    assert out.H.shape == (1, 2, 2)
+
+
+def test_enable_interval_eval_adds_eval_pz_twojet_method() -> None:
+    from intervalnets import PZTwoJet, PolynomialZonotope
+
+    enable_interval_eval()
+    layer = nn.Linear(2, 1).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-1.0, -0.5], dtype=torch.float64),
+        torch.tensor([1.0, 0.5], dtype=torch.float64),
+    )
+
+    out = layer.eval_pz_twojet(domain)
+
+    assert isinstance(out, PZTwoJet)
+    assert out.Y.shape == (1,)
+    assert out.J.shape == (1, 2)
+    assert out.H.shape == (1, 2, 2)
+
+
+def test_eval_pz_twojet_rejects_non_polynomial_zonotope_input() -> None:
+    enable_interval_eval()
+    layer = nn.Identity()
+
+    with pytest.raises(TypeError, match="PolynomialZonotope"):
+        layer.eval_pz_twojet(torch.zeros(1))
