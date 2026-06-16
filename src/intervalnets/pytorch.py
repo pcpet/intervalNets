@@ -12,6 +12,7 @@ from .affine_pytorch import (
     affine_tanh_transform,
 )
 from .interval import Interval
+from .polynomial_zonotope import PZTwoJet
 
 try:
     import torch
@@ -323,6 +324,28 @@ def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
     lower_tensor = torch.nextafter(output_mid_tensor - output_rad_tensor, torch.full_like(output_mid_tensor, float("-inf")))
     upper_tensor = torch.nextafter(output_mid_tensor + output_rad_tensor, torch.full_like(output_mid_tensor, float("inf")))
     return IntervalTensor.from_bounds(tuple(float(value) for value in lower_tensor.tolist()), tuple(float(value) for value in upper_tensor.tolist()))
+
+
+def _pz_twojet_linear_forward(layer: nn.Linear, jet: PZTwoJet) -> PZTwoJet:
+    """Propagate a polynomial-zonotope two-jet through ``nn.Linear`` exactly."""
+
+    _require_torch()
+    weight = layer.weight.detach()
+    bias = layer.bias.detach() if layer.bias is not None else None
+    is_torch_backend = torch is not None and isinstance(jet.Y.center, torch.Tensor)
+    if is_torch_backend:
+        weight = weight.to(dtype=jet.Y.center.dtype, device=jet.Y.center.device)
+        if bias is not None:
+            bias = bias.to(dtype=jet.Y.center.dtype, device=jet.Y.center.device)
+    else:
+        weight = weight.cpu().tolist()
+        bias = bias.cpu().tolist() if bias is not None else None
+
+    return PZTwoJet(
+        Y=jet.Y.linear_map(weight, bias),
+        J=jet.J.linear_map(weight, bias=None),
+        H=jet.H.linear_map(weight, bias=None),
+    )
 
 
 def _concretize_affine_bounds(
