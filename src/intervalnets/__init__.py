@@ -3,8 +3,17 @@
 from .affine import AffineTensor
 from .interval import Interval
 from .polynomial_zonotope import PZTwoJet, PolynomialZonotope
+from .pz_tanh import TanhApproximation, compute_tanh_polynomial, certify_tanh_residual_subdivision
 
-__all__ = ["Interval", "AffineTensor", "PolynomialZonotope", "PZTwoJet"]
+__all__ = [
+    "Interval",
+    "AffineTensor",
+    "PolynomialZonotope",
+    "PZTwoJet",
+    "TanhApproximation",
+    "compute_tanh_polynomial",
+    "certify_tanh_residual_subdivision",
+]
 
 try:
     from .pytorch import (
