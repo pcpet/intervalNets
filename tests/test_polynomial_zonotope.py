@@ -1,6 +1,6 @@
 import pytest
 
-from intervalnets import PolynomialZonotope
+from intervalnets import PZTwoJet, PolynomialZonotope
 
 try:
     import torch
@@ -62,3 +62,22 @@ def test_torch_box_enclosure_contains_corners():
     lo, hi = interval.to_torch(dtype=torch.float64)
     assert torch.all(lo <= lower.double())
     assert torch.all(hi >= upper.double())
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_pz_twojet_from_input_initializes_physical_input_derivatives():
+    lower = torch.tensor([-1.0, 2.0], dtype=torch.float64)
+    upper = torch.tensor([3.0, 4.0], dtype=torch.float64)
+    X = PolynomialZonotope.from_box(lower, upper)
+
+    jet = PZTwoJet.from_input(X, input_dim=2)
+
+    assert jet.Y is X
+    assert jet.J.num_noise == X.num_noise
+    assert jet.H.num_noise == X.num_noise
+    assert jet.J.shape == (2, 2)
+    assert jet.H.shape == (2, 2, 2)
+    assert jet.J.terms == {}
+    assert jet.H.terms == {}
+    assert torch.allclose(jet.J.center, torch.eye(2, dtype=torch.float64))
+    assert torch.allclose(jet.H.center, torch.zeros(2, 2, 2, dtype=torch.float64))
