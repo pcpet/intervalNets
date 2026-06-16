@@ -24,6 +24,7 @@ try:
         enable_interval_eval,
         interval_forward,
         interval_forward_refine,
+        pz_twojet_forward,
     )
     from .affine_pytorch import affine_relu_transform, affine_sigmoid_transform, affine_tanh_transform
     from .pytorch import affine_forward
@@ -38,6 +39,7 @@ else:
             "enable_interval_eval",
             "interval_forward",
             "interval_forward_refine",
+            "pz_twojet_forward",
             "affine_forward",
             "affine_relu_transform",
             "affine_tanh_transform",

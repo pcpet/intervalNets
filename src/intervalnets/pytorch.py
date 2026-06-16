@@ -401,6 +401,83 @@ def _pz_twojet_tanh_forward(jet: PZTwoJet, remez_degree: int, residual_subdivisi
     )
 
 
+def _pz_twojet_forward_from_jet(
+    module,
+    jet: PZTwoJet,
+    *,
+    remez_degree: int = 5,
+    residual_subdivisions: int = 128,
+    reduce: bool = False,
+) -> PZTwoJet:
+    """Propagate an initialized two-jet through supported PyTorch modules."""
+
+    _require_torch()
+    if reduce:
+        raise NotImplementedError("PZ two-jet reduction is not implemented yet.")
+    if isinstance(module, nn.Sequential):
+        result = jet
+        for child in module:
+            result = _pz_twojet_forward_from_jet(
+                child,
+                result,
+                remez_degree=remez_degree,
+                residual_subdivisions=residual_subdivisions,
+                reduce=reduce,
+            )
+        return result
+    if isinstance(module, nn.Linear):
+        return _pz_twojet_linear_forward(module, jet)
+    if isinstance(module, nn.Tanh):
+        return _pz_twojet_tanh_forward(
+            jet,
+            remez_degree=remez_degree,
+            residual_subdivisions=residual_subdivisions,
+        )
+    if isinstance(module, nn.Identity):
+        return jet
+    if isinstance(module, nn.Flatten):
+        if len(jet.Y.shape) > 1:
+            raise NotImplementedError("PZ two-jet Flatten currently supports already-flat vectors only.")
+        return jet
+    raise NotImplementedError(
+        f"PZ two-jet forward currently supports nn.Sequential, nn.Linear, nn.Tanh, nn.Identity, and flat-vector nn.Flatten only; got {type(module).__name__}."
+    )
+
+
+def pz_twojet_forward(
+    module,
+    x: PolynomialZonotope,
+    *,
+    remez_degree: int = 5,
+    residual_subdivisions: int = 128,
+    reduce: bool = False,
+    input_dim: int | None = None,
+) -> PZTwoJet:
+    """Evaluate a supported PyTorch module on a polynomial-zonotope two-jet.
+
+    ``x`` must be a flat scalar/vector polynomial zonotope.  The returned
+    two-jet contains polynomial-zonotope enclosures for the value, Jacobian,
+    and Hessian with respect to the physical input coordinates.
+    """
+
+    _require_torch()
+    if not isinstance(x, PolynomialZonotope):
+        raise TypeError("pz_twojet_forward(module, x) requires x to be a PolynomialZonotope.")
+    if len(x.shape) > 1:
+        raise NotImplementedError("PZ two-jet forward currently supports scalar or flat-vector inputs only.")
+    inferred_dim = 1 if x.shape == () else x.shape[0]
+    dim = inferred_dim if input_dim is None else int(input_dim)
+    if dim != inferred_dim:
+        raise ValueError(f"input_dim={dim} does not match polynomial-zonotope input dimension {inferred_dim}.")
+    jet = PZTwoJet.from_input(x, input_dim=dim)
+    return _pz_twojet_forward_from_jet(
+        module,
+        jet,
+        remez_degree=remez_degree,
+        residual_subdivisions=residual_subdivisions,
+        reduce=reduce,
+    )
+
 def _concretize_affine_bounds(
     lower_matrix: torch.Tensor,
     lower_bias: torch.Tensor,
@@ -704,6 +781,7 @@ def _lpnorm_bounds(
     p: float,
     iterations: int,
     theta: float,
+    enclosure_mode: str = "slope",
     forward_refine_splits: int = 1,
     forward_refine_max_cells: int = 256,
 ) -> Interval:
@@ -715,6 +793,8 @@ def _lpnorm_bounds(
         raise ValueError("p must be a positive finite real number.")
     if iterations < 0:
         raise ValueError("iterations must be non-negative.")
+    if enclosure_mode not in {"box", "slope"}:
+        raise ValueError("enclosure_mode must be either 'box' or 'slope'.")
     _validate_dorfler_theta(theta)
     if forward_refine_splits < 1:
         raise ValueError("forward_refine_splits must be at least 1.")
@@ -1274,6 +1354,7 @@ def _sobolev_norm_bounds(
     order: int,
     iterations: int,
     theta: float,
+    enclosure_mode: str = "slope",
     forward_refine_splits: int = 1,
     forward_refine_max_cells: int = 256,
 ) -> Interval:
@@ -1287,6 +1368,8 @@ def _sobolev_norm_bounds(
         raise ValueError("order must be either 1 or 2.")
     if iterations < 0:
         raise ValueError("iterations must be non-negative.")
+    if enclosure_mode not in {"box", "slope"}:
+        raise ValueError("enclosure_mode must be either 'box' or 'slope'.")
     _validate_dorfler_theta(theta)
     if forward_refine_splits < 1:
         raise ValueError("forward_refine_splits must be at least 1.")
@@ -1907,6 +1990,25 @@ def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = 
             return _eval_hessian_bounds(self, boxed, enclosure_mode=_ACTIVE_ENCLOSURE_MODE)
         return _eval_hessian_bounds(self, domain, enclosure_mode=_ACTIVE_ENCLOSURE_MODE)
 
+    def eval_pz_twojet_with_interval(
+        self,
+        domain: PolynomialZonotope,
+        *,
+        remez_degree: int = 5,
+        residual_subdivisions: int = 128,
+        reduce: bool = False,
+    ):
+        _ORIGINAL_EVAL(self)
+        if not isinstance(domain, PolynomialZonotope):
+            raise TypeError("model.eval_pz_twojet(domain) requires a PolynomialZonotope input.")
+        return pz_twojet_forward(
+            self,
+            domain,
+            remez_degree=remez_degree,
+            residual_subdivisions=residual_subdivisions,
+            reduce=reduce,
+        )
+
     def sobolev_norm_with_interval(
         self,
         domain: DomainTensor,
@@ -1947,5 +2049,6 @@ def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = 
     nn.Module.lpnorm = lpnorm_with_interval
     nn.Module.eval_jacobian = eval_jacobian_with_interval
     nn.Module.eval_hessian = eval_hessian_with_interval
+    nn.Module.eval_pz_twojet = eval_pz_twojet_with_interval
     nn.Module.sobolev_norm = sobolev_norm_with_interval
     _PATCHED = True
