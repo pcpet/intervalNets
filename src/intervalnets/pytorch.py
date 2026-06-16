@@ -12,7 +12,8 @@ from .affine_pytorch import (
     affine_tanh_transform,
 )
 from .interval import Interval
-from .polynomial_zonotope import PZTwoJet
+from .polynomial_zonotope import PZTwoJet, PolynomialZonotope
+from .pz_tanh import tanh_pz_scalar
 
 try:
     import torch
@@ -345,6 +346,58 @@ def _pz_twojet_linear_forward(layer: nn.Linear, jet: PZTwoJet) -> PZTwoJet:
         Y=jet.Y.linear_map(weight, bias),
         J=jet.J.linear_map(weight, bias=None),
         H=jet.H.linear_map(weight, bias=None),
+    )
+
+
+def _pz_twojet_tanh_forward(jet: PZTwoJet, remez_degree: int, residual_subdivisions: int) -> PZTwoJet:
+    """Propagate a polynomial-zonotope two-jet through componentwise ``tanh``.
+
+    For each scalar preactivation ``Z_i``, this constructs the certified
+    enclosure ``S_i = p_i(Z_i) + Delta_i eta_i`` with ``tanh_pz_scalar`` and
+    derives first- and second-derivative enclosures from that same ``S_i`` via
+    ``1 - S_i**2`` and ``-2*S_i + 2*S_i**3``. Polynomial products are preserved
+    by the core ``PolynomialZonotope`` arithmetic; no implicit interval
+    re-enclosure or dependency-erasing reduction is performed here.
+    """
+
+    _require_torch()
+    if jet.Y.shape == ():
+        components = 1
+    elif len(jet.Y.shape) == 1:
+        components = jet.Y.shape[0]
+    else:
+        raise ValueError("_pz_twojet_tanh_forward expects a scalar or 1-D value zonotope.")
+
+    y_items: list[PolynomialZonotope] = []
+    j_items: list[PolynomialZonotope] = []
+    h_items: list[PolynomialZonotope] = []
+
+    current_noise = jet.Y.num_noise
+    for i in range(components):
+        Z_i = jet.Y if jet.Y.shape == () else jet.Y[i]
+        Z_i = Z_i.with_num_noise(current_noise)
+        S_i = tanh_pz_scalar(Z_i, remez_degree=remez_degree, residual_subdivisions=residual_subdivisions)
+        current_noise = S_i.num_noise
+
+        one = PolynomialZonotope.constant(1.0, num_noise=current_noise)
+        S1_i = one - S_i * S_i
+        S2_i = (-2.0 * S_i) + (2.0 * S_i * S_i * S_i)
+
+        J_i = jet.J if components == 1 and jet.J.shape[:1] != (components,) else jet.J[i, :]
+        H_i = jet.H if components == 1 and jet.H.shape[:1] != (components,) else jet.H[i, :, :]
+        J_i = J_i.with_num_noise(current_noise)
+        H_i = H_i.with_num_noise(current_noise)
+
+        y_items.append(S_i)
+        j_items.append(S1_i * J_i)
+        h_items.append(S2_i * J_i.tensor_product(J_i) + S1_i * H_i)
+
+    if jet.Y.shape == ():
+        return PZTwoJet(Y=y_items[0], J=j_items[0], H=h_items[0])
+    return PZTwoJet(
+        Y=PolynomialZonotope.stack(y_items, dim=0),
+        J=PolynomialZonotope.stack(j_items, dim=0),
+        H=PolynomialZonotope.stack(h_items, dim=0),
     )
 
 
