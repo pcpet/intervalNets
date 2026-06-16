@@ -3,7 +3,7 @@
 from .affine import AffineTensor
 from .interval import Interval
 from .polynomial_zonotope import PZTwoJet, PolynomialZonotope
-from .pz_tanh import TanhApproximation, compute_tanh_polynomial, certify_tanh_residual_subdivision
+from .pz_tanh import TanhApproximation, compute_tanh_polynomial, certify_tanh_residual_subdivision, tanh_pz_scalar
 
 __all__ = [
     "Interval",
@@ -13,6 +13,7 @@ __all__ = [
     "TanhApproximation",
     "compute_tanh_polynomial",
     "certify_tanh_residual_subdivision",
+    "tanh_pz_scalar",
 ]
 
 try:

@@ -130,3 +130,48 @@ def test_pz_twojet_linear_forward_matches_layer_affine_map():
     assert torch.allclose(out.H.center, torch.zeros(3, 2, 2, dtype=torch.float64))
     for exp, coeff in X.terms.items():
         assert torch.allclose(out.Y.terms[exp], layer.weight.detach().matmul(coeff))
+
+
+def test_evaluate_polynomial_uses_power_basis_and_horner_dependencies():
+    z = PolynomialZonotope(1.0, {(1,): 2.0}, num_noise=1)
+    out = z.evaluate_polynomial((3.0, 4.0, 5.0))
+    expected = 3.0 + 4.0 * z + 5.0 * z * z
+    assert out.center == expected.center
+    assert out.terms == expected.terms
+
+
+def test_add_independent_error_extends_existing_exponents():
+    z = PolynomialZonotope(1.0, {(1, 2): 3.0}, num_noise=2)
+    out = z.add_independent_error(0.25)
+    assert out.num_noise == 3
+    assert out.center == 1.0
+    assert out.terms[(1, 2, 0)] == 3.0
+    assert out.terms[(0, 0, 1)] == 0.25
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_stack_aligns_sliced_scalars_and_merges_exponents():
+    z1 = PolynomialZonotope(torch.tensor([1.0, 2.0], dtype=torch.float64), {(1,): torch.tensor([0.5, 1.5], dtype=torch.float64)}, num_noise=1)
+    z2 = PolynomialZonotope(torch.tensor(3.0, dtype=torch.float64), {(0, 1): torch.tensor(2.0, dtype=torch.float64)}, num_noise=2)
+    stacked = PolynomialZonotope.stack((z1[1], z2))
+    assert stacked.num_noise == 2
+    assert stacked.shape == (2,)
+    assert torch.allclose(stacked.center, torch.tensor([2.0, 3.0], dtype=torch.float64))
+    assert torch.allclose(stacked.terms[(1, 0)], torch.tensor([1.5, 0.0], dtype=torch.float64))
+    assert torch.allclose(stacked.terms[(0, 1)], torch.tensor([0.0, 2.0], dtype=torch.float64))
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_tanh_pz_scalar_adds_certified_fresh_noise_and_encloses_samples():
+    from intervalnets.pz_tanh import tanh_pz_scalar
+
+    z = PolynomialZonotope.from_box(torch.tensor(-0.5, dtype=torch.float64), torch.tensor(0.75, dtype=torch.float64))
+    out = tanh_pz_scalar(z, remez_degree=5, residual_subdivisions=64)
+    assert out.shape == ()
+    assert out.num_noise == z.num_noise + 1
+    assert any(exp[-1] == 1 for exp in out.terms)
+    enclosure = out.interval_enclosure()
+    lo, hi = enclosure.to_torch(dtype=torch.float64)
+    for value in torch.linspace(-0.5, 0.75, steps=9, dtype=torch.float64):
+        expected = torch.tanh(value)
+        assert lo <= expected <= hi

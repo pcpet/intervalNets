@@ -213,3 +213,40 @@ def certify_tanh_residual_subdivision(
         "interval": (lower, upper),
         "note": "Rigorous conservative fallback; not final root-isolation certification.",
     }
+
+
+def _scalar_interval_from_enclosure(enclosure: Any) -> Interval:
+    """Return a scalar ``Interval`` from a scalar PZ interval enclosure."""
+
+    lower = enclosure.lower
+    upper = enclosure.upper
+    try:
+        import torch
+    except ImportError:  # pragma: no cover
+        torch = None
+    if torch is not None and isinstance(lower, torch.Tensor):
+        if lower.numel() != 1 or upper.numel() != 1:
+            raise ValueError("tanh_pz_scalar expects a scalar polynomial zonotope.")
+        return Interval(float(lower.reshape(()).item()), float(upper.reshape(()).item()))
+    if isinstance(lower, tuple) or isinstance(upper, tuple):
+        raise ValueError("tanh_pz_scalar expects a scalar polynomial zonotope.")
+    return Interval(float(lower), float(upper))
+
+
+def tanh_pz_scalar(Z_i: Any, remez_degree: int, residual_subdivisions: int):
+    """Enclose ``tanh(Z_i)`` for a scalar polynomial zonotope.
+
+    The returned zonotope is ``p_i(Z_i) + Delta_i * eta_i`` where ``p_i`` is a
+    numerically proposed polynomial and ``Delta_i`` is certified by subdivision
+    interval arithmetic.
+    """
+
+    from .polynomial_zonotope import PolynomialZonotope
+
+    if not isinstance(Z_i, PolynomialZonotope):
+        raise TypeError("Z_i must be a PolynomialZonotope.")
+    if Z_i.shape != ():
+        raise ValueError("tanh_pz_scalar expects a scalar polynomial zonotope.")
+    interval = _scalar_interval_from_enclosure(Z_i.interval_enclosure())
+    approx = compute_tanh_polynomial(interval, remez_degree=remez_degree, subdivisions=residual_subdivisions)
+    return Z_i.evaluate_polynomial(approx.coeffs).add_independent_error(approx.delta)
