@@ -4,13 +4,6 @@ from itertools import product
 from math import exp, inf, isfinite, log, nextafter, tanh
 from typing import Any, TypeAlias
 
-from .affine import AffineTensor
-from .affine_pytorch import (
-    _tanh_affine_parameters,
-    affine_relu_transform,
-    affine_sigmoid_transform,
-    affine_tanh_transform,
-)
 from .interval import Interval
 from .polynomial_zonotope import PZTwoJet, PolynomialZonotope
 from .pz_tanh import tanh_pz_scalar
@@ -49,7 +42,7 @@ class IntervalTensor(Interval):
         return torch.tensor(self.lower, dtype=dtype), torch.tensor(self.upper, dtype=dtype)
 
 
-DomainTensor: TypeAlias = IntervalTensor | AffineTensor
+DomainTensor: TypeAlias = IntervalTensor
 
 
 def _require_torch() -> None:
@@ -266,43 +259,6 @@ def _interval_cat(intervals: list[IntervalTensor], dim: int) -> IntervalTensor:
         lower.extend(float(value) for value in item.lower)
         upper.extend(float(value) for value in item.upper)
     return IntervalTensor.from_bounds(lower, upper)
-
-
-def _affine_add(left: AffineTensor, right: AffineTensor) -> AffineTensor:
-    return left + right
-
-
-def _affine_cat(inputs: list[AffineTensor], dim: int) -> AffineTensor:
-    if not inputs:
-        raise ValueError("IntervalCat requires at least one interval input.")
-    if torch is None:
-        raise ImportError("PyTorch is required for affine concatenation.")
-
-    centers = [item.c for item in inputs]
-    generators = [item.G for item in inputs]
-    if not all(isinstance(center, torch.Tensor) for center in centers) or not all(
-        isinstance(generator, torch.Tensor) for generator in generators
-    ):
-        raise NotImplementedError("Affine IntervalCat currently requires torch-backed AffineTensor inputs.")
-
-    normalized_dim = dim if dim >= 0 else dim + centers[0].ndim
-    concatenated_center = torch.cat(centers, dim=normalized_dim)
-    total_noise = sum(generator.shape[-1] for generator in generators)
-    out_shape = concatenated_center.shape
-    concatenated_generators = torch.zeros(*out_shape, total_noise, dtype=concatenated_center.dtype, device=concatenated_center.device)
-
-    offset = 0
-    axis_offset = 0
-    for center, generator in zip(centers, generators):
-        count = generator.shape[-1]
-        index = [slice(None)] * len(out_shape)
-        axis_stop = axis_offset + center.shape[normalized_dim]
-        index[normalized_dim] = slice(axis_offset, axis_stop)
-        concatenated_generators[tuple(index) + (slice(offset, offset + count),)] = generator
-        offset += count
-        axis_offset = axis_stop
-
-    return AffineTensor(concatenated_center, concatenated_generators)
 
 
 def _linear_forward(layer, x: IntervalTensor) -> IntervalTensor:
@@ -900,33 +856,6 @@ def _interval_derivative_bounds_tanh(value: Interval) -> Interval:
     return Interval.from_bounds(lower_out, upper_out)
 
 
-def _interval_derivative_bounds_tanh_affine(value: Interval, affine_tanh_mode: str) -> Interval:
-    if affine_tanh_mode not in {"min_range", "chebyshev"}:
-        raise ValueError("affine_tanh_mode must be either 'min_range' or 'chebyshev'.")
-
-    exact = _interval_derivative_bounds_tanh(value)
-    lower_exact = float(exact.lower)
-    upper_exact = float(exact.upper)
-    lower = float(value.lower)
-    upper = float(value.upper)
-    if lower == upper:
-        return exact
-    if torch is None:
-        return exact
-
-    slope, _, _ = _tanh_affine_parameters(
-        torch.tensor([lower], dtype=torch.float64),
-        torch.tensor([upper], dtype=torch.float64),
-        mode=affine_tanh_mode,
-    )
-    alpha = float(slope[0].item())
-    radius = max(abs(lower_exact - alpha), abs(upper_exact - alpha))
-
-    lower_out = _pad_outward(max(0.0, alpha - radius), -inf, include_float32=True)
-    upper_out = _pad_outward(min(1.0, alpha + radius), inf, include_float32=True)
-    return Interval.from_bounds(lower_out, upper_out)
-
-
 def _interval_second_derivative_bounds_relu(value: Interval) -> Interval:
     _ = value
     return Interval.point(0.0)
@@ -1145,67 +1074,6 @@ def _sequential_layer_inputs(module: nn.Sequential, domain: IntervalTensor, encl
         prefix = nn.Sequential(*children[:idx])
         layer_inputs.append(interval_forward(prefix, domain, enclosure_mode=enclosure_mode))
     return layer_inputs
-
-
-def _affine_jacobian_for_layer(
-    layer,
-    pre_activation: IntervalTensor,
-    affine_tanh_mode: str,
-) -> list[list[Interval]]:
-    if isinstance(layer, nn.Tanh):
-        derivatives = [
-            _interval_derivative_bounds_tanh_affine(
-                Interval(pre_activation.lower[idx], pre_activation.upper[idx]),
-                affine_tanh_mode=affine_tanh_mode,
-            )
-            for idx in range(len(pre_activation.lower))
-        ]
-        size = len(derivatives)
-        return [
-            [derivatives[row_idx] if row_idx == col_idx else Interval.point(0.0) for col_idx in range(size)]
-            for row_idx in range(size)
-        ]
-    return _jacobian_for_layer(layer, pre_activation)
-
-
-def _eval_jacobian_bounds_affine(
-    model,
-    domain: IntervalTensor,
-    template: AffineTensor,
-    enclosure_mode: str = "box",
-    affine_tanh_mode: str = "min_range",
-) -> IntervalTensor:
-    if not isinstance(domain, IntervalTensor):
-        raise TypeError("Affine Jacobian evaluation requires an IntervalTensor box domain.")
-    if len(domain.shape) != 1:
-        raise NotImplementedError("Affine Jacobian evaluation currently supports flat input boxes only.")
-    if enclosure_mode not in {"box", "slope"}:
-        raise ValueError("enclosure_mode must be either 'box' or 'slope'.")
-
-    if isinstance(model, nn.Sequential):
-        backend_hint = _model_parameter_backend_hint(model)
-        affine_state = _interval_box_to_affine_box(domain, template, backend_hint=backend_hint)
-        current_jacobian = _identity_jacobian(len(domain.lower))
-
-        for child in model:
-            pre_activation = _affine_bounds_to_interval_tensor(affine_state)
-            local_jacobian = _affine_jacobian_for_layer(child, pre_activation, affine_tanh_mode=affine_tanh_mode)
-            current_jacobian = _matrix_multiply(local_jacobian, current_jacobian)
-            affine_state = _affine_forward(
-                child,
-                affine_state,
-                enclosure_mode=enclosure_mode,
-                affine_tanh_mode=affine_tanh_mode,
-            )
-    else:
-        backend_hint = _model_parameter_backend_hint(model)
-        affine_domain = _interval_box_to_affine_box(domain, template, backend_hint=backend_hint)
-        pre_activation = _affine_bounds_to_interval_tensor(affine_domain)
-        current_jacobian = _affine_jacobian_for_layer(model, pre_activation, affine_tanh_mode=affine_tanh_mode)
-
-    lower = tuple(tuple(entry.lower for entry in row) for row in current_jacobian)
-    upper = tuple(tuple(entry.upper for entry in row) for row in current_jacobian)
-    return IntervalTensor.from_bounds(lower, upper)
 
 
 def _eval_jacobian_bounds(model, domain: IntervalTensor, enclosure_mode: str = "box") -> IntervalTensor:
@@ -1477,82 +1345,14 @@ def _interval_forward(module, x: IntervalTensor, enclosure_mode: str = "box") ->
     )
 
 
-def _affine_forward(
-    module,
-    x: AffineTensor,
-    enclosure_mode: str = "box",
-    affine_tanh_mode: str = "min_range",
-) -> AffineTensor:
-    _ = enclosure_mode
-    _require_torch()
-    if isinstance(module, nn.Sequential):
-        result = x
-        for child in module:
-            result = _affine_forward(
-                child,
-                result,
-                enclosure_mode=enclosure_mode,
-                affine_tanh_mode=affine_tanh_mode,
-            )
-        return result
-    if isinstance(module, nn.Flatten):
-        return x
-    if isinstance(module, nn.Linear):
-        weight = module.weight.detach()
-        bias = module.bias.detach() if module.bias is not None else None
-        is_torch_backend = torch is not None and isinstance(x.c, torch.Tensor)
-        if is_torch_backend:
-            weight = weight.to(dtype=x.c.dtype, device=x.c.device)
-            if bias is not None:
-                bias = bias.to(dtype=x.c.dtype, device=x.c.device)
-            return x.affine_map(weight, bias)
-
-        weight_2d = weight.cpu().tolist()
-        bias_1d = bias.cpu().tolist() if bias is not None else None
-        return x.affine_map(weight_2d, bias_1d)
-    if isinstance(module, nn.ReLU):
-        return affine_relu_transform(x)
-    if isinstance(module, nn.Sigmoid):
-        return affine_sigmoid_transform(x)
-    if isinstance(module, nn.Tanh):
-        return affine_tanh_transform(x, mode=affine_tanh_mode)
-    if isinstance(module, nn.Identity):
-        return x
-    if isinstance(module, IntervalAdd):
-        left = _affine_forward(module.left, x, enclosure_mode=enclosure_mode, affine_tanh_mode=affine_tanh_mode)
-        right = _affine_forward(module.right, x, enclosure_mode=enclosure_mode, affine_tanh_mode=affine_tanh_mode)
-        return _affine_add(left, right)
-    if isinstance(module, IntervalCat):
-        parts = [
-            _affine_forward(branch, x, enclosure_mode=enclosure_mode, affine_tanh_mode=affine_tanh_mode)
-            for branch in module.branches
-        ]
-        return _affine_cat(parts, module.dim)
-    raise NotImplementedError(
-        f"Affine forward currently supports nn.Sequential, nn.Flatten, nn.Linear, nn.ReLU, nn.Sigmoid, nn.Tanh, nn.Identity, IntervalAdd, and IntervalCat only; got {type(module).__name__}."
-    )
-
-
-def affine_forward(
-    module,
-    x: AffineTensor,
-    enclosure_mode: str = "box",
-    affine_tanh_mode: str = "min_range",
-) -> AffineTensor:
-    return _affine_forward(module, x, enclosure_mode=enclosure_mode, affine_tanh_mode=affine_tanh_mode)
-
-
 def interval_forward(
     module,
     x: DomainTensor,
     enclosure_mode: str = "box",
-    affine_tanh_mode: str = "min_range",
 ) -> DomainTensor:
     if isinstance(x, IntervalTensor):
         return _interval_forward(module, x, enclosure_mode=enclosure_mode)
-    if isinstance(x, AffineTensor):
-        return _affine_forward(module, x, enclosure_mode=enclosure_mode, affine_tanh_mode=affine_tanh_mode)
-    raise TypeError("interval_forward(module, x) requires x to be an IntervalTensor or AffineTensor.")
+    raise TypeError("interval_forward(module, x) requires x to be an IntervalTensor.")
 
 
 def interval_forward_refine(
@@ -1569,13 +1369,8 @@ def interval_forward_refine(
     `interval_forward(...)` once on the full input box.
     """
     _require_torch()
-    if isinstance(x, AffineTensor):
-        raise NotImplementedError(
-            "interval_forward_refine does not currently support AffineTensor inputs; "
-            "affine subdivision refinement is not implemented."
-        )
     if not isinstance(x, IntervalTensor):
-        raise TypeError("interval_forward_refine(module, x, ...) requires x to be an IntervalTensor or AffineTensor.")
+        raise TypeError("interval_forward_refine(module, x, ...) requires x to be an IntervalTensor.")
     if len(x.shape) != 1:
         raise NotImplementedError("interval_forward_refine currently supports flat vectors only.")
     if splits_per_dim < 1:
@@ -1605,323 +1400,16 @@ def interval_forward_refine(
 _ORIGINAL_EVAL = getattr(nn.Module, "eval", None) if nn is not None else None
 _PATCHED = False
 _ACTIVE_ENCLOSURE_MODE = "slope"
-_ACTIVE_AFFINE_TANH_MODE = "min_range"
 
 
-def _affine_bounds_to_interval_tensor(value: AffineTensor) -> IntervalTensor:
-    """Concretize affine bounds into an outward-rounded IntervalTensor enclosure."""
-    lower, upper = value.to_bounds()
-    return IntervalTensor.from_bounds(lower, upper)
 
 
-def _model_parameter_backend_hint(model) -> tuple[Any, Any] | None:
-    """Return preferred (dtype, device) from the model's first parameter, when available."""
-    if torch is None:
-        return None
-    try:
-        parameter = next(model.parameters())
-    except (AttributeError, StopIteration, TypeError):
-        return None
-    if not isinstance(parameter, torch.Tensor):
-        return None
-    return parameter.dtype, parameter.device
-
-
-def _interval_box_to_affine_box(
-    box: IntervalTensor,
-    template: AffineTensor,
-    backend_hint: tuple[Any, Any] | None = None,
-) -> AffineTensor:
-    """Lift an interval box into affine form while preserving backend conventions."""
-    if torch is not None and backend_hint is not None:
-        dtype, device = backend_hint
-        lower = torch.tensor(box.lower, dtype=dtype, device=device)
-        upper = torch.tensor(box.upper, dtype=dtype, device=device)
-        return AffineTensor.from_bounds(lower, upper)
-    if torch is not None and isinstance(template.c, torch.Tensor):
-        lower = torch.tensor(box.lower, dtype=template.c.dtype, device=template.c.device)
-        upper = torch.tensor(box.upper, dtype=template.c.dtype, device=template.c.device)
-        return AffineTensor.from_bounds(lower, upper)
-    return AffineTensor.from_bounds(box.lower, box.upper)
-
-
-def _lp_pointwise_power_bounds_affine(
-    model,
-    box: IntervalTensor,
-    p: float,
-    template: AffineTensor,
-    affine_tanh_mode: str = "min_range",
-) -> Interval:
-    backend_hint = _model_parameter_backend_hint(model)
-    affine_box = _interval_box_to_affine_box(box, template, backend_hint=backend_hint)
-    output_affine = affine_forward(model, affine_box, affine_tanh_mode=affine_tanh_mode)
-    output = _affine_bounds_to_interval_tensor(output_affine)
-    total = Interval.point(0.0)
-    for lower, upper in zip(output.lower, output.upper):
-        component = Interval(lower, upper)
-        total = total + _interval_pow_scalar(_interval_abs_bounds(component), p)
-    return total
-
-
-def _lpnorm_bounds_affine(
-    model,
-    domain: AffineTensor,
-    p: float,
-    iterations: int,
-    theta: float,
-    forward_refine_splits: int = 1,
-    forward_refine_max_cells: int = 256,
-    affine_tanh_mode: str = "min_range",
-) -> Interval:
-    """Conservative Lp enclosure for affine domains using affine forward concretization."""
-    domain_box = _affine_bounds_to_interval_tensor(domain)
-    if len(domain_box.shape) != 1:
-        raise NotImplementedError("Lp integration currently supports flat input boxes only.")
-    if not isfinite(p) or p <= 0.0:
-        raise ValueError("p must be a positive finite real number.")
-    if iterations < 0:
-        raise ValueError("iterations must be non-negative.")
-    _validate_dorfler_theta(theta)
-    if forward_refine_splits < 1:
-        raise ValueError("forward_refine_splits must be at least 1.")
-
-    boxes = [domain_box]
-    use_jacobian_splitting = len(domain_box.lower) > 1
-    for _ in range(iterations):
-        indicators: list[float] = []
-        split_dims: list[int] = []
-        for box in boxes:
-            if forward_refine_splits <= 1:
-                integrand_bounds = _lp_pointwise_power_bounds_affine(
-                    model, box, p, domain, affine_tanh_mode=affine_tanh_mode
-                )
-            else:
-                cells = _subdivide_box(box, splits_per_dim=forward_refine_splits, max_cells=forward_refine_max_cells)
-                integrand_bounds = _hull_intervals(
-                    [
-                        _lp_pointwise_power_bounds_affine(
-                            model, cell, p, domain, affine_tanh_mode=affine_tanh_mode
-                        )
-                        for cell in cells
-                    ]
-                )
-            width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
-            indicators.append(width * _box_volume(box))
-            if use_jacobian_splitting:
-                # Conservative fallback: Jacobian bounds are computed on the box enclosure.
-                jacobian = _eval_jacobian_bounds(model, box)
-                split_dims.append(_choose_split_dim(box, jacobian))
-            else:
-                split_dims.append(_choose_split_dim(box, None))
-
-        marked_indices = set(_dorfler_marking(indicators, theta))
-        refined_boxes: list[IntervalTensor] = []
-        for idx, box in enumerate(boxes):
-            if idx in marked_indices:
-                left, right = _split_box(box, split_dim=split_dims[idx])
-                refined_boxes.extend([left, right])
-            else:
-                refined_boxes.append(box)
-        boxes = refined_boxes
-
-    integral = Interval.point(0.0)
-    for box in boxes:
-        if forward_refine_splits <= 1:
-            integrand_bounds = _lp_pointwise_power_bounds_affine(
-                model, box, p, domain, affine_tanh_mode=affine_tanh_mode
-            )
-        else:
-            cells = _subdivide_box(box, splits_per_dim=forward_refine_splits, max_cells=forward_refine_max_cells)
-            integrand_bounds = _hull_intervals(
-                [
-                    _lp_pointwise_power_bounds_affine(model, cell, p, domain, affine_tanh_mode=affine_tanh_mode)
-                    for cell in cells
-                ]
-            )
-        weighted = Interval.from_bounds(
-            float(integrand_bounds.lower) * _box_volume(box),
-            float(integrand_bounds.upper) * _box_volume(box),
-        )
-        integral = integral + weighted
-
-    non_negative = Interval.from_bounds(max(0.0, float(integral.lower)), max(0.0, float(integral.upper)))
-    return _interval_pow_scalar(non_negative, 1.0 / p)
-
-
-def _sobolev_pointwise_power_bounds_affine_order1(
-    model,
-    box: IntervalTensor,
-    p: float,
-    template: AffineTensor,
-    enclosure_mode: str = "slope",
-    affine_tanh_mode: str = "min_range",
-) -> Interval:
-    """Order-1 Sobolev integrand enclosure using affine value/derivative propagation."""
-    backend_hint = _model_parameter_backend_hint(model)
-    affine_box = _interval_box_to_affine_box(box, template, backend_hint=backend_hint)
-    output = _affine_bounds_to_interval_tensor(affine_forward(model, affine_box, affine_tanh_mode=affine_tanh_mode))
-    jacobian = _eval_jacobian_bounds_affine(
-        model,
-        box,
-        template=template,
-        enclosure_mode=enclosure_mode,
-        affine_tanh_mode=affine_tanh_mode,
-    )
-
-    total = Interval.point(0.0)
-    for lower, upper in zip(output.lower, output.upper):
-        component = Interval(lower, upper)
-        total = total + _interval_pow_scalar(_interval_abs_bounds(component), p)
-
-    for row_lower, row_upper in zip(jacobian.lower, jacobian.upper):
-        for entry_lower, entry_upper in zip(row_lower, row_upper):
-            derivative_component = Interval(entry_lower, entry_upper)
-            total = total + _interval_pow_scalar(_interval_abs_bounds(derivative_component), p)
-
-    return total
-
-
-def _sobolev_norm_bounds_affine(
-    model,
-    domain: AffineTensor,
-    p: float,
-    order: int,
-    iterations: int,
-    theta: float,
-    forward_refine_splits: int = 1,
-    forward_refine_max_cells: int = 256,
-    enclosure_mode: str = "slope",
-    affine_tanh_mode: str = "min_range",
-) -> Interval:
-    if not isfinite(p) or p <= 0.0:
-        raise ValueError("p must be a positive finite real number.")
-    if order not in {1, 2}:
-        raise ValueError("order must be either 1 or 2.")
-    if iterations < 0:
-        raise ValueError("iterations must be non-negative.")
-    _validate_dorfler_theta(theta)
-    if forward_refine_splits < 1:
-        raise ValueError("forward_refine_splits must be at least 1.")
-
-    if order == 2:
-        # Conservative fallback: convert affine domain to an interval box for
-        # second-order derivative enclosures.
-        boxed = _affine_bounds_to_interval_tensor(domain)
-        return _sobolev_norm_bounds(
-            model,
-            boxed,
-            p,
-            order,
-            iterations,
-            theta,
-            enclosure_mode=enclosure_mode,
-            forward_refine_splits=forward_refine_splits,
-            forward_refine_max_cells=forward_refine_max_cells,
-        )
-
-    domain_box = _affine_bounds_to_interval_tensor(domain)
-    if len(domain_box.shape) != 1:
-        raise NotImplementedError("Sobolev integration currently supports flat input boxes only.")
-
-    boxes = [domain_box]
-    use_jacobian_splitting = len(domain_box.lower) > 1
-    for _ in range(iterations):
-        indicators: list[float] = []
-        split_dims: list[int] = []
-        for box in boxes:
-            if forward_refine_splits <= 1:
-                integrand_bounds = _sobolev_pointwise_power_bounds_affine_order1(
-                    model,
-                    box,
-                    p,
-                    domain,
-                    enclosure_mode=enclosure_mode,
-                    affine_tanh_mode=affine_tanh_mode,
-                )
-            else:
-                cells = _subdivide_box(box, splits_per_dim=forward_refine_splits, max_cells=forward_refine_max_cells)
-                integrand_bounds = _hull_intervals(
-                    [
-                        _sobolev_pointwise_power_bounds_affine_order1(
-                            model,
-                            cell,
-                            p,
-                            domain,
-                            enclosure_mode=enclosure_mode,
-                            affine_tanh_mode=affine_tanh_mode,
-                        )
-                        for cell in cells
-                    ]
-                )
-            width = float(integrand_bounds.upper) - float(integrand_bounds.lower)
-            indicators.append(width * _box_volume(box))
-            if use_jacobian_splitting:
-                jacobian = _eval_jacobian_bounds_affine(
-                    model,
-                    box,
-                    template=domain,
-                    enclosure_mode=enclosure_mode,
-                    affine_tanh_mode=affine_tanh_mode,
-                )
-                split_dims.append(_choose_split_dim(box, jacobian))
-            else:
-                split_dims.append(_choose_split_dim(box, None))
-
-        marked_indices = set(_dorfler_marking(indicators, theta))
-        refined_boxes: list[IntervalTensor] = []
-        for idx, box in enumerate(boxes):
-            if idx in marked_indices:
-                left, right = _split_box(box, split_dim=split_dims[idx])
-                refined_boxes.extend([left, right])
-            else:
-                refined_boxes.append(box)
-        boxes = refined_boxes
-
-    integral = Interval.point(0.0)
-    for box in boxes:
-        if forward_refine_splits <= 1:
-            integrand_bounds = _sobolev_pointwise_power_bounds_affine_order1(
-                model,
-                box,
-                p,
-                domain,
-                enclosure_mode=enclosure_mode,
-                affine_tanh_mode=affine_tanh_mode,
-            )
-        else:
-            cells = _subdivide_box(box, splits_per_dim=forward_refine_splits, max_cells=forward_refine_max_cells)
-            integrand_bounds = _hull_intervals(
-                [
-                    _sobolev_pointwise_power_bounds_affine_order1(
-                        model,
-                        cell,
-                        p,
-                        domain,
-                        enclosure_mode=enclosure_mode,
-                        affine_tanh_mode=affine_tanh_mode,
-                    )
-                    for cell in cells
-                ]
-            )
-        weighted = Interval.from_bounds(
-            float(integrand_bounds.lower) * _box_volume(box),
-            float(integrand_bounds.upper) * _box_volume(box),
-        )
-        integral = integral + weighted
-
-    non_negative = Interval.from_bounds(max(0.0, float(integral.lower)), max(0.0, float(integral.upper)))
-    return _interval_pow_scalar(non_negative, 1.0 / p)
-
-
-def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = "min_range") -> None:
+def enable_interval_eval(enclosure_mode: str = "slope") -> None:
     _require_torch()
-    global _PATCHED, _ACTIVE_ENCLOSURE_MODE, _ACTIVE_AFFINE_TANH_MODE
+    global _PATCHED, _ACTIVE_ENCLOSURE_MODE
     if enclosure_mode not in {"box", "slope"}:
         raise ValueError("enclosure_mode must be either 'box' or 'slope'.")
-    if affine_tanh_mode not in {"min_range", "chebyshev"}:
-        raise ValueError("affine_tanh_mode must be either 'min_range' or 'chebyshev'.")
     _ACTIVE_ENCLOSURE_MODE = enclosure_mode
-    _ACTIVE_AFFINE_TANH_MODE = affine_tanh_mode
     if _PATCHED:
         return
 
@@ -1929,14 +1417,9 @@ def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = 
         result = _ORIGINAL_EVAL(self)
         if interval is None:
             return result
-        if not isinstance(interval, (IntervalTensor, AffineTensor)):
-            raise TypeError("model.eval(interval) requires an IntervalTensor or AffineTensor input.")
-        return interval_forward(
-            self,
-            interval,
-            enclosure_mode=_ACTIVE_ENCLOSURE_MODE,
-            affine_tanh_mode=_ACTIVE_AFFINE_TANH_MODE,
-        )
+        if not isinstance(interval, IntervalTensor):
+            raise TypeError("model.eval(interval) requires an IntervalTensor input.")
+        return interval_forward(self, interval, enclosure_mode=_ACTIVE_ENCLOSURE_MODE)
 
     def lpnorm_with_interval(
         self,
@@ -1948,17 +1431,6 @@ def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = 
         forward_refine_max_cells: int = 256,
     ):
         _ORIGINAL_EVAL(self)
-        if isinstance(domain, AffineTensor):
-            return _lpnorm_bounds_affine(
-                self,
-                domain,
-                p,
-                iterations,
-                theta,
-                affine_tanh_mode=_ACTIVE_AFFINE_TANH_MODE,
-                forward_refine_splits=forward_refine_splits,
-                forward_refine_max_cells=forward_refine_max_cells,
-            )
         return _lpnorm_bounds(
             self,
             domain,
@@ -1972,22 +1444,10 @@ def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = 
 
     def eval_jacobian_with_interval(self, domain: DomainTensor):
         _ORIGINAL_EVAL(self)
-        if isinstance(domain, AffineTensor):
-            # Conservative fallback: propagate Jacobian on interval enclosure
-            # of the affine domain until exact affine derivative propagation
-            # is implemented.
-            boxed = _affine_bounds_to_interval_tensor(domain)
-            return _eval_jacobian_bounds(self, boxed, enclosure_mode=_ACTIVE_ENCLOSURE_MODE)
         return _eval_jacobian_bounds(self, domain, enclosure_mode=_ACTIVE_ENCLOSURE_MODE)
 
     def eval_hessian_with_interval(self, domain: DomainTensor):
         _ORIGINAL_EVAL(self)
-        if isinstance(domain, AffineTensor):
-            # Conservative fallback: propagate Hessian on interval enclosure
-            # of the affine domain until exact affine second-order propagation
-            # is implemented.
-            boxed = _affine_bounds_to_interval_tensor(domain)
-            return _eval_hessian_bounds(self, boxed, enclosure_mode=_ACTIVE_ENCLOSURE_MODE)
         return _eval_hessian_bounds(self, domain, enclosure_mode=_ACTIVE_ENCLOSURE_MODE)
 
     def eval_pz_twojet_with_interval(
@@ -2020,19 +1480,6 @@ def enable_interval_eval(enclosure_mode: str = "slope", affine_tanh_mode: str = 
         forward_refine_max_cells: int = 256,
     ):
         _ORIGINAL_EVAL(self)
-        if isinstance(domain, AffineTensor):
-            return _sobolev_norm_bounds_affine(
-                self,
-                domain,
-                p,
-                order,
-                iterations,
-                theta,
-                enclosure_mode=_ACTIVE_ENCLOSURE_MODE,
-                affine_tanh_mode=_ACTIVE_AFFINE_TANH_MODE,
-                forward_refine_splits=forward_refine_splits,
-                forward_refine_max_cells=forward_refine_max_cells,
-            )
         return _sobolev_norm_bounds(
             self,
             domain,

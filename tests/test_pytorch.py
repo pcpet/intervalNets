@@ -5,13 +5,11 @@ torch = pytest.importorskip("torch")
 from torch import nn
 
 from intervalnets import (
-    AffineTensor,
     Interval,
     IntervalAdd,
     IntervalCat,
     IntervalTensor,
     enable_interval_eval,
-    affine_forward,
     interval_forward,
     interval_forward_refine,
 )
@@ -19,7 +17,6 @@ from intervalnets.pytorch import (
     _eval_hessian_bounds,
     _eval_jacobian_bounds,
     _interval_pow_scalar,
-    _sobolev_pointwise_power_bounds_affine_order1,
 )
 
 
@@ -225,24 +222,6 @@ def test_enable_interval_eval_defaults_to_slope_mode() -> None:
     assert result.upper[0] <= 1.0 + 1e-6
 
 
-def test_linear_interval_matches_expected_affine_bounds() -> None:
-    layer = nn.Linear(2, 1)
-    with torch.no_grad():
-        layer.weight.copy_(torch.tensor([[2.0, -3.0]]))
-        layer.bias.copy_(torch.tensor([0.5]))
-
-    interval = IntervalTensor.from_bounds([1.0, 2.0], [1.5, 2.5])
-    output = interval_forward(layer, interval)
-
-    candidates = [
-        2.0 * x1 - 3.0 * x2 + 0.5
-        for x1 in [1.0, 1.5]
-        for x2 in [2.0, 2.5]
-    ]
-    assert output.lower[0] <= min(candidates)
-    assert output.upper[0] >= max(candidates)
-
-
 def test_zero_network_contains_zero_with_rounding_margin() -> None:
     layer = nn.Linear(3, 2)
     with torch.no_grad():
@@ -285,7 +264,6 @@ def test_eval_overload_runs_interval_propagation() -> None:
     assert len(result.upper) == 1
     assert result.lower[0] <= 1.0
     assert result.upper[0] >= 1.125
-
 
 
 def test_softmax_bounds_match_closed_form_in_two_dimensions() -> None:
@@ -965,134 +943,6 @@ def test_eval_hessian_requires_interval_tensor_domain() -> None:
         _ = model.eval_hessian([0.0, 1.0])
 
 
-def test_interval_forward_dispatches_affine_tensor_for_linear_relu() -> None:
-    model = nn.Sequential(nn.Linear(2, 2), nn.ReLU())
-    with torch.no_grad():
-        model[0].weight.copy_(torch.tensor([[1.0, -1.0], [0.5, 2.0]], dtype=torch.float32))
-        model[0].bias.copy_(torch.tensor([0.1, -0.2], dtype=torch.float32))
-    domain = AffineTensor.from_bounds(
-        torch.tensor([-1.0, 0.0], dtype=torch.float32),
-        torch.tensor([1.0, 2.0], dtype=torch.float32),
-    )
-
-    output = interval_forward(model, domain)
-
-    assert isinstance(output, AffineTensor)
-    lower, upper = output.to_bounds()
-    assert lower.shape == torch.Size([2])
-    assert upper.shape == torch.Size([2])
-
-
-def test_interval_forward_refine_rejects_affine_tensor() -> None:
-    model = nn.Linear(1, 1)
-    domain = AffineTensor.from_bounds(
-        torch.tensor([-1.0], dtype=torch.float32),
-        torch.tensor([1.0], dtype=torch.float32),
-    )
-    with pytest.raises(NotImplementedError, match="does not currently support AffineTensor"):
-        _ = interval_forward_refine(model, domain)
-
-
-def test_eval_methods_support_affine_domains_with_finite_ordered_bounds() -> None:
-    enable_interval_eval()
-    model = nn.Sequential(nn.Linear(2, 3), nn.Tanh(), nn.Linear(3, 1))
-    with torch.no_grad():
-        model[0].weight.copy_(torch.tensor([[0.8, -0.4], [0.3, 0.5], [-0.7, 0.2]], dtype=torch.float32))
-        model[0].bias.copy_(torch.tensor([0.1, -0.2, 0.05], dtype=torch.float32))
-        model[2].weight.copy_(torch.tensor([[1.1, -0.3, 0.6]], dtype=torch.float32))
-        model[2].bias.copy_(torch.tensor([0.0], dtype=torch.float32))
-    domain = AffineTensor.from_bounds(
-        torch.tensor([-0.5, -0.25], dtype=torch.float32),
-        torch.tensor([0.5, 0.75], dtype=torch.float32),
-    )
-
-    lp = model.lpnorm(domain, p=2.0, iterations=1)
-    jacobian = model.eval_jacobian(domain)
-    hessian = model.eval_hessian(domain)
-    sobolev = model.sobolev_norm(domain, p=2.0, iterations=1)
-
-    assert math.isfinite(float(lp.lower))
-    assert math.isfinite(float(lp.upper))
-    assert float(lp.lower) <= float(lp.upper)
-    assert math.isfinite(float(sobolev.lower))
-    assert math.isfinite(float(sobolev.upper))
-    assert float(sobolev.lower) <= float(sobolev.upper)
-
-    assert jacobian.lower[0][0] <= jacobian.upper[0][0]
-    assert jacobian.lower[0][1] <= jacobian.upper[0][1]
-    assert hessian.lower[0][0][0] <= hessian.upper[0][0][0]
-    assert hessian.lower[0][0][1] <= hessian.upper[0][0][1]
-    assert hessian.lower[0][1][0] <= hessian.upper[0][1][0]
-    assert hessian.lower[0][1][1] <= hessian.upper[0][1][1]
-
-
-def test_affine_lpnorm_and_sobolev_are_conservative_against_monte_carlo() -> None:
-    enable_interval_eval()
-    torch.manual_seed(13)
-    model = nn.Sequential(nn.Linear(2, 4), nn.Tanh(), nn.Linear(4, 1))
-    with torch.no_grad():
-        for parameter in model.parameters():
-            nn.init.uniform_(parameter, a=-0.7, b=0.7)
-
-    lower = torch.tensor([-0.4, -0.2], dtype=torch.float32)
-    upper = torch.tensor([0.6, 0.5], dtype=torch.float32)
-    domain = AffineTensor.from_bounds(lower, upper)
-
-    lp_bounds = model.lpnorm(domain, p=2.0, iterations=2)
-    sobolev_bounds = model.sobolev_norm(domain, p=2.0, order=1, iterations=2)
-
-    samples = torch.rand(10000, 2, dtype=torch.float64)
-    samples[:, 0] = samples[:, 0] * float(upper[0] - lower[0]) + float(lower[0])
-    samples[:, 1] = samples[:, 1] * float(upper[1] - lower[1]) + float(lower[1])
-    values = model(samples.to(dtype=torch.float32)).to(dtype=torch.float64).squeeze(-1)
-
-    volume = float((upper[0] - lower[0]) * (upper[1] - lower[1]))
-    lp_estimate = (volume * torch.mean(values.abs().pow(2.0)).item()) ** 0.5
-    assert float(lp_bounds.lower) <= lp_estimate <= float(lp_bounds.upper)
-
-    gradients: list[float] = []
-    for sample in samples[:512]:
-        x = sample.to(dtype=torch.float32).clone().detach().requires_grad_(True)
-        y = model(x.unsqueeze(0)).squeeze()
-        grad = torch.autograd.grad(y, x, create_graph=False)[0].to(dtype=torch.float64)
-        gradients.append(float(torch.sum(grad * grad).item()))
-    grad_sq_mean = sum(gradients) / len(gradients)
-    sobolev_integrand_estimate = torch.mean(values.abs().pow(2.0)).item() + grad_sq_mean
-    sobolev_estimate = (volume * sobolev_integrand_estimate) ** 0.5
-    assert float(sobolev_bounds.lower) <= sobolev_estimate <= float(sobolev_bounds.upper)
-
-
-def test_eval_overload_dispatches_affine_domain() -> None:
-    enable_interval_eval()
-    model = nn.Sequential(nn.Linear(2, 2), nn.ReLU())
-    with torch.no_grad():
-        model[0].weight.copy_(torch.tensor([[1.0, -1.0], [0.25, 0.5]], dtype=torch.float32))
-        model[0].bias.copy_(torch.tensor([0.0, 0.1], dtype=torch.float32))
-    domain = AffineTensor.from_bounds(
-        torch.tensor([-1.0, 0.0], dtype=torch.float32),
-        torch.tensor([1.0, 1.5], dtype=torch.float32),
-    )
-
-    output = model.eval(domain)
-
-    assert isinstance(output, AffineTensor)
-
-
-def test_sobolev_norm_order_one_accepts_fallback_affine_domain_with_torch_model() -> None:
-    enable_interval_eval()
-    model = nn.Sequential(nn.Linear(2, 3), nn.Tanh(), nn.Linear(3, 1))
-    with torch.no_grad():
-        for parameter in model.parameters():
-            nn.init.uniform_(parameter, a=-0.5, b=0.5)
-
-    domain = AffineTensor.from_bounds((-0.25, -0.75), (0.5, 0.25))
-    bounds = model.sobolev_norm(domain, p=2.0, order=1, iterations=1)
-
-    assert math.isfinite(float(bounds.lower))
-    assert math.isfinite(float(bounds.upper))
-    assert float(bounds.lower) <= float(bounds.upper)
-
-
 def test_softmax_jacobian_encloses_autograd_corner_gradients() -> None:
     enable_interval_eval()
     softmax = nn.Softmax(dim=-1)
@@ -1157,213 +1007,6 @@ def test_tanh_jacobian_encloses_autograd_corner_gradients() -> None:
                 for col in range(2):
                     exact = float(grad[col].item())
                     assert jacobian.lower[row][col] <= exact <= jacobian.upper[row][col]
-
-
-def test_affine_torch_map_matches_wc_plus_b_and_wg() -> None:
-    x = AffineTensor.from_bounds(
-        torch.tensor([-1.0, 2.0], dtype=torch.float64),
-        torch.tensor([3.0, 4.0], dtype=torch.float64),
-    )
-    W = torch.tensor([[2.0, -1.0], [0.5, 3.0]], dtype=torch.float64)
-    b = torch.tensor([0.25, -0.75], dtype=torch.float64)
-
-    mapped = x.affine_map(W, b)
-
-    assert torch.allclose(mapped.c, W @ x.c + b)
-    assert torch.allclose(mapped.G, W @ x.G)
-
-
-def test_affine_forward_supports_torch_and_fallback_linear_backends() -> None:
-    model = nn.Sequential(nn.Linear(2, 2), nn.Tanh())
-    with torch.no_grad():
-        model[0].weight.copy_(torch.tensor([[1.5, -0.5], [0.25, 2.0]], dtype=torch.float64))
-        model[0].bias.copy_(torch.tensor([0.1, -0.2], dtype=torch.float64))
-
-    torch_domain = AffineTensor.from_bounds(
-        torch.tensor([-1.0, 0.25], dtype=torch.float64),
-        torch.tensor([0.5, 1.75], dtype=torch.float64),
-    )
-    torch_output = affine_forward(model, torch_domain)
-    torch_lower, torch_upper = torch_output.to_bounds()
-    assert torch.all(torch_lower <= torch_upper)
-
-    fallback_domain = AffineTensor.from_bounds(tuple([-1.0, 0.25]), tuple([0.5, 1.75]))
-    fallback_output = affine_forward(model[0], fallback_domain)
-    fallback_lower, fallback_upper = fallback_output.to_bounds()
-    assert all(lower <= upper for lower, upper in zip(fallback_lower, fallback_upper))
-
-
-def _assert_affine_activation_encloses_pointwise(
-    layer: nn.Module,
-    activation,
-    lower: torch.Tensor,
-    upper: torch.Tensor,
-) -> None:
-    domain = AffineTensor.from_bounds(lower, upper)
-    transformed = affine_forward(layer, domain)
-    transformed_lower, transformed_upper = transformed.to_bounds()
-
-    for alpha in torch.linspace(0.0, 1.0, steps=41, dtype=torch.float64):
-        point = lower + alpha * (upper - lower)
-        expected = activation(point)
-        assert torch.all(transformed_lower <= expected)
-        assert torch.all(expected <= transformed_upper)
-
-
-def test_affine_relu_chebyshev_enclosure_contains_samples() -> None:
-    _assert_affine_activation_encloses_pointwise(
-        layer=nn.ReLU(),
-        activation=torch.relu,
-        lower=torch.tensor([-2.0, -0.5], dtype=torch.float64),
-        upper=torch.tensor([1.5, 2.0], dtype=torch.float64),
-    )
-
-
-def test_affine_tanh_chebyshev_enclosure_contains_samples() -> None:
-    _assert_affine_activation_encloses_pointwise(
-        layer=nn.Tanh(),
-        activation=torch.tanh,
-        lower=torch.tensor([-1.75, -0.5], dtype=torch.float64),
-        upper=torch.tensor([0.25, 1.2], dtype=torch.float64),
-    )
-
-
-@pytest.mark.parametrize("mode", ["chebyshev", "min_range"])
-def test_affine_tanh_modes_enclose_sampled_outputs(mode: str) -> None:
-    layer = nn.Tanh()
-    lower = torch.tensor([-2.0, -0.75], dtype=torch.float64)
-    upper = torch.tensor([1.25, 1.5], dtype=torch.float64)
-    domain = AffineTensor.from_bounds(lower, upper)
-
-    transformed = affine_forward(layer, domain, affine_tanh_mode=mode)
-    transformed_lower, transformed_upper = transformed.to_bounds()
-
-    for alpha in torch.linspace(0.0, 1.0, steps=121, dtype=torch.float64):
-        point = lower + alpha * (upper - lower)
-        expected = torch.tanh(point)
-        assert torch.all(transformed_lower <= expected)
-        assert torch.all(expected <= transformed_upper)
-
-
-def test_affine_tanh_mode_validation_rejects_unknown_mode() -> None:
-    domain = AffineTensor.from_bounds(
-        torch.tensor([-1.0], dtype=torch.float64),
-        torch.tensor([1.0], dtype=torch.float64),
-    )
-    with pytest.raises(ValueError, match="mode must be either 'chebyshev' or 'min_range'"):
-        affine_forward(nn.Tanh(), domain, affine_tanh_mode="invalid")
-
-
-def test_affine_tanh_modes_produce_different_noise_on_crossing_interval() -> None:
-    domain = AffineTensor.from_bounds(
-        torch.tensor([-1.5], dtype=torch.float64),
-        torch.tensor([1.0], dtype=torch.float64),
-    )
-
-    chebyshev = affine_forward(nn.Tanh(), domain, affine_tanh_mode="chebyshev")
-    min_range = affine_forward(nn.Tanh(), domain, affine_tanh_mode="min_range")
-
-    assert not torch.allclose(chebyshev.G, min_range.G)
-
-
-def test_affine_sobolev_pointwise_order_one_depends_on_tanh_mode() -> None:
-    enable_interval_eval()
-    model = nn.Sequential(nn.Linear(1, 3), nn.Tanh(), nn.Linear(3, 1))
-    with torch.no_grad():
-        model[0].weight.copy_(torch.tensor([[1.1], [-0.8], [0.6]], dtype=torch.float32))
-        model[0].bias.copy_(torch.tensor([0.15, -0.2, 0.05], dtype=torch.float32))
-        model[2].weight.copy_(torch.tensor([[0.9, -0.5, 0.7]], dtype=torch.float32))
-        model[2].bias.copy_(torch.tensor([0.0], dtype=torch.float32))
-
-    domain = AffineTensor.from_bounds(
-        torch.tensor([-1.25], dtype=torch.float64),
-        torch.tensor([0.85], dtype=torch.float64),
-    )
-    box = IntervalTensor.from_bounds([-1.25], [0.85])
-
-    min_range = _sobolev_pointwise_power_bounds_affine_order1(
-        model,
-        box,
-        p=2.0,
-        template=domain,
-        affine_tanh_mode="min_range",
-    )
-    chebyshev = _sobolev_pointwise_power_bounds_affine_order1(
-        model,
-        box,
-        p=2.0,
-        template=domain,
-        affine_tanh_mode="chebyshev",
-    )
-
-    assert float(min_range.upper) > 0.0
-    assert float(chebyshev.upper) > 0.0
-    assert (
-        not math.isclose(float(min_range.lower), float(chebyshev.lower), rel_tol=1e-10, abs_tol=1e-12)
-        or not math.isclose(float(min_range.upper), float(chebyshev.upper), rel_tol=1e-10, abs_tol=1e-12)
-    )
-
-
-def test_affine_sobolev_norm_order_one_differs_between_tanh_modes() -> None:
-    model = nn.Sequential(nn.Linear(1, 4), nn.Tanh(), nn.Linear(4, 1))
-    with torch.no_grad():
-        model[0].weight.copy_(torch.tensor([[1.0], [-0.9], [0.5], [1.3]], dtype=torch.float32))
-        model[0].bias.copy_(torch.tensor([0.2, -0.1, 0.05, -0.15], dtype=torch.float32))
-        model[2].weight.copy_(torch.tensor([[0.8, -0.3, 0.6, 0.4]], dtype=torch.float32))
-        model[2].bias.copy_(torch.tensor([0.05], dtype=torch.float32))
-
-    domain = AffineTensor.from_bounds(
-        torch.tensor([-1.0], dtype=torch.float64),
-        torch.tensor([1.1], dtype=torch.float64),
-    )
-
-    enable_interval_eval(affine_tanh_mode="min_range")
-    min_range_bounds = model.sobolev_norm(domain, p=2.0, order=1, iterations=1)
-    min_range_lp = model.lpnorm(domain, p=2.0, iterations=1)
-
-    enable_interval_eval(affine_tanh_mode="chebyshev")
-    chebyshev_bounds = model.sobolev_norm(domain, p=2.0, order=1, iterations=1)
-    chebyshev_lp = model.lpnorm(domain, p=2.0, iterations=1)
-
-    assert float(min_range_bounds.upper) >= float(min_range_lp.upper)
-    assert float(chebyshev_bounds.upper) >= float(chebyshev_lp.upper)
-    assert (
-        not math.isclose(float(min_range_bounds.lower), float(chebyshev_bounds.lower), rel_tol=1e-10, abs_tol=1e-12)
-        or not math.isclose(float(min_range_bounds.upper), float(chebyshev_bounds.upper), rel_tol=1e-10, abs_tol=1e-12)
-    )
-
-
-def test_affine_sigmoid_chebyshev_enclosure_contains_samples() -> None:
-    _assert_affine_activation_encloses_pointwise(
-        layer=nn.Sigmoid(),
-        activation=torch.sigmoid,
-        lower=torch.tensor([-3.0, -0.25], dtype=torch.float64),
-        upper=torch.tensor([0.5, 2.0], dtype=torch.float64),
-    )
-
-
-def test_interval_and_affine_inputs_are_both_accepted_by_interval_forward_and_eval() -> None:
-    enable_interval_eval()
-    model = nn.Sequential(nn.Linear(2, 2), nn.ReLU())
-    with torch.no_grad():
-        model[0].weight.copy_(torch.tensor([[1.0, -0.5], [0.5, 2.0]], dtype=torch.float32))
-        model[0].bias.copy_(torch.tensor([0.0, 0.2], dtype=torch.float32))
-
-    interval_domain = IntervalTensor.from_bounds([-1.0, 0.0], [1.0, 2.0])
-    affine_domain = AffineTensor.from_bounds(
-        torch.tensor([-1.0, 0.0], dtype=torch.float32),
-        torch.tensor([1.0, 2.0], dtype=torch.float32),
-    )
-
-    interval_out = interval_forward(model, interval_domain)
-    affine_out = interval_forward(model, affine_domain)
-    eval_interval_out = model.eval(interval_domain)
-    eval_affine_out = model.eval(affine_domain)
-
-    assert isinstance(interval_out, IntervalTensor)
-    assert isinstance(affine_out, AffineTensor)
-    assert isinstance(eval_interval_out, IntervalTensor)
-    assert isinstance(eval_affine_out, AffineTensor)
 
 
 def test_pz_twojet_forward_sequential_linear_tanh_identity_returns_twojet() -> None:
