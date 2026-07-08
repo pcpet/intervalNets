@@ -213,25 +213,6 @@ class PolynomialZonotope:
             terms[tuple(exp)] = coeff_for(path)
         return cls(center, terms, num_noise=len(flat_paths))
 
-    @classmethod
-    def from_affine(cls, affine: Any) -> "PolynomialZonotope":
-        G = affine.G
-        if torch is not None and isinstance(affine.c, torch.Tensor):
-            terms = {}
-            for i in range(G.shape[-1]):
-                exp = [0] * G.shape[-1]; exp[i] = 1
-                terms[tuple(exp)] = G[..., i]
-            return cls(affine.c, terms, num_noise=G.shape[-1])
-        rows = G if isinstance(affine.c, tuple) else (G,)
-        p = len(rows[0]) if isinstance(affine.c, tuple) and rows else len(G)
-        terms = {}
-        for i in range(p):
-            exp = [0] * p; exp[i] = 1
-            if isinstance(affine.c, tuple):
-                terms[tuple(exp)] = tuple(row[i] for row in rows)
-            else:
-                terms[tuple(exp)] = G[i]
-        return cls(affine.c, terms, num_noise=p)
 
     def _align(self, other: "PolynomialZonotope"):
         p = max(self.num_noise, other.num_noise)

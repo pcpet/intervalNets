@@ -1,4 +1,3 @@
-from intervalnets.affine import AffineTensor
 from intervalnets.interval import Interval
 from math import inf, nextafter
 import pytest
@@ -76,33 +75,3 @@ def test_interval_division_rejects_vector_denominator() -> None:
     denominator = Interval.from_bounds([2.0, 3.0], [4.0, 5.0])
     with pytest.raises(NotImplementedError):
         _ = numerator / denominator
-
-
-def test_affine_add_and_subtract_preserve_center_and_generator_structure() -> None:
-    left = AffineTensor.from_bounds([0.0, 2.0], [2.0, 4.0])
-    right = AffineTensor.from_bounds([-1.0, 1.0], [1.0, 3.0])
-
-    summed = left + right
-    diffed = left - right
-
-    assert summed.c == (1.0, 5.0)
-    assert diffed.c == (1.0, 1.0)
-    assert len(summed.G[0]) == 4
-    assert len(diffed.G[0]) == 4
-
-
-def test_affine_map_matches_wc_plus_b_and_wg_for_fallback_backend() -> None:
-    x = AffineTensor.from_bounds([-1.0, 2.0], [3.0, 4.0])
-    W = ((2.0, -1.0), (0.5, 3.0))
-    b = (0.25, -0.75)
-
-    mapped = x.affine_map(W, b)
-
-    expected_center = (2.0 * x.c[0] - 1.0 * x.c[1] + 0.25, 0.5 * x.c[0] + 3.0 * x.c[1] - 0.75)
-    assert mapped.c == expected_center
-
-    # Generator transform is WG. x.G is diagonal from from_bounds.
-    assert mapped.G[0][0] == 2.0 * x.G[0][0]
-    assert mapped.G[0][1] == -1.0 * x.G[1][1]
-    assert mapped.G[1][0] == 0.5 * x.G[0][0]
-    assert mapped.G[1][1] == 3.0 * x.G[1][1]
