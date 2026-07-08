@@ -150,7 +150,7 @@ $
 Core orchestration and helpers include:
 
 - Environment and conversion: `_require_torch`, `IntervalTensor.point`, `IntervalTensor.from_bounds`, `IntervalTensor.to_torch`.
-- Layer forward helpers: `_linear_forward`, `_relu_forward`, `_sigmoid_forward`, `_tanh_forward`, `_softplus_forward`, `_leaky_relu_forward`, `_softmax_forward`, plus slope-aware affine-relaxation helpers (`_concretize_affine_bounds`, `_linear_relaxation_step`, `_relu_relaxation_step`, `_sequential_linear_relu_relaxation`).
+- Layer forward helpers: `_linear_forward`, `_relu_forward`, `_sigmoid_forward`, `_tanh_forward`, `_softplus_forward`, `_leaky_relu_forward`, `_softmax_forward`, plus slope-aware linear-relaxation helpers (`_concretize_affine_bounds`, `_linear_relaxation_step`, `_relu_relaxation_step`, `_sequential_linear_relu_relaxation`).
 - Composite helpers: `_interval_add`, `_interval_cat`, `_logsumexp`, `_softmax_component_bounds`.
 - Norm machinery: `_box_volume`, `_lp_pointwise_power_bounds`, `_split_box`, `_lpnorm_bounds`.
 - Jacobian/Hessian machinery: `_identity_jacobian`, `_matrix_multiply`, `_jacobian_for_layer`, `_hessian_for_layer`, `_hessian_compose`, `_eval_jacobian_bounds`, `_eval_hessian_bounds`.
@@ -174,7 +174,7 @@ Core orchestration and helpers include:
 - `_relu_forward`: specialized ReLU propagation that preserves exact `[0, 0]` images on non-positive intervals.
 - `_interval_abs_bounds` and `_interval_pow_scalar`: scalar interval transformations used in integral bounds.
 - `_split_box`: adaptive refinement by bisecting widest coordinate.
-- Slope-aware helpers keep lower/upper affine forms in the input variables and concretize with outward rounding to preserve certified enclosure guarantees.
+- Slope-aware helpers keep lower/upper linear relaxation forms in the input variables and concretize with outward rounding to preserve certified enclosure guarantees.
 
 #### Important imports and dependencies
 
@@ -264,7 +264,7 @@ $
 - Sobolev refinement avoids over-refining rigorously constant boxes by detecting exact-constant outputs paired with exact-zero Jacobian enclosures (and exact-zero Hessian enclosures for `order=2`) and assigning zero refinement indicators to those boxes.
 - Forward enclosure mode is configurable:
   - `"box"`: baseline midpoint-radius propagation.
-  - `"slope"`: slope-aware affine relaxation for `nn.Sequential` chains of `nn.Linear` and `nn.ReLU`; when an unsupported layer appears, bounds are first concretized and propagation conservatively continues in `"box"` mode.
+  - `"slope"`: slope-aware linear relaxation for `nn.Sequential` chains of `nn.Linear` and `nn.ReLU`; when an unsupported layer appears, bounds are first concretized and propagation conservatively continues in `"box"` mode.
 
 ---
 

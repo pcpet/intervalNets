@@ -13,7 +13,7 @@ This document describes the public Python API exposed by `intervalnets` and how 
 
 ## Core interval arithmetic (`Interval`)
 
-`Interval` uses midpoint-radius internals to support fast affine interval propagation paths used by
+`Interval` uses midpoint-radius internals to support fast matrix interval propagation paths used by
 the PyTorch backend. The library targets **certified enclosures with good throughput**, not globally
 optimal/tightest interval boxes for every operation.
 
@@ -37,7 +37,7 @@ optimal/tightest interval boxes for every operation.
 ### Arithmetic operations
 
 - `+`, `-`, unary `-`, `*`, `/` are implemented with outward rounding.
-- In affine-heavy code paths (e.g. linear layers and Jacobian composition), interval propagation is
+- In matrix-heavy code paths (e.g. linear layers and Jacobian composition), interval propagation is
   optimized around midpoint-radius matrix formulas (`A x_mid ± |A| x_rad`).
 - Scalar division by an interval containing `0` raises `ZeroDivisionError`.
 - Vector interval division is intentionally not implemented and raises `NotImplementedError`.
