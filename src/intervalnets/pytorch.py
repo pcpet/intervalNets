@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from itertools import product
 from math import exp, inf, isfinite, log, nextafter, tanh
-from typing import Any, TypeAlias
+from typing import Any
 
 from .interval import Interval
 from .polynomial_zonotope import PZTwoJet, PolynomialZonotope
@@ -40,9 +40,6 @@ class IntervalTensor(Interval):
             raise ImportError("PyTorch is required for IntervalTensor.to_torch().")
         dtype = dtype or torch.float64
         return torch.tensor(self.lower, dtype=dtype), torch.tensor(self.upper, dtype=dtype)
-
-
-DomainTensor: TypeAlias = IntervalTensor
 
 
 def _require_torch() -> None:
@@ -1347,9 +1344,9 @@ def _interval_forward(module, x: IntervalTensor, enclosure_mode: str = "box") ->
 
 def interval_forward(
     module,
-    x: DomainTensor,
+    x: IntervalTensor,
     enclosure_mode: str = "box",
-) -> DomainTensor:
+) -> IntervalTensor:
     if isinstance(x, IntervalTensor):
         return _interval_forward(module, x, enclosure_mode=enclosure_mode)
     raise TypeError("interval_forward(module, x) requires x to be an IntervalTensor.")
@@ -1357,11 +1354,11 @@ def interval_forward(
 
 def interval_forward_refine(
     module,
-    x: DomainTensor,
+    x: IntervalTensor,
     enclosure_mode: str = "slope",
     splits_per_dim: int = 2,
     max_cells: int = 256,
-) -> DomainTensor:
+) -> IntervalTensor:
     """Refine interval forward bounds by subdividing the input box.
 
     This helper computes interval bounds on multiple sub-boxes and returns the
@@ -1402,8 +1399,6 @@ _PATCHED = False
 _ACTIVE_ENCLOSURE_MODE = "slope"
 
 
-
-
 def enable_interval_eval(enclosure_mode: str = "slope") -> None:
     _require_torch()
     global _PATCHED, _ACTIVE_ENCLOSURE_MODE
@@ -1413,7 +1408,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
     if _PATCHED:
         return
 
-    def eval_with_interval(self, interval: DomainTensor | None = None):
+    def eval_with_interval(self, interval: IntervalTensor | None = None):
         result = _ORIGINAL_EVAL(self)
         if interval is None:
             return result
@@ -1423,7 +1418,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
 
     def lpnorm_with_interval(
         self,
-        domain: DomainTensor,
+        domain: IntervalTensor,
         p: float,
         iterations: int = 0,
         theta: float = 0.5,
@@ -1442,11 +1437,11 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
             forward_refine_max_cells=forward_refine_max_cells,
         )
 
-    def eval_jacobian_with_interval(self, domain: DomainTensor):
+    def eval_jacobian_with_interval(self, domain: IntervalTensor):
         _ORIGINAL_EVAL(self)
         return _eval_jacobian_bounds(self, domain, enclosure_mode=_ACTIVE_ENCLOSURE_MODE)
 
-    def eval_hessian_with_interval(self, domain: DomainTensor):
+    def eval_hessian_with_interval(self, domain: IntervalTensor):
         _ORIGINAL_EVAL(self)
         return _eval_hessian_bounds(self, domain, enclosure_mode=_ACTIVE_ENCLOSURE_MODE)
 
@@ -1471,7 +1466,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
 
     def sobolev_norm_with_interval(
         self,
-        domain: DomainTensor,
+        domain: IntervalTensor,
         p: float,
         order: int = 1,
         iterations: int = 0,
