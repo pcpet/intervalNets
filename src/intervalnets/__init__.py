@@ -1,13 +1,11 @@
 """Interval arithmetic utilities for neural network evaluation."""
 
-from .affine import AffineTensor
 from .interval import Interval
 from .polynomial_zonotope import PZTwoJet, PolynomialZonotope
 from .pz_tanh import TanhApproximation, compute_tanh_polynomial, certify_tanh_residual_subdivision, tanh_pz_scalar
 
 __all__ = [
     "Interval",
-    "AffineTensor",
     "PolynomialZonotope",
     "PZTwoJet",
     "TanhApproximation",
@@ -26,8 +24,6 @@ try:
         interval_forward_refine,
         pz_twojet_forward,
     )
-    from .affine_pytorch import affine_relu_transform, affine_sigmoid_transform, affine_tanh_transform
-    from .pytorch import affine_forward
 except ImportError:  # pragma: no cover - optional dependency
     pass
 else:
@@ -40,9 +36,5 @@ else:
             "interval_forward",
             "interval_forward_refine",
             "pz_twojet_forward",
-            "affine_forward",
-            "affine_relu_transform",
-            "affine_tanh_transform",
-            "affine_sigmoid_transform",
         ]
     )
