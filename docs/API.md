@@ -73,6 +73,8 @@ After this, every `torch.nn.Module` gets:
   - Interval forward propagation.
 - `model.lpnorm(domain: IntervalTensor, p: float, iterations: int = 0, theta: float = 0.5, forward_refine_splits: int = 1, forward_refine_max_cells: int = 256)`
   - Outward-rounded enclosure of the model `L^p` norm on a box domain.
+- `model.lpnorm(..., method="pz")`
+  - Uses the polynomial-zonotope two-jet norm backend instead of the default interval backend. The default remains `method="interval"` for backward compatibility.
 - `model.eval_jacobian(domain: IntervalTensor)`
   - Interval enclosure of Jacobian matrix entries over the domain, using the same `enclosure_mode` selected when calling `enable_interval_eval(...)` for sequential pre-activation propagation.
 - `model.eval_hessian(domain: IntervalTensor)`
@@ -81,6 +83,12 @@ After this, every `torch.nn.Module` gets:
   - Enclosure of a Sobolev-style norm over the domain:
     - `order=1`: `|f|^p + |Df|^p`,
     - `order=2`: `|f|^p + |Df|^p + |D^2 f|^p`.
+- `model.sobolev_norm(..., method="pz")`
+  - Uses the polynomial-zonotope two-jet backend while preserving the existing interval backend as the default.
+- `model.pz_l2norm(domain: IntervalTensor, p: float = 2.0, iterations: int = 0, theta: float = 0.5, remez_degree: int = 5, residual_subdivisions: int = 128, output: str = "interval")`
+  - Convenience alias for the PZ two-jet `L^2` norm backend.
+- `model.pz_sobolev_norm(domain: IntervalTensor, p: float = 2.0, order: int = 1, iterations: int = 0, theta: float = 0.5, remez_degree: int = 5, residual_subdivisions: int = 128, output: str = "interval")`
+  - Convenience alias for the PZ two-jet `W^{1,2}` or `W^{2,2}` norm backend.
 
 > Note: these methods are attached by monkey-patching `torch.nn.Module`. If patching is not desired in your application architecture, call `interval_forward(...)` directly for pure forward enclosure and avoid the norm/Jacobian helpers.
 
@@ -161,6 +169,36 @@ Important constraints:
 - `forward_refine_splits` must be an integer `>= 1` (default: `1`, meaning no extra per-box subdivision).
 - `forward_refine_max_cells` limits refinement combinatorics (default: `256`).
 
+### Polynomial-zonotope norm backend
+
+The PZ norm API is exposed both as explicit methods and through `method="pz"`:
+
+```python
+from intervalnets import IntervalTensor, enable_interval_eval, pz_l2norm, pz_sobolev_norm
+from torch import nn
+
+enable_interval_eval()
+
+model = nn.Sequential(nn.Linear(2, 4), nn.Tanh(), nn.Linear(4, 1))
+box = IntervalTensor.from_bounds([0.0, -1.0], [1.0, 2.0])
+
+l2_a = model.pz_l2norm(box)
+l2_b = model.lpnorm(box, p=2.0, method="pz")
+w12_a = model.pz_sobolev_norm(box, order=1)
+w22_b = model.sobolev_norm(box, p=2.0, order=2, method="pz")
+
+# Top-level wrappers are also available when PyTorch is importable.
+l2_c = pz_l2norm(model, box)
+w12_c = pz_sobolev_norm(model, box, order=1)
+```
+
+PZ norm limitations in the initial implementation:
+
+- Only `p=2` is supported. Calls with another `p` raise `NotImplementedError`.
+- Supported network layers match `eval_pz_twojet`: `nn.Sequential`, `nn.Linear`, `nn.Tanh`, `nn.Identity`, and already-flat `nn.Flatten`.
+- Geometric integration initially supports affine interval-box cells via `PZIntegrationCell.from_affine_box(...)`.
+- Approximation noise from tanh residual certification is intervalized after exact domain integration so pointwise residual symbols are not silently treated as globally shared polynomial variables.
+
 ## Jacobian enclosure details
 
 `model.eval_jacobian(domain)` returns an `IntervalTensor` whose shape is `(output_dim, input_dim)` (stored as nested tuples).
@@ -238,7 +276,7 @@ sob = model.sobolev_norm(box, p=2.0, iterations=6, forward_refine_splits=2, forw
 The package-level import surface in `intervalnets.__init__` is:
 
 - Always: `Interval`, `PolynomialZonotope`, `PZTwoJet`, `TanhApproximation`, `compute_tanh_polynomial`, `certify_tanh_residual_subdivision`, `tanh_pz_scalar`
-- When PyTorch is importable: `IntervalTensor`, `IntervalAdd`, `IntervalCat`, `enable_interval_eval`, `interval_forward`, `interval_forward_refine`, `pz_twojet_forward`
+- When PyTorch is importable: `IntervalTensor`, `IntervalAdd`, `IntervalCat`, `enable_interval_eval`, `interval_forward`, `interval_forward_refine`, `pz_l2norm`, `pz_sobolev_norm`, `pz_twojet_forward`
 
 Prefer importing these from the top-level package for user-facing code:
 

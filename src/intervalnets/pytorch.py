@@ -433,6 +433,68 @@ def pz_twojet_forward(
         reduce=reduce,
     )
 
+
+def pz_l2norm(
+    module,
+    domain: IntervalTensor,
+    p: float = 2.0,
+    *,
+    iterations: int = 0,
+    theta: float = 0.5,
+    remez_degree: int = 5,
+    residual_subdivisions: int = 128,
+    output: str = "interval",
+) -> Interval:
+    """Return a PZ two-jet enclosure of a module's L2 norm over ``domain``."""
+
+    _require_torch()
+    if not isfinite(float(p)) or float(p) != 2.0:
+        raise NotImplementedError("Polynomial-zonotope norm helpers currently support only p=2.0.")
+    if not isinstance(domain, IntervalTensor):
+        raise TypeError("pz_l2norm(module, domain) requires an IntervalTensor domain.")
+    return pz_l2norm_bounds(
+        module,
+        domain,
+        iterations=iterations,
+        theta=theta,
+        remez_degree=remez_degree,
+        residual_subdivisions=residual_subdivisions,
+        output=output,
+    )
+
+
+def pz_sobolev_norm(
+    module,
+    domain: IntervalTensor,
+    p: float = 2.0,
+    order: int = 1,
+    *,
+    iterations: int = 0,
+    theta: float = 0.5,
+    remez_degree: int = 5,
+    residual_subdivisions: int = 128,
+    output: str = "interval",
+) -> Interval:
+    """Return a PZ two-jet enclosure of a module's W^{order,2} norm."""
+
+    _require_torch()
+    if not isfinite(float(p)) or float(p) != 2.0:
+        raise NotImplementedError("Polynomial-zonotope norm helpers currently support only p=2.0.")
+    if not isinstance(domain, IntervalTensor):
+        raise TypeError("pz_sobolev_norm(module, domain) requires an IntervalTensor domain.")
+    if order not in {1, 2}:
+        raise ValueError("order must be either 1 or 2.")
+    return pz_sobolev_norm_bounds(
+        module,
+        domain,
+        order=order,
+        iterations=iterations,
+        theta=theta,
+        remez_degree=remez_degree,
+        residual_subdivisions=residual_subdivisions,
+        output=output,
+    )
+
 def _concretize_affine_bounds(
     lower_matrix: torch.Tensor,
     lower_bias: torch.Tensor,
@@ -1426,8 +1488,25 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         theta: float = 0.5,
         forward_refine_splits: int = 1,
         forward_refine_max_cells: int = 256,
+        method: str = "interval",
+        remez_degree: int = 5,
+        residual_subdivisions: int = 128,
+        output: str = "interval",
     ):
         _ORIGINAL_EVAL(self)
+        if method == "pz":
+            return pz_l2norm(
+                self,
+                domain,
+                p=p,
+                iterations=iterations,
+                theta=theta,
+                remez_degree=remez_degree,
+                residual_subdivisions=residual_subdivisions,
+                output=output,
+            )
+        if method != "interval":
+            raise ValueError("method must be either 'interval' or 'pz'.")
         return _lpnorm_bounds(
             self,
             domain,
@@ -1478,13 +1557,10 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         output: str = "interval",
     ):
         _ORIGINAL_EVAL(self)
-        if not isfinite(float(p)) or float(p) != 2.0:
-            raise NotImplementedError("Polynomial-zonotope norm helpers currently support only p=2.0.")
-        if not isinstance(domain, IntervalTensor):
-            raise TypeError("model.pz_l2norm(domain) requires an IntervalTensor domain.")
-        return pz_l2norm_bounds(
+        return pz_l2norm(
             self,
             domain,
+            p=p,
             iterations=iterations,
             theta=theta,
             remez_degree=remez_degree,
@@ -1505,15 +1581,10 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         output: str = "interval",
     ):
         _ORIGINAL_EVAL(self)
-        if not isfinite(float(p)) or float(p) != 2.0:
-            raise NotImplementedError("Polynomial-zonotope norm helpers currently support only p=2.0.")
-        if not isinstance(domain, IntervalTensor):
-            raise TypeError("model.pz_sobolev_norm(domain) requires an IntervalTensor domain.")
-        if order not in {1, 2}:
-            raise ValueError("order must be either 1 or 2.")
-        return pz_sobolev_norm_bounds(
+        return pz_sobolev_norm(
             self,
             domain,
+            p=p,
             order=order,
             iterations=iterations,
             theta=theta,
@@ -1531,8 +1602,26 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         theta: float = 0.5,
         forward_refine_splits: int = 1,
         forward_refine_max_cells: int = 256,
+        method: str = "interval",
+        remez_degree: int = 5,
+        residual_subdivisions: int = 128,
+        output: str = "interval",
     ):
         _ORIGINAL_EVAL(self)
+        if method == "pz":
+            return pz_sobolev_norm(
+                self,
+                domain,
+                p=p,
+                order=order,
+                iterations=iterations,
+                theta=theta,
+                remez_degree=remez_degree,
+                residual_subdivisions=residual_subdivisions,
+                output=output,
+            )
+        if method != "interval":
+            raise ValueError("method must be either 'interval' or 'pz'.")
         return _sobolev_norm_bounds(
             self,
             domain,
