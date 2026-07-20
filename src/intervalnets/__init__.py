@@ -55,6 +55,8 @@ try:
         enable_interval_eval,
         interval_forward,
         interval_forward_refine,
+        pz_l2norm,
+        pz_sobolev_norm,
         pz_twojet_forward,
     )
 except ImportError:  # pragma: no cover - optional dependency
@@ -68,6 +70,8 @@ else:
             "enable_interval_eval",
             "interval_forward",
             "interval_forward_refine",
+            "pz_l2norm",
+            "pz_sobolev_norm",
             "pz_twojet_forward",
         ]
     )
