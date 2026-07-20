@@ -243,7 +243,7 @@ def test_tanh_residual_noise_is_appended_and_labeled_after_domain_noise():
     out = tanh_pz_scalar(z, remez_degree=5, residual_subdivisions=64)
 
     assert z.noise_kinds == ("domain",)
-    assert out.noise_kinds == ("domain", "approximation")
+    assert out.noise_kinds == ("domain", "approximation_pointwise")
     assert any(exp == (0, 1) for exp in out.terms)
 
 

@@ -3,7 +3,7 @@
 from .interval import Interval
 from .polynomial_zonotope import PZTwoJet, PolynomialZonotope
 from .pz_tanh import TanhApproximation, compute_tanh_polynomial, certify_tanh_residual_subdivision, tanh_pz_scalar
-from .pz_integration import IntegratedPZResult, integrate_pz_over_domain
+from .pz_integration import IntegratedPZResult, PZIntegrationCell, integrate_over_cell, integrate_pz_over_domain
 
 __all__ = [
     "Interval",
@@ -14,6 +14,8 @@ __all__ = [
     "certify_tanh_residual_subdivision",
     "tanh_pz_scalar",
     "IntegratedPZResult",
+    "PZIntegrationCell",
+    "integrate_over_cell",
     "integrate_pz_over_domain",
 ]
 
