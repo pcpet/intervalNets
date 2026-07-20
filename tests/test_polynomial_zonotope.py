@@ -245,3 +245,82 @@ def test_tanh_residual_noise_is_appended_and_labeled_after_domain_noise():
     assert z.noise_kinds == ("domain",)
     assert out.noise_kinds == ("domain", "approximation")
     assert any(exp == (0, 1) for exp in out.terms)
+
+
+def test_box_monomial_moment_even_and_odd_exponents():
+    from intervalnets.polynomial_zonotope import box_monomial_moment
+
+    assert box_monomial_moment((2, 0)) == pytest.approx(4.0 / 3.0)
+    assert box_monomial_moment((2, 4)) == pytest.approx(4.0 / 15.0)
+    assert box_monomial_moment((1, 2)) == 0.0
+
+
+def test_integrate_noise_scalar_cancels_odd_and_merges_even_terms_fallback():
+    z = PolynomialZonotope(
+        1.0,
+        {
+            (2, 0): 3.0,
+            (0, 1): 5.0,
+            (2, 1): 7.0,
+            (1, 0): 11.0,
+        },
+        num_noise=2,
+        noise_kinds=("domain", "approximation"),
+    )
+
+    out = z.integrate_noise([0])
+
+    assert out.num_noise == 1
+    assert out.noise_kinds == ("approximation",)
+    assert out.center == pytest.approx(3.0)  # 1 + 3 * int_{-1}^1 x^2 dx
+    assert out.terms == {(1,): pytest.approx(44.0 / 3.0)}  # 5*2 + 7*(2/3)
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_integrate_noise_vector_matrix_and_tensor_coefficients_preserve_metadata_dtype_device():
+    dtype = torch.float64
+    vector = PolynomialZonotope(
+        torch.tensor([1.0, 2.0], dtype=dtype),
+        {
+            (2, 0): torch.tensor([3.0, 6.0], dtype=dtype),
+            (0, 1): torch.tensor([5.0, 7.0], dtype=dtype),
+            (2, 1): torch.tensor([9.0, 12.0], dtype=dtype),
+            (1, 1): torch.tensor([100.0, 200.0], dtype=dtype),
+        },
+        num_noise=2,
+        noise_kinds=("domain", "approximation"),
+    )
+    vector_out = vector.integrate_domain_noise()
+
+    assert vector_out.shape == (2,)
+    assert vector_out.dtype == dtype
+    assert vector_out.device == vector.center.device
+    assert vector_out.noise_kinds == ("approximation",)
+    assert torch.allclose(vector_out.center, torch.tensor([3.0, 6.0], dtype=dtype))
+    assert torch.allclose(vector_out.terms[(1,)], torch.tensor([16.0, 22.0], dtype=dtype))
+    assert (0,) not in vector_out.terms
+
+    matrix_coeff = torch.arange(4, dtype=dtype).reshape(2, 2)
+    matrix = PolynomialZonotope(
+        torch.ones(2, 2, dtype=dtype),
+        {(0, 2): matrix_coeff, (1, 0): torch.full((2, 2), 99.0, dtype=dtype)},
+        num_noise=2,
+        noise_kinds=("approximation", "domain"),
+    )
+    matrix_out = matrix.integrate_domain_noise()
+    assert matrix_out.shape == (2, 2)
+    assert matrix_out.noise_kinds == ("approximation",)
+    assert torch.allclose(matrix_out.center, torch.ones(2, 2, dtype=dtype) + matrix_coeff * (2.0 / 3.0))
+    assert torch.allclose(matrix_out.terms[(1,)], torch.full((2, 2), 198.0, dtype=dtype))
+
+    tensor_coeff = torch.arange(24, dtype=dtype).reshape(2, 3, 4)
+    tensor = PolynomialZonotope(
+        torch.zeros(2, 3, 4, dtype=dtype),
+        {(0, 2, 1): tensor_coeff, (0, 0, 1): torch.ones(2, 3, 4, dtype=dtype)},
+        num_noise=3,
+        noise_kinds=("approximation", "domain", "approximation"),
+    )
+    tensor_out = tensor.integrate_domain_noise()
+    assert tensor_out.shape == (2, 3, 4)
+    assert tensor_out.noise_kinds == ("approximation", "approximation")
+    assert torch.allclose(tensor_out.terms[(0, 1)], tensor_coeff * (2.0 / 3.0) + torch.ones(2, 3, 4, dtype=dtype) * 2.0)

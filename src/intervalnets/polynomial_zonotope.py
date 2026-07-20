@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import inf, nextafter
-from typing import Any, Mapping
+from math import inf, nextafter, prod
+from typing import Any, Mapping, Sequence
 
 from .interval import Interval
 
@@ -12,6 +12,18 @@ except ImportError:  # pragma: no cover
     torch = None
 
 Exponent = tuple[int, ...]
+
+
+def box_monomial_moment(exponent: tuple[int, ...]) -> float:
+    """Exact integral of a monomial over the box ``[-1, 1]^d``.
+
+    The returned value is ``integral over [-1,1]^d of x**exponent``. Odd
+    monomials cancel by symmetry.
+    """
+
+    if any(k % 2 for k in exponent):
+        return 0.0
+    return prod(2.0 / (k + 1) for k in exponent)
 
 
 def _is_sequence(value: Any) -> bool:
@@ -345,6 +357,48 @@ class PolynomialZonotope:
             coeff = _add_coeff(coeff, _to_fallback(radius)) if self.shape == () else _fallback_map(self.center, lambda _: float(radius))
         terms[(0,) * self.num_noise + (1,)] = coeff
         return PolynomialZonotope(self.center, terms, num_noise=new_noise, noise_kinds=self.noise_kinds + (str(metadata) if metadata is not None else str(kind),))
+
+
+    def integrate_noise(self, noise_indices: Sequence[int]) -> "PolynomialZonotope":
+        """Integrate selected noise variables coefficient-by-coefficient.
+
+        For each monomial term, variables in ``noise_indices`` are integrated
+        exactly over ``[-1, 1]`` using :func:`box_monomial_moment`. Variables
+        not listed are retained, and terms with identical retained exponents are
+        merged. Odd integrated exponents have zero moment and are dropped.
+        """
+
+        indices = tuple(int(index) for index in noise_indices)
+        if len(set(indices)) != len(indices):
+            raise ValueError("noise_indices must not contain duplicates.")
+        if any(index < 0 or index >= self.num_noise for index in indices):
+            raise ValueError("noise index out of range.")
+
+        integrated = set(indices)
+        retained_indices = tuple(index for index in range(self.num_noise) if index not in integrated)
+        retained_kinds = tuple(self.noise_kinds[index] for index in retained_indices)
+        zero_retained = (0,) * len(retained_indices)
+
+        center = self.center
+        terms: dict[Exponent, Any] = {}
+        for exponent, coeff in self.terms.items():
+            integrated_exponent = tuple(exponent[index] for index in indices)
+            moment = box_monomial_moment(integrated_exponent)
+            if moment == 0.0:
+                continue
+            retained_exponent = tuple(exponent[index] for index in retained_indices)
+            integrated_coeff = _mul_coeff(coeff, moment)
+            if retained_exponent == zero_retained:
+                center = _add_coeff(center, integrated_coeff)
+            else:
+                terms[retained_exponent] = _add_coeff(terms[retained_exponent], integrated_coeff) if retained_exponent in terms else integrated_coeff
+
+        return PolynomialZonotope(center, terms, num_noise=len(retained_indices), noise_kinds=retained_kinds)
+
+    def integrate_domain_noise(self) -> "PolynomialZonotope":
+        """Integrate all noise variables labeled ``"domain"``."""
+
+        return self.integrate_noise([index for index, kind in enumerate(self.noise_kinds) if kind == "domain"])
 
     def linear_map(self, matrix: Any, bias: Any | None = None) -> "PolynomialZonotope":
         """Apply a linear map along the leading coefficient axis.
