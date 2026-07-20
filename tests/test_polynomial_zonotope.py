@@ -217,3 +217,31 @@ def test_pz_twojet_tanh_forward_preserves_shapes_and_encloses_autograd_samples()
             assert torch.all(y_lo <= value.detach()) and torch.all(value.detach() <= y_hi)
             assert torch.all(j_lo <= jac.detach()) and torch.all(jac.detach() <= j_hi)
             assert torch.all(h_lo <= hess.detach()) and torch.all(hess.detach() <= h_hi)
+
+
+def test_noise_metadata_defaults_and_validation():
+    z = PolynomialZonotope(0.0, {(1, 0): 2.0}, num_noise=2)
+    assert z.noise_kinds == ("unknown", "unknown")
+    with pytest.raises(ValueError, match="noise_kinds length"):
+        PolynomialZonotope(0.0, {(1,): 2.0}, num_noise=1, noise_kinds=("domain", "extra"))
+
+
+def test_domain_noise_stays_first_when_approximation_error_is_appended_fallback():
+    z = PolynomialZonotope.from_box((-1.0, 2.0), (3.0, 4.0))
+    out = z.add_independent_error(0.25)
+    assert out.noise_kinds == ("domain", "domain", "approximation")
+    assert out.terms[(1, 0, 0)] == z.terms[(1, 0)]
+    assert out.terms[(0, 1, 0)] == z.terms[(0, 1)]
+    assert out.terms[(0, 0, 1)] == (0.25, 0.25)
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_tanh_residual_noise_is_appended_and_labeled_after_domain_noise():
+    from intervalnets.pz_tanh import tanh_pz_scalar
+
+    z = PolynomialZonotope.from_box(torch.tensor(-0.5, dtype=torch.float64), torch.tensor(0.75, dtype=torch.float64))
+    out = tanh_pz_scalar(z, remez_degree=5, residual_subdivisions=64)
+
+    assert z.noise_kinds == ("domain",)
+    assert out.noise_kinds == ("domain", "approximation")
+    assert any(exp == (0, 1) for exp in out.terms)
