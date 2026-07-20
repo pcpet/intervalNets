@@ -126,6 +126,33 @@ def _canonical_exponent(exponent: tuple[int, ...], num_noise: int) -> Exponent:
     return padded
 
 
+
+def _canonical_noise_kinds(noise_kinds: tuple[str, ...] | list[str] | None, num_noise: int) -> tuple[str, ...]:
+    if num_noise < 0:
+        raise ValueError("num_noise must be non-negative.")
+    if noise_kinds is None:
+        return ("unknown",) * num_noise
+    kinds = tuple(str(kind) for kind in noise_kinds)
+    if len(kinds) != num_noise:
+        raise ValueError("noise_kinds length must match num_noise.")
+    return kinds
+
+
+def _merge_noise_kinds(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[str, ...]:
+    if len(left) != len(right):
+        raise ValueError("noise_kinds length mismatch.")
+    merged = []
+    for l_kind, r_kind in zip(left, right):
+        if l_kind == r_kind:
+            merged.append(l_kind)
+        elif l_kind == "unknown":
+            merged.append(r_kind)
+        elif r_kind == "unknown":
+            merged.append(l_kind)
+        else:
+            raise ValueError(f"Incompatible noise metadata: {l_kind!r} != {r_kind!r}.")
+    return tuple(merged)
+
 @dataclass(frozen=True, init=False)
 class PolynomialZonotope:
     """Polynomial zonotope with explicit monomial dependencies.
@@ -141,14 +168,16 @@ class PolynomialZonotope:
     shape: tuple[int, ...]
     dtype: Any
     device: Any
+    noise_kinds: tuple[str, ...]
 
-    def __init__(self, center: Any, terms: Mapping[tuple[int, ...], Any] | None = None, num_noise: int | None = None):
+    def __init__(self, center: Any, terms: Mapping[tuple[int, ...], Any] | None = None, num_noise: int | None = None, noise_kinds: tuple[str, ...] | list[str] | None = None):
         use_torch = torch is not None and (isinstance(center, torch.Tensor) or any(isinstance(v, torch.Tensor) for v in (terms or {}).values()))
         c = _as_tensor(center) if use_torch else _to_fallback(center)
         inferred_noise = max((len(exp) for exp in (terms or {})), default=0)
         p = inferred_noise if num_noise is None else int(num_noise)
         if p < inferred_noise:
             raise ValueError("num_noise is smaller than a supplied exponent length.")
+        kinds = _canonical_noise_kinds(noise_kinds, p)
         clean: dict[Exponent, Any] = {}
         for exp, coeff in (terms or {}).items():
             key = _canonical_exponent(tuple(exp), p)
@@ -162,10 +191,11 @@ class PolynomialZonotope:
         object.__setattr__(self, "shape", tuple(c.shape) if torch is not None and isinstance(c, torch.Tensor) else _fallback_shape(c))
         object.__setattr__(self, "dtype", c.dtype if torch is not None and isinstance(c, torch.Tensor) else float)
         object.__setattr__(self, "device", c.device if torch is not None and isinstance(c, torch.Tensor) else None)
+        object.__setattr__(self, "noise_kinds", kinds)
 
     @classmethod
-    def constant(cls, value: Any, num_noise: int = 0) -> "PolynomialZonotope":
-        return cls(value, {}, num_noise=num_noise)
+    def constant(cls, value: Any, num_noise: int = 0, noise_kinds: tuple[str, ...] | list[str] | None = None) -> "PolynomialZonotope":
+        return cls(value, {}, num_noise=num_noise, noise_kinds=noise_kinds)
 
     @classmethod
     def from_box(cls, lower: Any, upper: Any) -> "PolynomialZonotope":
@@ -186,7 +216,7 @@ class PolynomialZonotope:
                 exp = [0] * p
                 exp[idx] = 1
                 terms[tuple(exp)] = coeff
-            return cls(center, terms, num_noise=p)
+            return cls(center, terms, num_noise=p, noise_kinds=("domain",) * p)
         lo = _to_fallback(lower); hi = _to_fallback(upper)
         def check(l, h):
             if isinstance(l, tuple):
@@ -211,25 +241,35 @@ class PolynomialZonotope:
         for i, path in enumerate(flat_paths):
             exp = [0] * len(flat_paths); exp[i] = 1
             terms[tuple(exp)] = coeff_for(path)
-        return cls(center, terms, num_noise=len(flat_paths))
+        return cls(center, terms, num_noise=len(flat_paths), noise_kinds=("domain",) * len(flat_paths))
 
 
     def _align(self, other: "PolynomialZonotope"):
         p = max(self.num_noise, other.num_noise)
-        return self.with_num_noise(p), other.with_num_noise(p)
+        left = self.with_num_noise(p)
+        right = other.with_num_noise(p)
+        merged = _merge_noise_kinds(left.noise_kinds, right.noise_kinds)
+        return left.with_noise_kinds(merged), right.with_noise_kinds(merged)
+
+    def with_noise_kinds(self, noise_kinds: tuple[str, ...] | list[str]) -> "PolynomialZonotope":
+        kinds = _canonical_noise_kinds(noise_kinds, self.num_noise)
+        if kinds == self.noise_kinds: return self
+        return PolynomialZonotope(self.center, self.terms, num_noise=self.num_noise, noise_kinds=kinds)
 
     def with_num_noise(self, num_noise: int) -> "PolynomialZonotope":
+        if num_noise < self.num_noise:
+            raise ValueError("num_noise cannot shrink existing exponents.")
         if num_noise == self.num_noise: return self
-        return PolynomialZonotope(self.center, {exp + (0,) * (num_noise - self.num_noise): c for exp, c in self.terms.items()}, num_noise=num_noise)
+        return PolynomialZonotope(self.center, {exp + (0,) * (num_noise - self.num_noise): c for exp, c in self.terms.items()}, num_noise=num_noise, noise_kinds=self.noise_kinds + ("unknown",) * (num_noise - self.num_noise))
 
     def __add__(self, other: Any):
         if not isinstance(other, PolynomialZonotope):
-            return PolynomialZonotope(_add_coeff(self.center, other), self.terms, num_noise=self.num_noise)
+            return PolynomialZonotope(_add_coeff(self.center, other), self.terms, num_noise=self.num_noise, noise_kinds=self.noise_kinds)
         left, right = self._align(other)
         if left.shape != right.shape: raise ValueError("Shape mismatch for addition.")
         terms = dict(left.terms)
         for exp, coeff in right.terms.items(): terms[exp] = _add_coeff(terms[exp], coeff) if exp in terms else coeff
-        return PolynomialZonotope(_add_coeff(left.center, right.center), terms, num_noise=left.num_noise)
+        return PolynomialZonotope(_add_coeff(left.center, right.center), terms, num_noise=left.num_noise, noise_kinds=left.noise_kinds)
 
     __radd__ = __add__
 
@@ -244,7 +284,7 @@ class PolynomialZonotope:
 
     def __mul__(self, other: Any):
         if not isinstance(other, PolynomialZonotope):
-            return PolynomialZonotope(_mul_coeff(self.center, other), {e: _mul_coeff(c, other) for e, c in self.terms.items()}, num_noise=self.num_noise)
+            return PolynomialZonotope(_mul_coeff(self.center, other), {e: _mul_coeff(c, other) for e, c in self.terms.items()}, num_noise=self.num_noise, noise_kinds=self.noise_kinds)
         left, right = self._align(other)
         if left.shape != () and right.shape != () and left.shape != right.shape:
             raise ValueError("Polynomial-zonotope multiplication requires at least one scalar coefficient shape or equal shapes.")
@@ -254,7 +294,7 @@ class PolynomialZonotope:
         for exp, coeff in left.terms.items(): add(exp, _mul_coeff(coeff, right.center))
         for e1, c1 in left.terms.items():
             for e2, c2 in right.terms.items(): add(tuple(a + b for a, b in zip(e1, e2)), _mul_coeff(c1, c2))
-        return PolynomialZonotope(_mul_coeff(left.center, right.center), terms, num_noise=left.num_noise)
+        return PolynomialZonotope(_mul_coeff(left.center, right.center), terms, num_noise=left.num_noise, noise_kinds=left.noise_kinds)
 
     __rmul__ = __mul__
 
@@ -270,12 +310,12 @@ class PolynomialZonotope:
         coeff_tuple = tuple(coeffs)
         if not coeff_tuple:
             raise ValueError("coeffs must not be empty.")
-        result = PolynomialZonotope.constant(coeff_tuple[-1], num_noise=self.num_noise)
+        result = PolynomialZonotope.constant(coeff_tuple[-1], num_noise=self.num_noise, noise_kinds=self.noise_kinds)
         for coeff in reversed(coeff_tuple[:-1]):
             result = result * self + coeff
         return result
 
-    def add_independent_error(self, radius: Any, target_shape: tuple[int, ...] = ()) -> "PolynomialZonotope":
+    def add_independent_error(self, radius: Any, target_shape: tuple[int, ...] = (), *, kind: str = "approximation", metadata: str | None = None) -> "PolynomialZonotope":
         """Add a fresh independent error variable with the given radius.
 
         Existing exponent vectors are extended by one zero entry, while the new
@@ -304,7 +344,7 @@ class PolynomialZonotope:
             coeff = _mul_coeff(_zero_like(self.center), 0.0)
             coeff = _add_coeff(coeff, _to_fallback(radius)) if self.shape == () else _fallback_map(self.center, lambda _: float(radius))
         terms[(0,) * self.num_noise + (1,)] = coeff
-        return PolynomialZonotope(self.center, terms, num_noise=new_noise)
+        return PolynomialZonotope(self.center, terms, num_noise=new_noise, noise_kinds=self.noise_kinds + (str(metadata) if metadata is not None else str(kind),))
 
     def linear_map(self, matrix: Any, bias: Any | None = None) -> "PolynomialZonotope":
         """Apply a linear map along the leading coefficient axis.
@@ -328,7 +368,7 @@ class PolynomialZonotope:
             center = apply(self.center)
             if bias is not None:
                 center = center + _as_tensor(bias, dtype=self.center.dtype, device=self.center.device)
-            return PolynomialZonotope(center, {exp: apply(coeff) for exp, coeff in self.terms.items()}, num_noise=self.num_noise)
+            return PolynomialZonotope(center, {exp: apply(coeff) for exp, coeff in self.terms.items()}, num_noise=self.num_noise, noise_kinds=self.noise_kinds)
 
         mapped_center = _fallback_linear_contract(matrix, self.center)
         if bias is not None:
@@ -337,6 +377,7 @@ class PolynomialZonotope:
             mapped_center,
             {exp: _fallback_linear_contract(matrix, coeff) for exp, coeff in self.terms.items()},
             num_noise=self.num_noise,
+            noise_kinds=self.noise_kinds,
         )
 
     def tensor_product(self, other: "PolynomialZonotope") -> "PolynomialZonotope":
@@ -350,24 +391,28 @@ class PolynomialZonotope:
         for exp, coeff in left.terms.items(): add(exp, outer(coeff, right.center))
         for e1, c1 in left.terms.items():
             for e2, c2 in right.terms.items(): add(tuple(a + b for a, b in zip(e1, e2)), outer(c1, c2))
-        return PolynomialZonotope(outer(left.center, right.center), terms, num_noise=left.num_noise)
+        return PolynomialZonotope(outer(left.center, right.center), terms, num_noise=left.num_noise, noise_kinds=left.noise_kinds)
 
     def __getitem__(self, item: Any) -> "PolynomialZonotope":
         if torch is not None and isinstance(self.center, torch.Tensor):
-            return PolynomialZonotope(self.center[item], {e: c[item] for e, c in self.terms.items()}, num_noise=self.num_noise)
-        return PolynomialZonotope(self.center[item], {e: c[item] for e, c in self.terms.items()}, num_noise=self.num_noise)
+            return PolynomialZonotope(self.center[item], {e: c[item] for e, c in self.terms.items()}, num_noise=self.num_noise, noise_kinds=self.noise_kinds)
+        return PolynomialZonotope(self.center[item], {e: c[item] for e, c in self.terms.items()}, num_noise=self.num_noise, noise_kinds=self.noise_kinds)
 
     @staticmethod
     def stack(items: list["PolynomialZonotope"] | tuple["PolynomialZonotope", ...], dim: int = 0) -> "PolynomialZonotope":
         if not items: raise ValueError("stack requires at least one item.")
         p = max(item.num_noise for item in items)
         aligned = [item.with_num_noise(p) for item in items]
+        merged_kinds = aligned[0].noise_kinds
+        for item in aligned[1:]:
+            merged_kinds = _merge_noise_kinds(merged_kinds, item.noise_kinds)
+        aligned = [item.with_noise_kinds(merged_kinds) for item in aligned]
         if torch is None or not isinstance(aligned[0].center, torch.Tensor):
             if dim != 0: raise NotImplementedError("fallback stack supports dim=0 only.")
             exps = set().union(*(item.terms.keys() for item in aligned))
-            return PolynomialZonotope(tuple(item.center for item in aligned), {e: tuple(item.terms.get(e, _zero_like(item.center)) for item in aligned) for e in exps}, num_noise=p)
+            return PolynomialZonotope(tuple(item.center for item in aligned), {e: tuple(item.terms.get(e, _zero_like(item.center)) for item in aligned) for e in exps}, num_noise=p, noise_kinds=merged_kinds)
         exps = set().union(*(item.terms.keys() for item in aligned))
-        return PolynomialZonotope(torch.stack([item.center for item in aligned], dim=dim), {e: torch.stack([item.terms.get(e, torch.zeros_like(item.center)) for item in aligned], dim=dim) for e in exps}, num_noise=p)
+        return PolynomialZonotope(torch.stack([item.center for item in aligned], dim=dim), {e: torch.stack([item.terms.get(e, torch.zeros_like(item.center)) for item in aligned], dim=dim) for e in exps}, num_noise=p, noise_kinds=merged_kinds)
 
     def interval_enclosure(self):
         radius = _zero_like(self.center)
@@ -416,6 +461,6 @@ class PZTwoJet:
             kwargs = {"dtype": X.center.dtype, "device": X.center.device}
         return cls(
             Y=X,
-            J=PolynomialZonotope.constant(torch.eye(input_dim, **kwargs), num_noise=X.num_noise),
-            H=PolynomialZonotope.constant(torch.zeros(input_dim, input_dim, input_dim, **kwargs), num_noise=X.num_noise),
+            J=PolynomialZonotope.constant(torch.eye(input_dim, **kwargs), num_noise=X.num_noise, noise_kinds=X.noise_kinds),
+            H=PolynomialZonotope.constant(torch.zeros(input_dim, input_dim, input_dim, **kwargs), num_noise=X.num_noise, noise_kinds=X.noise_kinds),
         )
