@@ -7,7 +7,7 @@ from typing import Any
 from .interval import Interval
 from .polynomial_zonotope import PZTwoJet, PolynomialZonotope
 from .pz_tanh import tanh_pz_scalar
-from .pz_integration import PZIntegrationCell
+from .pz_integration import PZIntegrationCell, pz_l2norm_bounds, pz_sobolev_norm_bounds
 from .pz_norms import pz_twojet_l2_norm, pz_twojet_w12_norm, pz_twojet_w22_norm
 
 try:
@@ -1471,15 +1471,26 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         domain: IntervalTensor,
         p: float = 2.0,
         *,
+        iterations: int = 0,
+        theta: float = 0.5,
         remez_degree: int = 5,
         residual_subdivisions: int = 128,
+        output: str = "interval",
     ):
         _ORIGINAL_EVAL(self)
+        if not isfinite(float(p)) or float(p) != 2.0:
+            raise NotImplementedError("Polynomial-zonotope norm helpers currently support only p=2.0.")
         if not isinstance(domain, IntervalTensor):
             raise TypeError("model.pz_l2norm(domain) requires an IntervalTensor domain.")
-        cell = PZIntegrationCell.from_affine_box(domain)
-        jet = pz_twojet_forward(self, cell.domain, remez_degree=remez_degree, residual_subdivisions=residual_subdivisions)
-        return pz_twojet_l2_norm(jet, cell, p=p)
+        return pz_l2norm_bounds(
+            self,
+            domain,
+            iterations=iterations,
+            theta=theta,
+            remez_degree=remez_degree,
+            residual_subdivisions=residual_subdivisions,
+            output=output,
+        )
 
     def pz_sobolev_norm_with_interval(
         self,
@@ -1487,19 +1498,29 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         p: float = 2.0,
         order: int = 1,
         *,
+        iterations: int = 0,
+        theta: float = 0.5,
         remez_degree: int = 5,
         residual_subdivisions: int = 128,
+        output: str = "interval",
     ):
         _ORIGINAL_EVAL(self)
+        if not isfinite(float(p)) or float(p) != 2.0:
+            raise NotImplementedError("Polynomial-zonotope norm helpers currently support only p=2.0.")
         if not isinstance(domain, IntervalTensor):
             raise TypeError("model.pz_sobolev_norm(domain) requires an IntervalTensor domain.")
         if order not in {1, 2}:
             raise ValueError("order must be either 1 or 2.")
-        cell = PZIntegrationCell.from_affine_box(domain)
-        jet = pz_twojet_forward(self, cell.domain, remez_degree=remez_degree, residual_subdivisions=residual_subdivisions)
-        if order == 1:
-            return pz_twojet_w12_norm(jet, cell, p=p)
-        return pz_twojet_w22_norm(jet, cell, p=p)
+        return pz_sobolev_norm_bounds(
+            self,
+            domain,
+            order=order,
+            iterations=iterations,
+            theta=theta,
+            remez_degree=remez_degree,
+            residual_subdivisions=residual_subdivisions,
+            output=output,
+        )
 
     def sobolev_norm_with_interval(
         self,
