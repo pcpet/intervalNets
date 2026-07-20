@@ -128,3 +128,95 @@ def test_non_affine_fixed_orientation_hook_requires_certificates():
 
     with pytest.raises(NotImplementedError):
         PZIntegrationCell.from_fixed_orientation_domain(cell.domain, cell.domain_noise_indices)
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_pz_sum_squares_vector_matrix_tensor_entries():
+    from intervalnets.pz_norms import pz_sum_squares
+
+    z = PolynomialZonotope(
+        torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float64),
+        {(1,): torch.ones(2, 2, dtype=torch.float64)},
+        num_noise=1,
+        noise_kinds=("domain",),
+    )
+
+    out = pz_sum_squares(z)
+
+    assert out.shape == ()
+    assert torch.allclose(out.center, torch.tensor(30.0, dtype=torch.float64))
+    assert torch.allclose(out.terms[(1,)], torch.tensor(20.0, dtype=torch.float64))
+    assert torch.allclose(out.terms[(2,)], torch.tensor(4.0, dtype=torch.float64))
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_pz_twojet_norms_constant_and_affine_match_closed_forms():
+    from intervalnets import IntervalTensor, enable_interval_eval
+
+    enable_interval_eval()
+    const_model = torch.nn.Linear(1, 2, dtype=torch.float64)
+    with torch.no_grad():
+        const_model.weight.zero_()
+        const_model.bias.copy_(torch.tensor([3.0, -4.0], dtype=torch.float64))
+    domain = IntervalTensor.from_bounds([0.0], [2.0])
+
+    const_norm = const_model.pz_l2norm(domain, p=2.0)
+
+    assert const_norm.lower == pytest.approx((50.0) ** 0.5)
+    assert const_norm.upper == pytest.approx((50.0) ** 0.5)
+
+    affine_model = torch.nn.Linear(1, 1, dtype=torch.float64)
+    with torch.no_grad():
+        affine_model.weight.fill_(1.0)
+        affine_model.bias.zero_()
+    affine_domain = IntervalTensor.from_bounds([-1.0], [1.0])
+
+    l2 = affine_model.pz_l2norm(affine_domain)
+    w12 = affine_model.pz_sobolev_norm(affine_domain, order=1)
+    w22 = affine_model.pz_sobolev_norm(affine_domain, order=2)
+
+    assert l2.lower == pytest.approx((2.0 / 3.0) ** 0.5)
+    assert l2.upper == pytest.approx((2.0 / 3.0) ** 0.5)
+    assert w12.lower == pytest.approx((8.0 / 3.0) ** 0.5)
+    assert w12.upper == pytest.approx((8.0 / 3.0) ** 0.5)
+    assert w22.lower == pytest.approx(w12.lower)
+    assert w22.upper == pytest.approx(w12.upper)
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_pz_norm_public_methods_reject_non_l2_p():
+    from intervalnets import IntervalTensor, enable_interval_eval
+
+    enable_interval_eval()
+    model = torch.nn.Linear(1, 1, dtype=torch.float64)
+    domain = IntervalTensor.from_bounds([-1.0], [1.0])
+
+    with pytest.raises(NotImplementedError, match="p=2.0"):
+        model.pz_l2norm(domain, p=1.0)
+    with pytest.raises(NotImplementedError, match="p=2.0"):
+        model.pz_sobolev_norm(domain, p=3.0, order=1)
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_pz_tanh_w22_norm_contains_dense_autograd_quadrature():
+    from intervalnets import IntervalTensor, enable_interval_eval
+
+    enable_interval_eval()
+    model = torch.nn.Sequential(torch.nn.Linear(1, 1, dtype=torch.float64), torch.nn.Tanh()).double()
+    with torch.no_grad():
+        model[0].weight.fill_(0.7)
+        model[0].bias.fill_(0.1)
+    domain = IntervalTensor.from_bounds([-0.5], [0.5])
+
+    bounds = model.pz_sobolev_norm(domain, order=2, remez_degree=5, residual_subdivisions=96)
+    xs = torch.linspace(-0.5, 0.5, steps=401, dtype=torch.float64)
+    values = []
+    for x_value in xs:
+        x = x_value.reshape(1).clone().detach().requires_grad_(True)
+        y = model(x)[0]
+        grad = torch.autograd.grad(y, x, create_graph=True)[0][0]
+        hess = torch.autograd.grad(grad, x)[0][0]
+        values.append((y.detach() ** 2 + grad.detach() ** 2 + hess.detach() ** 2).reshape(()))
+    dense_integral = torch.trapezoid(torch.stack(values), xs).item()
+    dense_norm = dense_integral ** 0.5
+
+    assert bounds.lower <= dense_norm <= bounds.upper
