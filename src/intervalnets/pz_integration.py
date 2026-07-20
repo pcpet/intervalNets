@@ -10,7 +10,7 @@ into a purely symbolic treatment explicitly.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import prod
+from math import inf, isfinite, nextafter, prod, sqrt
 from typing import Any, Literal, Sequence
 
 from .interval import Interval
@@ -233,3 +233,239 @@ def integrate_over_cell(pz_expr: PolynomialZonotope, cell: PZIntegrationCell, *,
     if output == "pz":
         return integrate_pz_over_domain(weighted, cell.domain_noise_indices, mode="symbolic").polynomial
     return integrate_pz_over_domain(weighted, cell.domain_noise_indices, mode="pointwise_interval").interval_enclosure()
+
+
+def _require_interval_tensor_domain(domain: Any):
+    from .pytorch import IntervalTensor as RuntimeIntervalTensor
+
+    if not isinstance(domain, RuntimeIntervalTensor):
+        raise TypeError("PZ adaptive integration requires an IntervalTensor domain.")
+    if len(domain.shape) != 1:
+        raise NotImplementedError("PZ adaptive integration currently supports flat input boxes only.")
+    return RuntimeIntervalTensor
+
+
+def _require_l2_output(output: str) -> None:
+    if output not in {"interval", "pz"}:
+        raise ValueError("output must be either 'interval' or 'pz'.")
+
+
+def _require_adaptive_parameters(iterations: int, theta: float, remez_degree: int, residual_subdivisions: int) -> None:
+    if iterations < 0:
+        raise ValueError("iterations must be non-negative.")
+    if not isfinite(float(theta)) or float(theta) <= 0.0 or float(theta) > 1.0:
+        raise ValueError("theta must be a finite real number in the interval (0, 1].")
+    if remez_degree < 0:
+        raise ValueError("remez_degree must be non-negative.")
+    if residual_subdivisions < 1:
+        raise ValueError("residual_subdivisions must be positive.")
+
+
+def _sqrt_interval_nonnegative(value: Interval) -> Interval:
+    lower = max(0.0, float(value.lower))
+    upper = max(0.0, float(value.upper))
+    return Interval.from_bounds(nextafter(sqrt(lower), -inf), nextafter(sqrt(upper), inf))
+
+
+def _interval_width(value: Interval) -> float:
+    return max(0.0, float(value.upper) - float(value.lower))
+
+
+def _interval_add(left: Interval, right: Interval) -> Interval:
+    return left + right
+
+
+def _dorfler_marking(indicators: list[float], theta: float) -> list[int]:
+    """Return a minimal Dörfler marked set, matching ``pytorch._dorfler_marking``."""
+
+    if not indicators:
+        raise ValueError("Indicators must be non-empty for Dörfler marking.")
+    total = sum(indicators)
+    if total <= 0.0:
+        return [max(range(len(indicators)), key=lambda idx: indicators[idx])]
+    threshold = theta * total
+    ranked_indices = sorted(range(len(indicators)), key=lambda idx: indicators[idx], reverse=True)
+    marked: list[int] = []
+    accumulated = 0.0
+    for idx in ranked_indices:
+        marked.append(idx)
+        accumulated += indicators[idx]
+        if accumulated >= threshold:
+            break
+    return marked
+
+
+def _split_box(box: "IntervalTensor", split_dim: int | None = None) -> tuple["IntervalTensor", "IntervalTensor"]:
+    """Bisect an interval box, matching ``pytorch._split_box`` behavior."""
+
+    if split_dim is None:
+        widths = [float(upper - lower) for lower, upper in zip(box.lower, box.upper)]
+        split_dim = max(range(len(widths)), key=lambda idx: widths[idx])
+    midpoint = 0.5 * (box.lower[split_dim] + box.upper[split_dim])
+    lower_left = list(box.lower)
+    upper_left = list(box.upper)
+    lower_right = list(box.lower)
+    upper_right = list(box.upper)
+    upper_left[split_dim] = midpoint
+    lower_right[split_dim] = midpoint
+    from .pytorch import IntervalTensor as RuntimeIntervalTensor
+
+    return RuntimeIntervalTensor.from_bounds(lower_left, upper_left), RuntimeIntervalTensor.from_bounds(lower_right, upper_right)
+
+
+def _choose_split_dim_from_jacobian(box: "IntervalTensor", jacobian: Interval | None) -> int:
+    widths = [float(upper - lower) for lower, upper in zip(box.lower, box.upper)]
+    if jacobian is None or len(widths) <= 1:
+        return max(range(len(widths)), key=lambda idx: widths[idx])
+    try:
+        if len(jacobian.shape) != 2:
+            raise ValueError
+        output_dim = len(jacobian.lower)
+        input_dim = len(jacobian.lower[0]) if output_dim > 0 else 0
+        scores = [0.0] * input_dim
+        for row_idx in range(output_dim):
+            for col_idx in range(input_dim):
+                lower = float(jacobian.lower[row_idx][col_idx])
+                upper = float(jacobian.upper[row_idx][col_idx])
+                scores[col_idx] += max(abs(lower), abs(upper))
+        weighted = [width * score for width, score in zip(widths, scores)]
+        if any(score > 0.0 for score in weighted):
+            return max(range(len(weighted)), key=lambda idx: weighted[idx])
+    except Exception:
+        pass
+    return max(range(len(widths)), key=lambda idx: widths[idx])
+
+
+def _eval_pz_twojet(model, domain: PolynomialZonotope, *, remez_degree: int, residual_subdivisions: int):
+    if hasattr(model, "eval_pz_twojet"):
+        return model.eval_pz_twojet(domain, remez_degree=remez_degree, residual_subdivisions=residual_subdivisions)
+    from .pytorch import pz_twojet_forward
+
+    return pz_twojet_forward(model, domain, remez_degree=remez_degree, residual_subdivisions=residual_subdivisions)
+
+
+def _integrated_squared_contribution(
+    model,
+    box: "IntervalTensor",
+    *,
+    integrand_kind: Literal["l2", "w12", "w22"],
+    remez_degree: int,
+    residual_subdivisions: int,
+) -> tuple[Interval, Interval | None]:
+    from .pz_norms import pz_twojet_l2_integrand, pz_twojet_w12_integrand, pz_twojet_w22_integrand
+
+    cell = PZIntegrationCell.from_affine_box(box)
+    jet = _eval_pz_twojet(
+        model,
+        cell.domain,
+        remez_degree=remez_degree,
+        residual_subdivisions=residual_subdivisions,
+    )
+    if integrand_kind == "l2":
+        integrand = pz_twojet_l2_integrand(jet)
+    elif integrand_kind == "w12":
+        integrand = pz_twojet_w12_integrand(jet)
+    else:
+        integrand = pz_twojet_w22_integrand(jet)
+    return integrate_over_cell(integrand, cell, output="interval"), jet.J.interval_enclosure()
+
+
+def _pz_adaptive_squared_integral(
+    model,
+    domain: "IntervalTensor",
+    *,
+    integrand_kind: Literal["l2", "w12", "w22"],
+    iterations: int,
+    theta: float,
+    remez_degree: int,
+    residual_subdivisions: int,
+) -> Interval:
+    boxes = [domain]
+    for _ in range(iterations):
+        indicators: list[float] = []
+        split_dims: list[int] = []
+        for box in boxes:
+            contribution, jacobian = _integrated_squared_contribution(
+                model,
+                box,
+                integrand_kind=integrand_kind,
+                remez_degree=remez_degree,
+                residual_subdivisions=residual_subdivisions,
+            )
+            indicators.append(_interval_width(contribution))
+            split_dims.append(_choose_split_dim_from_jacobian(box, jacobian))
+        marked_indices = set(_dorfler_marking(indicators, theta))
+        refined_boxes = []
+        for idx, box in enumerate(boxes):
+            if idx in marked_indices:
+                refined_boxes.extend(_split_box(box, split_dim=split_dims[idx]))
+            else:
+                refined_boxes.append(box)
+        boxes = refined_boxes
+
+    integral = Interval.point(0.0)
+    for box in boxes:
+        contribution, _ = _integrated_squared_contribution(
+            model,
+            box,
+            integrand_kind=integrand_kind,
+            remez_degree=remez_degree,
+            residual_subdivisions=residual_subdivisions,
+        )
+        integral = _interval_add(integral, contribution)
+    return integral
+
+
+def pz_l2norm_bounds(
+    model,
+    domain: "IntervalTensor",
+    iterations: int = 0,
+    theta: float = 0.5,
+    remez_degree: int = 5,
+    residual_subdivisions: int = 128,
+    output: IntegrationOutput = "interval",
+) -> Interval:
+    """Adaptive PZ two-jet enclosure of the L2 norm over an interval domain."""
+
+    _require_interval_tensor_domain(domain)
+    _require_l2_output(output)
+    _require_adaptive_parameters(iterations, theta, remez_degree, residual_subdivisions)
+    squared = _pz_adaptive_squared_integral(
+        model,
+        domain,
+        integrand_kind="l2",
+        iterations=iterations,
+        theta=theta,
+        remez_degree=remez_degree,
+        residual_subdivisions=residual_subdivisions,
+    )
+    return _sqrt_interval_nonnegative(squared)
+
+
+def pz_sobolev_norm_bounds(
+    model,
+    domain: "IntervalTensor",
+    order: Literal[1, 2] = 1,
+    iterations: int = 0,
+    theta: float = 0.5,
+    remez_degree: int = 5,
+    residual_subdivisions: int = 128,
+    output: IntegrationOutput = "interval",
+) -> Interval:
+    """Adaptive PZ two-jet enclosure of W^{order,2} Sobolev norms."""
+
+    _require_interval_tensor_domain(domain)
+    _require_l2_output(output)
+    _require_adaptive_parameters(iterations, theta, remez_degree, residual_subdivisions)
+    if order not in {1, 2}:
+        raise ValueError("order must be either 1 or 2.")
+    squared = _pz_adaptive_squared_integral(
+        model,
+        domain,
+        integrand_kind="w12" if order == 1 else "w22",
+        iterations=iterations,
+        theta=theta,
+        remez_degree=remez_degree,
+        residual_subdivisions=residual_subdivisions,
+    )
+    return _sqrt_interval_nonnegative(squared)
