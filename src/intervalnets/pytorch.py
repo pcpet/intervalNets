@@ -7,6 +7,8 @@ from typing import Any
 from .interval import Interval
 from .polynomial_zonotope import PZTwoJet, PolynomialZonotope
 from .pz_tanh import tanh_pz_scalar
+from .pz_integration import PZIntegrationCell
+from .pz_norms import pz_twojet_l2_norm, pz_twojet_w12_norm, pz_twojet_w22_norm
 
 try:
     import torch
@@ -1464,6 +1466,41 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
             reduce=reduce,
         )
 
+    def pz_l2norm_with_interval(
+        self,
+        domain: IntervalTensor,
+        p: float = 2.0,
+        *,
+        remez_degree: int = 5,
+        residual_subdivisions: int = 128,
+    ):
+        _ORIGINAL_EVAL(self)
+        if not isinstance(domain, IntervalTensor):
+            raise TypeError("model.pz_l2norm(domain) requires an IntervalTensor domain.")
+        cell = PZIntegrationCell.from_affine_box(domain)
+        jet = pz_twojet_forward(self, cell.domain, remez_degree=remez_degree, residual_subdivisions=residual_subdivisions)
+        return pz_twojet_l2_norm(jet, cell, p=p)
+
+    def pz_sobolev_norm_with_interval(
+        self,
+        domain: IntervalTensor,
+        p: float = 2.0,
+        order: int = 1,
+        *,
+        remez_degree: int = 5,
+        residual_subdivisions: int = 128,
+    ):
+        _ORIGINAL_EVAL(self)
+        if not isinstance(domain, IntervalTensor):
+            raise TypeError("model.pz_sobolev_norm(domain) requires an IntervalTensor domain.")
+        if order not in {1, 2}:
+            raise ValueError("order must be either 1 or 2.")
+        cell = PZIntegrationCell.from_affine_box(domain)
+        jet = pz_twojet_forward(self, cell.domain, remez_degree=remez_degree, residual_subdivisions=residual_subdivisions)
+        if order == 1:
+            return pz_twojet_w12_norm(jet, cell, p=p)
+        return pz_twojet_w22_norm(jet, cell, p=p)
+
     def sobolev_norm_with_interval(
         self,
         domain: IntervalTensor,
@@ -1492,5 +1529,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
     nn.Module.eval_jacobian = eval_jacobian_with_interval
     nn.Module.eval_hessian = eval_hessian_with_interval
     nn.Module.eval_pz_twojet = eval_pz_twojet_with_interval
+    nn.Module.pz_l2norm = pz_l2norm_with_interval
+    nn.Module.pz_sobolev_norm = pz_sobolev_norm_with_interval
     nn.Module.sobolev_norm = sobolev_norm_with_interval
     _PATCHED = True
