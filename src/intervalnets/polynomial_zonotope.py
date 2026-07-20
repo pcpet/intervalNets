@@ -400,6 +400,21 @@ class PolynomialZonotope:
 
         return self.integrate_noise([index for index, kind in enumerate(self.noise_kinds) if kind == "domain"])
 
+    def integrate_domain(self, domain_indices: Sequence[int] | None = None, *, mode: str = "pointwise_interval", volume: float | None = None):
+        """Integrate domain variables with pointwise-residual-safe semantics.
+
+        This delegates to :func:`intervalnets.pz_integration.integrate_pz_over_domain`
+        and returns an ``IntegratedPZResult`` that separates the exact retained
+        polynomial from the scalar/tensor interval radius accumulated from
+        pointwise approximation residuals.  Use ``mode="symbolic"`` only when
+        approximation variables are intended to represent global symbolic
+        uncertainties whose moments may be preserved.
+        """
+
+        from .pz_integration import integrate_pz_over_domain
+
+        return integrate_pz_over_domain(self, domain_indices, mode=mode, volume=volume)
+
     def linear_map(self, matrix: Any, bias: Any | None = None) -> "PolynomialZonotope":
         """Apply a linear map along the leading coefficient axis.
 

@@ -249,4 +249,4 @@ def tanh_pz_scalar(Z_i: Any, remez_degree: int, residual_subdivisions: int):
         raise ValueError("tanh_pz_scalar expects a scalar polynomial zonotope.")
     interval = _scalar_interval_from_enclosure(Z_i.interval_enclosure())
     approx = compute_tanh_polynomial(interval, remez_degree=remez_degree, subdivisions=residual_subdivisions)
-    return Z_i.evaluate_polynomial(approx.coeffs).add_independent_error(approx.delta)
+    return Z_i.evaluate_polynomial(approx.coeffs).add_independent_error(approx.delta, kind="approximation_pointwise")
