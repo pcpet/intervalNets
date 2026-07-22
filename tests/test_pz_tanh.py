@@ -1,5 +1,7 @@
 import math
 
+import pytest
+
 from intervalnets import Interval
 from intervalnets.pz_tanh import (
     TanhApproximation,
@@ -16,7 +18,7 @@ def _poly(coeffs, x):
 
 
 def test_compute_tanh_polynomial_returns_certified_metadata():
-    approx = compute_tanh_polynomial(Interval(-1.0, 1.0), remez_degree=5, subdivisions=32)
+    approx = compute_tanh_polynomial(Interval(-1.0, 1.0), chebyshev_degree=5, subdivisions=32)
 
     assert isinstance(approx, TanhApproximation)
     assert approx.degree == 5
@@ -24,9 +26,18 @@ def test_compute_tanh_polynomial_returns_certified_metadata():
     assert approx.lower == -1.0
     assert approx.upper == 1.0
     assert approx.delta >= 0.0
-    assert approx.metadata["remez_degree"] == 5
+    assert approx.metadata["chebyshev_degree"] == 5
     assert "not a proof" in approx.metadata["proof_note"]
     assert approx.metadata["residual_certification"]["method"] == "outward-rounded-subdivision"
+
+
+def test_compute_tanh_polynomial_accepts_deprecated_remez_alias():
+    with pytest.warns(DeprecationWarning, match="remez_degree is deprecated"):
+        approx = compute_tanh_polynomial(Interval(-1.0, 1.0), remez_degree=5, subdivisions=32)
+
+    assert approx.metadata["chebyshev_degree"] == 5
+    assert approx.metadata["legacy_remez_degree"] == 5
+    assert "remez_degree" not in approx.metadata
 
 
 def test_subdivision_certificate_bounds_sampled_residuals():

@@ -304,7 +304,7 @@ def _pz_twojet_linear_forward(layer: nn.Linear, jet: PZTwoJet) -> PZTwoJet:
     )
 
 
-def _pz_twojet_tanh_forward(jet: PZTwoJet, remez_degree: int, residual_subdivisions: int) -> PZTwoJet:
+def _pz_twojet_tanh_forward(jet: PZTwoJet, chebyshev_degree: int, residual_subdivisions: int) -> PZTwoJet:
     """Propagate a polynomial-zonotope two-jet through componentwise ``tanh``.
 
     For each scalar preactivation ``Z_i``, this constructs the certified
@@ -331,7 +331,7 @@ def _pz_twojet_tanh_forward(jet: PZTwoJet, remez_degree: int, residual_subdivisi
     for i in range(components):
         Z_i = jet.Y if jet.Y.shape == () else jet.Y[i]
         Z_i = Z_i.with_num_noise(current_noise)
-        S_i = tanh_pz_scalar(Z_i, remez_degree=remez_degree, residual_subdivisions=residual_subdivisions)
+        S_i = tanh_pz_scalar(Z_i, chebyshev_degree=chebyshev_degree, residual_subdivisions=residual_subdivisions)
         current_noise = S_i.num_noise
 
         one = PolynomialZonotope.constant(1.0, num_noise=current_noise)
@@ -360,7 +360,7 @@ def _pz_twojet_forward_from_jet(
     module,
     jet: PZTwoJet,
     *,
-    remez_degree: int = 5,
+    chebyshev_degree: int = 5,
     residual_subdivisions: int = 128,
     reduce: bool = False,
 ) -> PZTwoJet:
@@ -375,7 +375,7 @@ def _pz_twojet_forward_from_jet(
             result = _pz_twojet_forward_from_jet(
                 child,
                 result,
-                remez_degree=remez_degree,
+                chebyshev_degree=chebyshev_degree,
                 residual_subdivisions=residual_subdivisions,
                 reduce=reduce,
             )
@@ -385,7 +385,7 @@ def _pz_twojet_forward_from_jet(
     if isinstance(module, nn.Tanh):
         return _pz_twojet_tanh_forward(
             jet,
-            remez_degree=remez_degree,
+            chebyshev_degree=chebyshev_degree,
             residual_subdivisions=residual_subdivisions,
         )
     if isinstance(module, nn.Identity):
@@ -403,7 +403,7 @@ def pz_twojet_forward(
     module,
     x: PolynomialZonotope,
     *,
-    remez_degree: int = 5,
+    chebyshev_degree: int = 5,
     residual_subdivisions: int = 128,
     reduce: bool = False,
     input_dim: int | None = None,
@@ -428,7 +428,7 @@ def pz_twojet_forward(
     return _pz_twojet_forward_from_jet(
         module,
         jet,
-        remez_degree=remez_degree,
+        chebyshev_degree=chebyshev_degree,
         residual_subdivisions=residual_subdivisions,
         reduce=reduce,
     )
@@ -441,7 +441,7 @@ def pz_l2norm(
     *,
     iterations: int = 0,
     theta: float = 0.5,
-    remez_degree: int = 5,
+    chebyshev_degree: int = 5,
     residual_subdivisions: int = 128,
     output: str = "interval",
 ) -> Interval:
@@ -457,7 +457,7 @@ def pz_l2norm(
         domain,
         iterations=iterations,
         theta=theta,
-        remez_degree=remez_degree,
+        chebyshev_degree=chebyshev_degree,
         residual_subdivisions=residual_subdivisions,
         output=output,
     )
@@ -471,7 +471,7 @@ def pz_sobolev_norm(
     *,
     iterations: int = 0,
     theta: float = 0.5,
-    remez_degree: int = 5,
+    chebyshev_degree: int = 5,
     residual_subdivisions: int = 128,
     output: str = "interval",
 ) -> Interval:
@@ -490,7 +490,7 @@ def pz_sobolev_norm(
         order=order,
         iterations=iterations,
         theta=theta,
-        remez_degree=remez_degree,
+        chebyshev_degree=chebyshev_degree,
         residual_subdivisions=residual_subdivisions,
         output=output,
     )
@@ -1489,7 +1489,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         forward_refine_splits: int = 1,
         forward_refine_max_cells: int = 256,
         method: str = "interval",
-        remez_degree: int = 5,
+        chebyshev_degree: int = 5,
         residual_subdivisions: int = 128,
         output: str = "interval",
     ):
@@ -1501,7 +1501,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
                 p=p,
                 iterations=iterations,
                 theta=theta,
-                remez_degree=remez_degree,
+                chebyshev_degree=chebyshev_degree,
                 residual_subdivisions=residual_subdivisions,
                 output=output,
             )
@@ -1530,7 +1530,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         self,
         domain: PolynomialZonotope,
         *,
-        remez_degree: int = 5,
+        chebyshev_degree: int = 5,
         residual_subdivisions: int = 128,
         reduce: bool = False,
     ):
@@ -1540,7 +1540,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         return pz_twojet_forward(
             self,
             domain,
-            remez_degree=remez_degree,
+            chebyshev_degree=chebyshev_degree,
             residual_subdivisions=residual_subdivisions,
             reduce=reduce,
         )
@@ -1552,7 +1552,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         *,
         iterations: int = 0,
         theta: float = 0.5,
-        remez_degree: int = 5,
+        chebyshev_degree: int = 5,
         residual_subdivisions: int = 128,
         output: str = "interval",
     ):
@@ -1563,7 +1563,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
             p=p,
             iterations=iterations,
             theta=theta,
-            remez_degree=remez_degree,
+            chebyshev_degree=chebyshev_degree,
             residual_subdivisions=residual_subdivisions,
             output=output,
         )
@@ -1576,7 +1576,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         *,
         iterations: int = 0,
         theta: float = 0.5,
-        remez_degree: int = 5,
+        chebyshev_degree: int = 5,
         residual_subdivisions: int = 128,
         output: str = "interval",
     ):
@@ -1588,7 +1588,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
             order=order,
             iterations=iterations,
             theta=theta,
-            remez_degree=remez_degree,
+            chebyshev_degree=chebyshev_degree,
             residual_subdivisions=residual_subdivisions,
             output=output,
         )
@@ -1603,7 +1603,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         forward_refine_splits: int = 1,
         forward_refine_max_cells: int = 256,
         method: str = "interval",
-        remez_degree: int = 5,
+        chebyshev_degree: int = 5,
         residual_subdivisions: int = 128,
         output: str = "interval",
     ):
@@ -1616,7 +1616,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
                 order=order,
                 iterations=iterations,
                 theta=theta,
-                remez_degree=remez_degree,
+                chebyshev_degree=chebyshev_degree,
                 residual_subdivisions=residual_subdivisions,
                 output=output,
             )

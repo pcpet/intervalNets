@@ -108,7 +108,7 @@ def test_shape_correctness_for_pz_twojet_network_outputs():
     model = nn.Sequential(nn.Linear(d, 4, dtype=torch.float64), nn.Tanh(), nn.Linear(4, m, dtype=torch.float64)).double()
     domain = PolynomialZonotope.from_box(torch.full((d,), -0.2, dtype=torch.float64), torch.full((d,), 0.3, dtype=torch.float64))
 
-    out = pz_twojet_forward(model, domain, remez_degree=5, residual_subdivisions=64)
+    out = pz_twojet_forward(model, domain, chebyshev_degree=5, residual_subdivisions=64)
 
     assert out.Y.shape == (m,)
     assert out.J.shape == (m, d)
@@ -165,7 +165,7 @@ def test_small_tanh_network_pz_twojet_encloses_autograd_samples():
     upper = torch.tensor([0.5, 0.3], dtype=torch.float64)
     domain = PolynomialZonotope.from_box(lower, upper)
 
-    out = model.eval_pz_twojet(domain, remez_degree=5, residual_subdivisions=64)
+    out = model.eval_pz_twojet(domain, chebyshev_degree=5, residual_subdivisions=64)
     y_interval = out.Y.interval_enclosure()
     j_interval = out.J.interval_enclosure()
     h_interval = out.H.interval_enclosure()

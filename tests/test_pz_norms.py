@@ -38,7 +38,7 @@ def test_pz_l2norm_zero_network_returns_zero_interval():
         model[2].bias.zero_()
 
     domain = IntervalTensor.from_bounds([-1.0, -2.0], [3.0, 4.0])
-    bounds = model.lpnorm(domain, p=2.0, method="pz", iterations=1, remez_degree=3, residual_subdivisions=16)
+    bounds = model.lpnorm(domain, p=2.0, method="pz", iterations=1, chebyshev_degree=3, residual_subdivisions=16)
 
     assert bounds.lower <= 0.0 <= bounds.upper
     assert bounds.upper < 1e-10
@@ -54,7 +54,7 @@ def test_pz_l2norm_constant_network_matches_exact_value():
         model[2].bias.fill_(3.0)
 
     domain = IntervalTensor.from_bounds([0.0], [2.0])
-    bounds = model.lpnorm(domain, p=2.0, method="pz", iterations=1, remez_degree=3, residual_subdivisions=16)
+    bounds = model.lpnorm(domain, p=2.0, method="pz", iterations=1, chebyshev_degree=3, residual_subdivisions=16)
     exact = 18.0**0.5
 
     assert bounds.lower <= exact <= bounds.upper
@@ -66,8 +66,8 @@ def test_pz_l2norm_refinement_tightens_interval():
     model = _small_tanh_model()
     domain = IntervalTensor.from_bounds([-1.0], [1.0])
 
-    coarse = model.lpnorm(domain, p=2.0, method="pz", iterations=0, remez_degree=3, residual_subdivisions=16)
-    refined = model.lpnorm(domain, p=2.0, method="pz", iterations=2, remez_degree=3, residual_subdivisions=16)
+    coarse = model.lpnorm(domain, p=2.0, method="pz", iterations=0, chebyshev_degree=3, residual_subdivisions=16)
+    refined = model.lpnorm(domain, p=2.0, method="pz", iterations=2, chebyshev_degree=3, residual_subdivisions=16)
 
     assert refined.lower >= coarse.lower
     assert refined.upper <= coarse.upper
@@ -79,7 +79,7 @@ def test_pz_l2norm_accepts_dorfler_theta_parameter():
     model = _small_tanh_model()
     domain = IntervalTensor.from_bounds([-1.0], [1.0])
 
-    bounds = model.lpnorm(domain, p=2.0, method="pz", iterations=2, theta=0.5, remez_degree=3, residual_subdivisions=16)
+    bounds = model.lpnorm(domain, p=2.0, method="pz", iterations=2, theta=0.5, chebyshev_degree=3, residual_subdivisions=16)
 
     assert bounds.lower <= bounds.upper
 
@@ -90,13 +90,13 @@ def test_pz_norms_validate_adaptive_and_forward_parameters():
     domain = IntervalTensor.from_bounds([0.0], [1.0])
 
     with pytest.raises(ValueError):
-        model.lpnorm(domain, p=2.0, method="pz", iterations=-1, remez_degree=3, residual_subdivisions=16)
+        model.lpnorm(domain, p=2.0, method="pz", iterations=-1, chebyshev_degree=3, residual_subdivisions=16)
     with pytest.raises(ValueError):
-        model.lpnorm(domain, p=2.0, method="pz", iterations=1, theta=0.0, remez_degree=3, residual_subdivisions=16)
+        model.lpnorm(domain, p=2.0, method="pz", iterations=1, theta=0.0, chebyshev_degree=3, residual_subdivisions=16)
     with pytest.raises(ValueError):
-        model.lpnorm(domain, p=2.0, method="pz", iterations=0, remez_degree=-1, residual_subdivisions=16)
+        model.lpnorm(domain, p=2.0, method="pz", iterations=0, chebyshev_degree=-1, residual_subdivisions=16)
     with pytest.raises(ValueError):
-        model.lpnorm(domain, p=2.0, method="pz", iterations=0, remez_degree=3, residual_subdivisions=0)
+        model.lpnorm(domain, p=2.0, method="pz", iterations=0, chebyshev_degree=3, residual_subdivisions=0)
     with pytest.raises(ValueError):
         model.lpnorm(domain, p=2.0, iterations=0, forward_refine_splits=0)
 
@@ -107,7 +107,7 @@ def test_pz_l2norm_contains_monte_carlo_estimate():
     model = _small_tanh_model(input_dim=2, hidden_dim=2, output_dim=1)
     domain = IntervalTensor.from_bounds([-1.0, -0.5], [1.0, 1.5])
 
-    bounds = model.lpnorm(domain, p=2.0, method="pz", iterations=1, remez_degree=3, residual_subdivisions=24)
+    bounds = model.lpnorm(domain, p=2.0, method="pz", iterations=1, chebyshev_degree=3, residual_subdivisions=24)
 
     sample_count = 2048
     with torch.no_grad():
@@ -125,8 +125,8 @@ def test_pz_w12_order_one_sobolev_behavior():
     model = _small_tanh_model()
     domain = IntervalTensor.from_bounds([-0.7], [0.9])
 
-    default_order = model.pz_sobolev_norm(domain, iterations=1, remez_degree=3, residual_subdivisions=16)
-    order_one = model.pz_sobolev_norm(domain, order=1, iterations=1, remez_degree=3, residual_subdivisions=16)
+    default_order = model.pz_sobolev_norm(domain, iterations=1, chebyshev_degree=3, residual_subdivisions=16)
+    order_one = model.pz_sobolev_norm(domain, order=1, iterations=1, chebyshev_degree=3, residual_subdivisions=16)
 
     assert order_one.lower <= default_order.upper
     assert default_order.lower <= order_one.upper
@@ -137,8 +137,8 @@ def test_pz_w22_order_two_sobolev_behavior():
     model = _small_tanh_model()
     domain = IntervalTensor.from_bounds([-0.7], [0.9])
 
-    w12 = model.pz_sobolev_norm(domain, order=1, iterations=1, remez_degree=3, residual_subdivisions=16)
-    w22 = model.pz_sobolev_norm(domain, order=2, iterations=1, remez_degree=3, residual_subdivisions=16)
+    w12 = model.pz_sobolev_norm(domain, order=1, iterations=1, chebyshev_degree=3, residual_subdivisions=16)
+    w22 = model.pz_sobolev_norm(domain, order=2, iterations=1, chebyshev_degree=3, residual_subdivisions=16)
 
     assert w22.lower >= w12.lower
     assert w22.upper >= w12.upper
@@ -175,7 +175,7 @@ def test_pz_output_keeps_only_non_domain_noise_after_integrating_network_integra
     enable_interval_eval()
     model = _small_tanh_model()
     cell = PZIntegrationCell.from_bounds([-0.5], [0.5])
-    jet = model.eval_pz_twojet(cell.domain, remez_degree=3, residual_subdivisions=16)
+    jet = model.eval_pz_twojet(cell.domain, chebyshev_degree=3, residual_subdivisions=16)
     integrand = pz_twojet_l2_integrand(jet)
 
     result = integrate_over_cell(integrand, cell, output="pz")

@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from math import inf, nextafter, tanh
 from typing import Any, Mapping, Sequence
+from warnings import warn
 
 from .interval import Interval
 
@@ -27,9 +28,7 @@ class TanhApproximation:
         delta: Certified non-negative residual satisfying
             ``tanh(x) - p(x) in [-delta, delta]`` for every ``x`` in the
             interval.
-        degree: Configured approximation degree.  This is intentionally named
-            and recorded as the Remez degree in metadata so a real Remez backend
-            can replace the current Chebyshev proposal without changing the API.
+        degree: Configured Chebyshev approximation degree.
         metadata: Certification/proposal details, including the proposal method
             and subdivision certificate settings.
     """
@@ -110,6 +109,7 @@ def compute_tanh_polynomial(
     interval: Interval | Sequence[float],
     degree: int | None = None,
     *,
+    chebyshev_degree: int | None = None,
     remez_degree: int | None = None,
     subdivisions: int = 64,
 ) -> TanhApproximation:
@@ -117,17 +117,32 @@ def compute_tanh_polynomial(
 
     The current first-pass proposal uses a Chebyshev least-squares/interpolatory
     fit converted to the power basis (a stable near-minimax-style starting
-    point, not a proof).  The public option is kept as ``remez_degree`` so this
-    function can later swap in a true Remez backend.  Regardless of how the
-    proposal is produced, the returned ``delta`` is always obtained from
+    point, not a proof).  The public option is ``chebyshev_degree`` to reflect
+    that implemented proposal method.  ``remez_degree`` is accepted only as a
+    temporary deprecated alias and, when used, is recorded in metadata as
+    ``legacy_remez_degree``.  Regardless of how the proposal is produced, the
+    returned ``delta`` is always obtained from
     ``certify_tanh_residual_subdivision``.
     """
 
-    if degree is None and remez_degree is None:
-        raise TypeError("Either degree or remez_degree must be supplied.")
-    if degree is not None and remez_degree is not None and int(degree) != int(remez_degree):
-        raise ValueError("degree and remez_degree must agree when both are supplied.")
-    configured_degree = int(remez_degree if remez_degree is not None else degree)
+    candidates = [
+        ("degree", degree),
+        ("chebyshev_degree", chebyshev_degree),
+        ("remez_degree", remez_degree),
+    ]
+    configured = [(name, int(value)) for name, value in candidates if value is not None]
+    if not configured:
+        raise TypeError("Either degree or chebyshev_degree must be supplied.")
+    if len({value for _, value in configured}) != 1:
+        raise ValueError("degree, chebyshev_degree, and remez_degree must agree when supplied together.")
+    configured_degree = configured[0][1]
+    used_legacy_remez = remez_degree is not None
+    if used_legacy_remez:
+        warn(
+            "remez_degree is deprecated; use chebyshev_degree because the implemented tanh proposal uses Chebyshev.fit.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     if configured_degree < 0:
         raise ValueError("degree must be non-negative.")
     lower, upper = _scalar_interval_bounds(interval)
@@ -156,18 +171,21 @@ def compute_tanh_polynomial(
             proposal = "chebyshev-fit-proposal"
 
     delta, cert_meta = certify_tanh_residual_subdivision((lower, upper), coeffs, subdivisions=subdivisions)
+    metadata = {
+        "chebyshev_degree": configured_degree,
+        "proposal": proposal,
+        "residual_certification": cert_meta,
+        "proof_note": "Numerical fit is not a proof; delta is certified by interval subdivision.",
+    }
+    if used_legacy_remez:
+        metadata["legacy_remez_degree"] = configured_degree
     return TanhApproximation(
         coeffs=tuple(float(c) for c in coeffs),
         lower=lower,
         upper=upper,
         delta=delta,
         degree=configured_degree,
-        metadata={
-            "remez_degree": configured_degree,
-            "proposal": proposal,
-            "residual_certification": cert_meta,
-            "proof_note": "Numerical fit is not a proof; delta is certified by interval subdivision.",
-        },
+        metadata=metadata,
     )
 
 
@@ -233,12 +251,19 @@ def _scalar_interval_from_enclosure(enclosure: Any) -> Interval:
     return Interval(float(lower), float(upper))
 
 
-def tanh_pz_scalar(Z_i: Any, remez_degree: int, residual_subdivisions: int):
+def tanh_pz_scalar(
+    Z_i: Any,
+    chebyshev_degree: int | None = None,
+    residual_subdivisions: int | None = None,
+    *,
+    remez_degree: int | None = None,
+):
     """Enclose ``tanh(Z_i)`` for a scalar polynomial zonotope.
 
     The returned zonotope is ``p_i(Z_i) + Delta_i * eta_i`` where ``p_i`` is a
     numerically proposed polynomial and ``Delta_i`` is certified by subdivision
-    interval arithmetic.
+    interval arithmetic.  ``remez_degree`` is accepted only as a temporary
+    deprecated alias for ``chebyshev_degree``.
     """
 
     from .polynomial_zonotope import PolynomialZonotope
@@ -247,6 +272,17 @@ def tanh_pz_scalar(Z_i: Any, remez_degree: int, residual_subdivisions: int):
         raise TypeError("Z_i must be a PolynomialZonotope.")
     if Z_i.shape != ():
         raise ValueError("tanh_pz_scalar expects a scalar polynomial zonotope.")
+    if chebyshev_degree is None and remez_degree is None:
+        raise TypeError("chebyshev_degree must be supplied.")
+    if chebyshev_degree is not None and remez_degree is not None and int(chebyshev_degree) != int(remez_degree):
+        raise ValueError("chebyshev_degree and remez_degree must agree when both are supplied.")
+    if residual_subdivisions is None:
+        raise TypeError("residual_subdivisions must be supplied.")
     interval = _scalar_interval_from_enclosure(Z_i.interval_enclosure())
-    approx = compute_tanh_polynomial(interval, remez_degree=remez_degree, subdivisions=residual_subdivisions)
+    approx = compute_tanh_polynomial(
+        interval,
+        chebyshev_degree=chebyshev_degree,
+        remez_degree=remez_degree,
+        subdivisions=residual_subdivisions,
+    )
     return Z_i.evaluate_polynomial(approx.coeffs).add_independent_error(approx.delta, kind="approximation_pointwise")
