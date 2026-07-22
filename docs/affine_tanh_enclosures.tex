@@ -1,0 +1,531 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=28mm]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{listings}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=blue!50!black,
+  urlcolor=blue!50!black
+}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{lemma}{Lemma}
+\newtheorem{remark}{Remark}
+\newtheorem{algorithm}{Algorithm}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{[-1,1]}
+\newcommand{\sech}{\operatorname{sech}}
+\newcommand{\artanh}{\operatorname{artanh}}
+\newcommand{\cand}{\mathcal{C}}
+\newcommand{\clamp}{\operatorname{clamp}}
+
+\lstdefinestyle{pseudo}{
+  basicstyle=\ttfamily\small,
+  columns=fullflexible,
+  frame=single,
+  rulecolor=\color{black!25},
+  backgroundcolor=\color{black!2},
+  xleftmargin=0.5em,
+  xrightmargin=0.5em,
+  aboveskip=0.8em,
+  belowskip=0.8em,
+  keepspaces=true,
+  showstringspaces=false
+}
+
+\title{Cheap Certified Affine Enclosures for \(\tanh\), \(\tanh'\), and \(\tanh''\)}
+\author{Implementation note for polynomial-zonotope two-jet propagation}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note gives a noniterative routine for enclosing the hyperbolic tangent activation and its first two derivatives on a real interval by an affine function plus one symmetric error term. On an interval where the function is convex or concave, the construction reduces to the affine Chebyshev representation of Rump and Kashiwagi. If the interval crosses one or more curvature breakpoints, the same secant slope is retained and the exact residual range for that slope is obtained by evaluating a fixed finite set of explicitly computable stationary candidates. No optimization, root iteration, or branch-and-bound step is required. The resulting enclosure is directly suitable for polynomial-zonotope propagation:
+\[
+  f(Z)\subseteq pZ+q+\Delta\varepsilon,
+  \qquad \varepsilon\in[-1,1].
+\]
+\end{abstract}
+
+\tableofcontents
+
+\section{Affine representations}
+
+Let \(X=[a,b]\subset\R\), with \(a<b\), and let \(f:X\to\R\). An affine representation of \(f\) on \(X\) is a triple
+\[
+  [[p,q,\Delta]],\qquad p,q\in\R,\quad \Delta\ge 0,
+\]
+such that
+\begin{equation}\label{eq:affrep}
+  |px+q-f(x)|\le \Delta
+  \qquad\text{for all }x\in X.
+\end{equation}
+Equivalently,
+\[
+  f(x)\in px+q+\Delta[-1,1]
+  \qquad (x\in X).
+\]
+This is the form used in affine arithmetic by Rump and Kashiwagi \cite{RumpKashiwagi2015}.
+
+If a scalar polynomial zonotope \(Z\) satisfies \(Z\subseteq X\), then \eqref{eq:affrep} immediately yields
+\begin{equation}\label{eq:pzprop}
+  f(Z)\subseteq pZ+q+\Delta\varepsilon_f,
+  \qquad \varepsilon_f\in[-1,1],
+\end{equation}
+where \(\varepsilon_f\) is a fresh independent noise symbol. The affine part preserves all existing polynomial dependencies and introduces no new products of noise symbols.
+
+\section{Rump--Kashiwagi formula on convex or concave intervals}
+
+Assume that \(f\) is twice differentiable and either convex or concave on \(X=[a,b]\). Define the secant slope
+\begin{equation}\label{eq:secantslope}
+  p=\frac{f(b)-f(a)}{b-a}.
+\end{equation}
+By the mean value theorem, there is at least one \(\xi\in(a,b)\) satisfying
+\begin{equation}\label{eq:xi}
+  f'(\xi)=p.
+\end{equation}
+Under strict convexity or strict concavity, this point is unique. Rump and Kashiwagi define
+\begin{equation}\label{eq:rkq}
+  q=\frac{f(a)+f(\xi)-p(a+\xi)}{2}
+\end{equation}
+and
+\begin{equation}\label{eq:rkdelta}
+  \Delta=
+  \frac{|f(\xi)-f(a)-p(\xi-a)|}{2}.
+\end{equation}
+Then \([[p,q,\Delta]]\) represents \(f\) on \(X\). Geometrically, the secant line and the parallel tangent line at \(\xi\) are the two extreme parallel supporting lines, and \(px+q\) is their midpoint.
+
+The strength of this construction is its cost: once \(\xi\) is available in closed form, only a fixed number of elementary operations and function evaluations is needed.
+
+\section{A unified finite-candidate extension}
+
+The same basic idea extends to intervals on which \(f\) changes curvature, without solving a minimax optimization problem.
+
+Choose the secant slope \(p\) from \eqref{eq:secantslope} and define the residual
+\begin{equation}\label{eq:residual}
+  r_p(x)=f(x)-px.
+\end{equation}
+Since
+\[
+  r_p(a)=f(a)-pa=f(b)-pb=r_p(b),
+\]
+the endpoint residuals agree. Every interior extremum of \(r_p\) satisfies
+\begin{equation}\label{eq:stationary}
+  r_p'(x)=f'(x)-p=0.
+\end{equation}
+Hence the exact range of \(r_p\) is obtained by evaluating it on the finite candidate set
+\begin{equation}\label{eq:candidates}
+  \cand_f(a,b;p)
+  =\{a,b\}\cup\{x\in(a,b):f'(x)=p\}.
+\end{equation}
+Set
+\begin{equation}\label{eq:rminmax}
+  r_{\min}=\min_{x\in\cand_f}r_p(x),
+  \qquad
+  r_{\max}=\max_{x\in\cand_f}r_p(x),
+\end{equation}
+and then
+\begin{equation}\label{eq:qdelta-general}
+  q=\frac{r_{\max}+r_{\min}}{2},
+  \qquad
+  \Delta=\frac{r_{\max}-r_{\min}}{2}.
+\end{equation}
+
+\begin{proposition}[Soundness and optimal vertical shift for the chosen slope]\label{prop:sound}
+For any continuously differentiable \(f:[a,b]\to\R\), the quantities defined by \eqref{eq:secantslope}--\eqref{eq:qdelta-general} satisfy
+\[
+  |f(x)-(px+q)|\le \Delta
+  \qquad\text{for all }x\in[a,b].
+\]
+For the fixed slope \(p\), the chosen \(q\) minimizes the uniform error, and \(\Delta\) is the exact smallest error radius for that slope.
+\end{proposition}
+
+\begin{proof}
+By compactness, \(r_p\) attains its minimum and maximum. Such extrema occur at an endpoint or at a stationary point, so \eqref{eq:rminmax} gives the exact residual range. Centering the interval \([r_{\min},r_{\max}]\) at its midpoint gives \eqref{eq:qdelta-general}. No other vertical shift can enclose this residual interval with a smaller symmetric radius.
+\end{proof}
+
+When \(f\) is convex or concave, the candidate set contains the endpoints and one relevant interior stationary point, and the construction reduces to the Rump--Kashiwagi formula. When curvature changes occur, there may be several stationary candidates, but their number is fixed and small for \(\tanh\), \(\tanh'\), and \(\tanh''\).
+
+\section{Hyperbolic tangent and curvature regions}
+
+Throughout, write
+\[
+  t=\tanh x.
+\]
+The first derivatives are
+\begin{align}
+  \tanh'(x)&=1-t^2,\label{eq:tanh1}\\
+  \tanh''(x)&=-2t(1-t^2)=-2t+2t^3,\label{eq:tanh2}\\
+  \tanh'''(x)&=-2(1-t^2)(1-3t^2),\label{eq:tanh3}\\
+  \tanh^{(4)}(x)&=8t(1-t^2)(2-3t^2).\label{eq:tanh4}
+\end{align}
+
+Define the positive curvature breakpoints
+\begin{equation}\label{eq:alphabeta}
+  \alpha=\artanh\!\left(\frac{1}{\sqrt{3}}\right)
+  \approx 0.6584789485,
+  \qquad
+  \beta=\artanh\!\left(\sqrt{\frac{2}{3}}\right)
+  \approx 1.1462158348.
+\end{equation}
+
+\begin{table}[ht]
+\centering
+\caption{Convexity and concavity regions. Endpoints may be assigned to either adjacent region.}
+\label{tab:curvature}
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.19\textwidth} p{0.34\textwidth} p{0.34\textwidth}}
+\toprule
+Function & Convex regions & Concave regions \\
+\midrule
+\(\tanh x\) & \(( -\infty,0]\) & \([0,\infty)\) \\
+\(\tanh' x\) & \(( -\infty,-\alpha]\cup[\alpha,\infty)\) & \([ -\alpha,\alpha]\) \\
+\(\tanh''x\) & \(( -\infty,-\beta]\cup[0,\beta]\) & \([ -\beta,0]\cup[\beta,\infty)\) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Thus the breakpoint sets relevant to a two-jet implementation are
+\[
+  B_0=\{0\},\qquad
+  B_1=\{-\alpha,\alpha\},\qquad
+  B_2=\{-\beta,0,\beta\}.
+\]
+These sets are useful for a fast dispatch test: if \([a,b]\) does not cross a breakpoint for the requested function, the ordinary convex/concave formula applies. The finite-candidate construction below is nevertheless valid in all cases and can be used as a unified implementation.
+
+\section{Closed-form candidates for \(\tanh\)}
+
+Let
+\[
+  f_0(x)=\tanh x,
+  \qquad A=\tanh a,
+  \qquad B=\tanh b,
+\]
+and choose
+\begin{equation}\label{eq:p0}
+  p=\frac{B-A}{b-a}.
+\end{equation}
+Because \(f_0'(x)=1-\tanh^2x\), the stationary equation \(f_0'(x)=p\) is
+\[
+  1-t^2=p.
+\]
+The only possible transformed stationary values are therefore
+\begin{equation}\label{eq:t0candidates}
+  t_\pm=\pm\sqrt{1-p}.
+\end{equation}
+Retain a value \(t_\pm\) only if
+\[
+  t_\pm\in[A,B]
+\]
+and \(|t_\pm|<1\), then set
+\[
+  x_\pm=\artanh(t_\pm).
+\]
+The candidate set contains at most four points:
+\begin{equation}\label{eq:C0}
+  \cand_0=\{a,b\}\cup\{x_+,x_-\text{ that lie in }(a,b)\}.
+\end{equation}
+Evaluate
+\[
+  r(x)=\tanh x-px
+\]
+on \(\cand_0\), then use \eqref{eq:qdelta-general}.
+
+\paragraph{Cost.}
+Two endpoint evaluations are already needed for the secant slope. The mixed-curvature case adds one square root, up to two inverse hyperbolic tangents, and at most two additional residual evaluations.
+
+\section{Closed-form candidates for \(\tanh'\)}
+
+Let
+\[
+  f_1(x)=\tanh'(x)=1-t^2
+\]
+and choose
+\begin{equation}\label{eq:p1}
+  p=\frac{f_1(b)-f_1(a)}{b-a}.
+\end{equation}
+The stationary equation \(f_1'(x)=p\) becomes
+\begin{equation}\label{eq:cubic}
+  -2t(1-t^2)=p,
+  \qquad\text{equivalently}\qquad
+  t^3-t-\frac{p}{2}=0.
+\end{equation}
+For a secant slope of \(f_1\), one has
+\[
+  |p|\le \max_x|f_1'(x)|=\frac{4}{3\sqrt{3}},
+\]
+so the cubic has three real roots, counted with multiplicity. They are
+\begin{equation}\label{eq:cubicroots}
+  t_k=\frac{2}{\sqrt{3}}
+  \cos\!\left(
+    \frac{1}{3}\arccos\!\left(\frac{3\sqrt{3}}{4}p\right)
+    -\frac{2\pi k}{3}
+  \right),
+  \qquad k=0,1,2.
+\end{equation}
+Due to rounding, the argument of \(\arccos\) should be clamped to \([-1,1]\) in floating-point code.
+
+Retain only roots satisfying
+\[
+  t_k\in[\tanh a,\tanh b]\cap(-1,1),
+\]
+remove numerical duplicates, and set
+\[
+  x_k=\artanh(t_k).
+\]
+The candidate set is
+\begin{equation}\label{eq:C1}
+  \cand_1=\{a,b\}\cup\{x_k\in(a,b):k=0,1,2\}.
+\end{equation}
+Evaluate
+\[
+  r(x)=\sech^2x-px=(1-\tanh^2x)-px
+\]
+on \(\cand_1\), then apply \eqref{eq:qdelta-general}.
+
+\paragraph{Cost.}
+The routine uses one \(\arccos\), three cosine evaluations, and at most three inverse hyperbolic tangents. This is fixed cost and requires no iterative cubic solver.
+
+\section{Closed-form candidates for \(\tanh''\)}
+
+Let
+\[
+  f_2(x)=\tanh''(x)=-2t+2t^3
+\]
+and choose
+\begin{equation}\label{eq:p2}
+  p=\frac{f_2(b)-f_2(a)}{b-a}.
+\end{equation}
+The stationary equation \(f_2'(x)=p\) is
+\[
+  -2+8t^2-6t^4=p.
+\]
+With \(u=t^2\), this becomes
+\begin{equation}\label{eq:quadraticu}
+  6u^2-8u+(p+2)=0.
+\end{equation}
+Hence
+\begin{equation}\label{eq:uroots}
+  u_\pm=\frac{2\pm\sqrt{1-\frac{3}{2}p}}{3}.
+\end{equation}
+For each \(u_\pm\), retain it only if \(0\le u_\pm<1\). It then produces the possible transformed candidates
+\begin{equation}\label{eq:t2candidates}
+  t=\pm\sqrt{u_\pm}.
+\end{equation}
+Retain only those \(t\)-values that lie in \([\tanh a,\tanh b]\), remove duplicates, and set
+\[
+  x=\artanh(t).
+\]
+The candidate set is
+\begin{equation}\label{eq:C2}
+  \cand_2=\{a,b\}\cup\{\text{retained interior candidates}\}.
+\end{equation}
+Evaluate
+\[
+  r(x)=(-2\tanh x+2\tanh^3x)-px
+\]
+on \(\cand_2\), then apply \eqref{eq:qdelta-general}.
+
+\paragraph{Cost.}
+At most one discriminant square root, four square roots, four inverse hyperbolic tangents, and four interior residual evaluations are required.
+
+\section{Unified algorithm}
+
+\begin{algorithm}[Noniterative affine enclosure]\label{alg:unified}
+Given a function selector \(j\in\{0,1,2\}\), representing \(f_0=\tanh\), \(f_1=\tanh'\), or \(f_2=\tanh''\), and a nondegenerate interval \([a,b]\):
+\begin{enumerate}[label=\arabic*.,leftmargin=2em]
+  \item Compute \(f_j(a)\), \(f_j(b)\), and
+  \[
+    p=\frac{f_j(b)-f_j(a)}{b-a}.
+  \]
+  \item Form the finite transformed candidate set using:
+  \begin{itemize}
+    \item \eqref{eq:t0candidates} for \(j=0\),
+    \item \eqref{eq:cubicroots} for \(j=1\),
+    \item \eqref{eq:uroots}--\eqref{eq:t2candidates} for \(j=2\).
+  \end{itemize}
+  \item Filter candidates to \([\tanh a,\tanh b]\cap(-1,1)\), convert them by \(x=\artanh(t)\), retain only interior points, and append the endpoints \(a,b\).
+  \item Evaluate \(r(x)=f_j(x)-px\) at all retained candidates.
+  \item Set
+  \[
+    q=\frac{\max r+\min r}{2},
+    \qquad
+    \Delta=\frac{\max r-\min r}{2}.
+  \]
+  \item Return \([[p,q,\Delta]]\), with outward rounding or a final floating-point safety inflation if a mathematically rigorous machine enclosure is required.
+\end{enumerate}
+\end{algorithm}
+
+\subsection{Pseudocode}
+
+\begin{lstlisting}[style=pseudo]
+function affine_tanh_jet_enclosure(j, a, b):
+    # j = 0: tanh, j = 1: tanh', j = 2: tanh''
+    assert a <= b
+
+    if a == b:
+        return p = 0, q = f_j(a), Delta = 0
+
+    ta = tanh(a)
+    tb = tanh(b)
+    fa = value_from_t(j, ta)
+    fb = value_from_t(j, tb)
+    p  = (fb - fa) / (b - a)
+
+    T = empty list
+
+    if j == 0:
+        d = max(0, 1 - p)              # outward-safe in certified code
+        s = sqrt(d)
+        append_if_in_interval(T, +s, ta, tb)
+        append_if_in_interval(T, -s, ta, tb)
+
+    else if j == 1:
+        z = clamp((3*sqrt(3)/4)*p, -1, 1)
+        theta = acos(z) / 3
+        for k in {0,1,2}:
+            t = (2/sqrt(3))*cos(theta - 2*pi*k/3)
+            append_if_in_interval(T, t, ta, tb)
+
+    else if j == 2:
+        d = max(0, 1 - (3/2)*p)
+        s = sqrt(d)
+        for u in {(2+s)/3, (2-s)/3}:
+            if 0 <= u < 1:
+                v = sqrt(u)
+                append_if_in_interval(T, +v, ta, tb)
+                append_if_in_interval(T, -v, ta, tb)
+
+    remove_duplicates(T)
+
+    R = [fa - p*a, fb - p*b]
+    for t in T:
+        if -1 < t < 1:
+            x = atanh(t)
+            if a < x < b:
+                append(R, value_from_t(j, t) - p*x)
+
+    rmin = min(R)
+    rmax = max(R)
+    q = (rmax + rmin) / 2
+    Delta = (rmax - rmin) / 2
+
+    return p, q, Delta
+
+function value_from_t(j, t):
+    if j == 0: return t
+    if j == 1: return 1 - t*t
+    if j == 2: return -2*t + 2*t*t*t
+\end{lstlisting}
+
+\section{Numerical rigor and implementation details}
+
+The mathematics above assumes exact real arithmetic. A certified implementation must also account for roundoff. The following points are recommended.
+
+\begin{enumerate}[leftmargin=2em]
+  \item \textbf{Outward rounding.} Compute \(p\), all candidate values, residual values, and the final \(q,\Delta\) using directed rounding or interval elementary functions. Alternatively, compute in ordinary floating point and inflate \(\Delta\) by a rigorously derived rounding-error bound.
+
+  \item \textbf{Candidate filtering.} Near a stationary point or curvature breakpoint, use tolerant or interval membership tests. It is safe to retain an extra candidate; omitting a genuine candidate is not safe.
+
+  \item \textbf{Clamping.} Clamp the trigonometric cubic argument to \([-1,1]\) before calling \(\arccos\). In interval code, intersect its enclosure with \([-1,1]\).
+
+  \item \textbf{Duplicate roots.} At discriminant-zero cases, formulas may return duplicate roots. Removing duplicates is only a performance optimization.
+
+  \item \textbf{Endpoint equality.} Analytically, \(r_p(a)=r_p(b)\). In floating point, evaluate both and include both in the minimum and maximum.
+
+  \item \textbf{Degenerate input.} If \(a=b\), one may return \(p=0\), \(q=f(a)\), and \(\Delta=0\). If preserving the local linear part is desirable, another valid choice is \(p=f'(a)\), \(q=f(a)-pa\), \(\Delta=0\).
+
+  \item \textbf{Vectorization.} The formulas are branch-light and can be evaluated in batches across neurons. A curvature-region dispatch may avoid computing unnecessary candidates, but a unified finite-candidate routine is simpler and still constant-cost.
+\end{enumerate}
+
+\section{Use in polynomial-zonotope two-jet propagation}
+
+Suppose a scalar preactivation polynomial zonotope \(Z\) is enclosed by \([a,b]\). For each of
+\[
+  f_0=\tanh,\qquad f_1=\tanh',\qquad f_2=\tanh'',
+\]
+compute a triple \([[p_j,q_j,\Delta_j]]\). Then
+\begin{align}
+  \tanh(Z)&\subseteq p_0Z+q_0+\Delta_0\varepsilon_0,\\
+  \tanh'(Z)&\subseteq p_1Z+q_1+\Delta_1\varepsilon_1,\\
+  \tanh''(Z)&\subseteq p_2Z+q_2+\Delta_2\varepsilon_2,
+\end{align}
+with fresh \(\varepsilon_j\in[-1,1]\).
+
+These componentwise enclosures are sound and cheap. However, independent error symbols do not encode the fact that the three quantities arise from one common argument and satisfy algebraic relations such as
+\[
+  \tanh'(x)=1-\tanh^2x,
+  \qquad
+  \tanh''(x)=-2\tanh x+2\tanh^3x.
+\]
+A later implementation may exploit such cross-dependence, but this is not required for correctness of the componentwise two-jet enclosure.
+
+\section{Recommended dispatch rule}
+
+For each neuron and each partition cell:
+\begin{enumerate}[leftmargin=2em]
+  \item Enclose the scalar preactivation polynomial zonotope by \([a,b]\).
+  \item Check whether \([a,b]\) lies inside a single curvature region from Table~\ref{tab:curvature}.
+  \item If it does, use the Rump--Kashiwagi formula with the unique closed-form stationary point.
+  \item If it crosses a curvature breakpoint, retain the same secant slope and evaluate the full fixed candidate set described above.
+  \item Propagate the affine part exactly through the polynomial-zonotope representation and add one fresh error generator of radius \(\Delta\).
+  \item Optionally use \(\Delta\), or its contribution after subsequent linear layers, as a refinement score for adaptive partitioning.
+\end{enumerate}
+
+The key design property is that both branches have bounded, explicit cost. No iterative approximation routine is called per neuron or per cell.
+
+\section{Summary of formulas}
+
+\begin{table}[ht]
+\centering
+\caption{Stationary candidates for the secant-slope residual. Here \(t=\tanh x\).}
+\renewcommand{\arraystretch}{1.35}
+\begin{tabular}{p{0.16\textwidth} p{0.31\textwidth} p{0.42\textwidth}}
+\toprule
+\(f(x)\) & Stationary equation \(f'(x)=p\) & Explicit transformed candidates \\
+\midrule
+\(\tanh x\)
+& \(1-t^2=p\)
+& \(t=\pm\sqrt{1-p}\) \\
+\(\tanh' x\)
+& \(t^3-t-p/2=0\)
+& \(t_k=\frac{2}{\sqrt3}\cos\!\bigl(\frac13\arccos(\frac{3\sqrt3}{4}p)-\frac{2\pi k}{3}\bigr)\), \(k=0,1,2\) \\
+\(\tanh''x\)
+& \(6t^4-8t^2+(p+2)=0\)
+& \(u_\pm=\frac{2\pm\sqrt{1-\frac32p}}{3}\), then \(t=\pm\sqrt{u_\pm}\) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For every row, retain only transformed candidates in \([\tanh a,\tanh b]\cap(-1,1)\), convert by \(x=\artanh(t)\), evaluate \(r(x)=f(x)-px\), and center its exact finite range according to \eqref{eq:qdelta-general}.
+
+\begin{thebibliography}{9}
+
+\bibitem{RumpKashiwagi2015}
+S.~M. Rump and M.~Kashiwagi,
+\newblock Implementation and improvements of affine arithmetic,
+\newblock \emph{Nonlinear Theory and Its Applications, IEICE}, 2(3):1101--1119, 2011.
+\newblock See especially Lemma~1 for the Min-Range and Chebyshev representations.
+
+\bibitem{MooreKearfottCloud2009}
+R.~E. Moore, R.~B. Kearfott, and M.~J. Cloud,
+\newblock \emph{Introduction to Interval Analysis},
+\newblock SIAM, 2009.
+
+\end{thebibliography}
+
+\end{document}
