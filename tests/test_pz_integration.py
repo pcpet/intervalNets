@@ -1,8 +1,19 @@
 import pytest
 
 from intervalnets import PolynomialZonotope
-from intervalnets.pz_integration import IntegratedPZResult, PZIntegrationCell, integrate_over_cell, integrate_pz_over_domain
-from intervalnets.pz_tanh import tanh_pz_scalar
+from intervalnets.pz_integration import (
+    IntegratedPZResult,
+    POINTWISE_RESIDUAL_KINDS,
+    PZIntegrationCell,
+    integrate_over_cell,
+    integrate_pz_over_domain,
+)
+from intervalnets.pz_tanh import (
+    affine_tanh_double_prime_enclosure,
+    affine_tanh_enclosure,
+    affine_tanh_prime_enclosure,
+    tanh_pz_scalar,
+)
 
 try:
     import torch
@@ -73,6 +84,36 @@ def test_tanh_pz_scalar_marks_default_residual_as_pointwise():
 
     assert out.noise_kinds[-1] == "approximation_pointwise"
 
+
+def test_affine_tanh_residuals_integrate_as_pointwise_interval_radius():
+    from intervalnets.pytorch import _affine_enclosure_pz
+
+    cell = PZIntegrationCell.from_bounds((-1.0,), (1.0,))
+    x = cell.domain[0]
+    helpers = (
+        affine_tanh_enclosure,
+        affine_tanh_prime_enclosure,
+        affine_tanh_double_prime_enclosure,
+    )
+
+    for helper in helpers:
+        enclosure = helper((-1.0, 1.0))
+        residual = _affine_enclosure_pz(
+            x, slope=enclosure.p, intercept=enclosure.q, radius=enclosure.delta
+        ) - (enclosure.p * x + enclosure.q)
+
+        assert residual.noise_kinds[-1] in POINTWISE_RESIDUAL_KINDS
+
+        result = integrate_over_cell(x * residual, cell, output="interval")
+
+        # If the residual noise were treated as an ordinary symbolic monomial,
+        # the odd domain factor would integrate to zero. Pointwise residual
+        # handling instead accumulates it as interval radius.
+        assert result.lower < 0.0
+        assert result.upper > 0.0
+        assert max(abs(float(result.lower)), abs(float(result.upper))) == pytest.approx(
+            2.0 * enclosure.delta
+        )
 
 def test_affine_cell_integrates_one_dimensional_polynomial_exactly():
     cell = PZIntegrationCell.from_bounds((1.0,), (3.0,))
