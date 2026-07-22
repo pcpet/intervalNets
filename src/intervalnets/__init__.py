@@ -2,7 +2,16 @@
 
 from .interval import Interval
 from .polynomial_zonotope import PZTwoJet, PolynomialZonotope
-from .pz_tanh import TanhApproximation, compute_tanh_polynomial, certify_tanh_residual_subdivision, tanh_pz_scalar
+from .pz_tanh import (
+    AffineTanhEnclosure,
+    TanhApproximation,
+    affine_tanh_double_prime_enclosure,
+    affine_tanh_enclosure,
+    affine_tanh_prime_enclosure,
+    certify_tanh_residual_subdivision,
+    compute_tanh_polynomial,
+    tanh_pz_scalar,
+)
 from .pz_integration import (
     IntegratedPZResult,
     PZIntegrationCell,
@@ -27,7 +36,11 @@ __all__ = [
     "Interval",
     "PolynomialZonotope",
     "PZTwoJet",
+    "AffineTanhEnclosure",
     "TanhApproximation",
+    "affine_tanh_double_prime_enclosure",
+    "affine_tanh_enclosure",
+    "affine_tanh_prime_enclosure",
     "compute_tanh_polynomial",
     "certify_tanh_residual_subdivision",
     "tanh_pz_scalar",
