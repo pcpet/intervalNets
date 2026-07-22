@@ -191,9 +191,14 @@ def test_pz_twojet_tanh_forward_preserves_shapes_and_encloses_autograd_samples()
     assert out.Y.shape == (2,)
     assert out.J.shape == (2, 2)
     assert out.H.shape == (2, 2, 2)
-    assert out.Y.num_noise == X.num_noise + 2
+    # Each scalar tanh two-jet component introduces three fresh pointwise
+    # residual variables: one each for tanh, tanh', and tanh''.
+    assert out.Y.num_noise == X.num_noise + 3 * 2
     assert out.J.num_noise == out.Y.num_noise
     assert out.H.num_noise == out.Y.num_noise
+    assert out.Y.noise_kinds.count("approximation_pointwise") == 6
+    assert out.J.noise_kinds.count("approximation_pointwise") == 6
+    assert out.H.noise_kinds.count("approximation_pointwise") == 6
 
     y_lo, y_hi = out.Y.interval_enclosure().to_torch(dtype=torch.float64)
     j_lo, j_hi = out.J.interval_enclosure().to_torch(dtype=torch.float64)

@@ -6,7 +6,11 @@ from typing import Any
 
 from .interval import Interval
 from .polynomial_zonotope import PZTwoJet, PolynomialZonotope
-from .pz_tanh import tanh_pz_scalar
+from .pz_tanh import (
+    affine_tanh_double_prime_enclosure,
+    affine_tanh_enclosure,
+    affine_tanh_prime_enclosure,
+)
 from .pz_integration import PZIntegrationCell, pz_l2norm_bounds, pz_sobolev_norm_bounds
 from .pz_norms import pz_twojet_l2_norm, pz_twojet_w12_norm, pz_twojet_w22_norm
 
@@ -304,15 +308,43 @@ def _pz_twojet_linear_forward(layer: nn.Linear, jet: PZTwoJet) -> PZTwoJet:
     )
 
 
+def _pz_scalar_interval(zonotope: PolynomialZonotope) -> Interval:
+    """Return the scalar interval enclosure of a scalar polynomial zonotope."""
+
+    enclosure = zonotope.interval_enclosure()
+    lower = enclosure.lower
+    upper = enclosure.upper
+    if torch is not None and isinstance(lower, torch.Tensor):
+        if lower.numel() != 1 or upper.numel() != 1:
+            raise ValueError("Expected a scalar polynomial-zonotope interval enclosure.")
+        return Interval(float(lower.reshape(()).item()), float(upper.reshape(()).item()))
+    if isinstance(lower, tuple) or isinstance(upper, tuple):
+        raise ValueError("Expected a scalar polynomial-zonotope interval enclosure.")
+    return Interval(float(lower), float(upper))
+
+
+def _affine_enclosure_pz(
+    Z_i: PolynomialZonotope,
+    *,
+    slope: float,
+    intercept: float,
+    radius: float,
+) -> PolynomialZonotope:
+    """Build ``slope * Z_i + intercept + radius * eta`` with pointwise eta."""
+
+    return (slope * Z_i + intercept).add_independent_error(
+        radius, kind="approximation_pointwise"
+    )
+
+
 def _pz_twojet_tanh_forward(jet: PZTwoJet, chebyshev_degree: int, residual_subdivisions: int) -> PZTwoJet:
     """Propagate a polynomial-zonotope two-jet through componentwise ``tanh``.
 
-    For each scalar preactivation ``Z_i``, this constructs the certified
-    enclosure ``S_i = p_i(Z_i) + Delta_i eta_i`` with ``tanh_pz_scalar`` and
-    derives first- and second-derivative enclosures from that same ``S_i`` via
-    ``1 - S_i**2`` and ``-2*S_i + 2*S_i**3``. Polynomial products are preserved
-    by the core ``PolynomialZonotope`` arithmetic; no implicit interval
-    re-enclosure or dependency-erasing reduction is performed here.
+    For each scalar preactivation ``Z_i``, compute its interval enclosure and
+    use certified affine-plus-pointwise-residual enclosures for ``tanh``,
+    ``tanh'``, and ``tanh''``. The resulting scalar enclosures are propagated
+    by the componentwise two-jet chain rule without silently replacing existing
+    polynomial dependencies by intervals.
     """
 
     _require_torch()
@@ -328,24 +360,48 @@ def _pz_twojet_tanh_forward(jet: PZTwoJet, chebyshev_degree: int, residual_subdi
     h_items: list[PolynomialZonotope] = []
 
     current_noise = jet.Y.num_noise
+    current_noise_kinds = jet.Y.noise_kinds
     for i in range(components):
         Z_i = jet.Y if jet.Y.shape == () else jet.Y[i]
-        Z_i = Z_i.with_num_noise(current_noise)
-        S_i = tanh_pz_scalar(Z_i, chebyshev_degree=chebyshev_degree, residual_subdivisions=residual_subdivisions)
-        current_noise = S_i.num_noise
+        Z_i = Z_i.with_num_noise(current_noise).with_noise_kinds(current_noise_kinds)
+        interval_i = _pz_scalar_interval(Z_i)
 
-        one = PolynomialZonotope.constant(1.0, num_noise=current_noise)
-        S1_i = one - S_i * S_i
-        S2_i = (-2.0 * S_i) + (2.0 * S_i * S_i * S_i)
+        tanh_i = affine_tanh_enclosure(interval_i)
+        tanh_prime_i = affine_tanh_prime_enclosure(interval_i)
+        tanh_double_prime_i = affine_tanh_double_prime_enclosure(interval_i)
+
+        Y_i = _affine_enclosure_pz(
+            Z_i, slope=tanh_i.p, intercept=tanh_i.q, radius=tanh_i.delta
+        )
+        current_noise = Y_i.num_noise
+        current_noise_kinds = Y_i.noise_kinds
+
+        D1_i = _affine_enclosure_pz(
+            Z_i.with_num_noise(current_noise).with_noise_kinds(current_noise_kinds),
+            slope=tanh_prime_i.p,
+            intercept=tanh_prime_i.q,
+            radius=tanh_prime_i.delta,
+        )
+        current_noise = D1_i.num_noise
+        current_noise_kinds = D1_i.noise_kinds
+
+        D2_i = _affine_enclosure_pz(
+            Z_i.with_num_noise(current_noise).with_noise_kinds(current_noise_kinds),
+            slope=tanh_double_prime_i.p,
+            intercept=tanh_double_prime_i.q,
+            radius=tanh_double_prime_i.delta,
+        )
+        current_noise = D2_i.num_noise
+        current_noise_kinds = D2_i.noise_kinds
 
         J_i = jet.J if components == 1 and jet.J.shape[:1] != (components,) else jet.J[i, :]
         H_i = jet.H if components == 1 and jet.H.shape[:1] != (components,) else jet.H[i, :, :]
-        J_i = J_i.with_num_noise(current_noise)
-        H_i = H_i.with_num_noise(current_noise)
+        J_i = J_i.with_num_noise(current_noise).with_noise_kinds(current_noise_kinds)
+        H_i = H_i.with_num_noise(current_noise).with_noise_kinds(current_noise_kinds)
 
-        y_items.append(S_i)
-        j_items.append(S1_i * J_i)
-        h_items.append(S2_i * J_i.tensor_product(J_i) + S1_i * H_i)
+        y_items.append(Y_i.with_num_noise(current_noise).with_noise_kinds(current_noise_kinds))
+        j_items.append(D1_i * J_i)
+        h_items.append(D2_i * J_i.tensor_product(J_i) + D1_i * H_i)
 
     if jet.Y.shape == ():
         return PZTwoJet(Y=y_items[0], J=j_items[0], H=h_items[0])
