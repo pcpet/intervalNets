@@ -250,13 +250,13 @@ def _require_l2_output(output: str) -> None:
         raise ValueError("output must be either 'interval' or 'pz'.")
 
 
-def _require_adaptive_parameters(iterations: int, theta: float, remez_degree: int, residual_subdivisions: int) -> None:
+def _require_adaptive_parameters(iterations: int, theta: float, chebyshev_degree: int, residual_subdivisions: int) -> None:
     if iterations < 0:
         raise ValueError("iterations must be non-negative.")
     if not isfinite(float(theta)) or float(theta) <= 0.0 or float(theta) > 1.0:
         raise ValueError("theta must be a finite real number in the interval (0, 1].")
-    if remez_degree < 0:
-        raise ValueError("remez_degree must be non-negative.")
+    if chebyshev_degree < 0:
+        raise ValueError("chebyshev_degree must be non-negative.")
     if residual_subdivisions < 1:
         raise ValueError("residual_subdivisions must be positive.")
 
@@ -336,12 +336,12 @@ def _choose_split_dim_from_jacobian(box: "IntervalTensor", jacobian: Interval | 
     return max(range(len(widths)), key=lambda idx: widths[idx])
 
 
-def _eval_pz_twojet(model, domain: PolynomialZonotope, *, remez_degree: int, residual_subdivisions: int):
+def _eval_pz_twojet(model, domain: PolynomialZonotope, *, chebyshev_degree: int, residual_subdivisions: int):
     if hasattr(model, "eval_pz_twojet"):
-        return model.eval_pz_twojet(domain, remez_degree=remez_degree, residual_subdivisions=residual_subdivisions)
+        return model.eval_pz_twojet(domain, chebyshev_degree=chebyshev_degree, residual_subdivisions=residual_subdivisions)
     from .pytorch import pz_twojet_forward
 
-    return pz_twojet_forward(model, domain, remez_degree=remez_degree, residual_subdivisions=residual_subdivisions)
+    return pz_twojet_forward(model, domain, chebyshev_degree=chebyshev_degree, residual_subdivisions=residual_subdivisions)
 
 
 def _integrated_squared_contribution(
@@ -349,7 +349,7 @@ def _integrated_squared_contribution(
     box: "IntervalTensor",
     *,
     integrand_kind: Literal["l2", "w12", "w22"],
-    remez_degree: int,
+    chebyshev_degree: int,
     residual_subdivisions: int,
 ) -> tuple[Interval, Interval | None]:
     from .pz_norms import pz_twojet_l2_integrand, pz_twojet_w12_integrand, pz_twojet_w22_integrand
@@ -358,7 +358,7 @@ def _integrated_squared_contribution(
     jet = _eval_pz_twojet(
         model,
         cell.domain,
-        remez_degree=remez_degree,
+        chebyshev_degree=chebyshev_degree,
         residual_subdivisions=residual_subdivisions,
     )
     if integrand_kind == "l2":
@@ -377,7 +377,7 @@ def _pz_adaptive_squared_integral(
     integrand_kind: Literal["l2", "w12", "w22"],
     iterations: int,
     theta: float,
-    remez_degree: int,
+    chebyshev_degree: int,
     residual_subdivisions: int,
 ) -> Interval:
     boxes = [domain]
@@ -389,7 +389,7 @@ def _pz_adaptive_squared_integral(
                 model,
                 box,
                 integrand_kind=integrand_kind,
-                remez_degree=remez_degree,
+                chebyshev_degree=chebyshev_degree,
                 residual_subdivisions=residual_subdivisions,
             )
             indicators.append(_interval_width(contribution))
@@ -409,7 +409,7 @@ def _pz_adaptive_squared_integral(
             model,
             box,
             integrand_kind=integrand_kind,
-            remez_degree=remez_degree,
+            chebyshev_degree=chebyshev_degree,
             residual_subdivisions=residual_subdivisions,
         )
         integral = _interval_add(integral, contribution)
@@ -421,7 +421,7 @@ def pz_l2norm_bounds(
     domain: "IntervalTensor",
     iterations: int = 0,
     theta: float = 0.5,
-    remez_degree: int = 5,
+    chebyshev_degree: int = 5,
     residual_subdivisions: int = 128,
     output: IntegrationOutput = "interval",
 ) -> Interval:
@@ -429,14 +429,14 @@ def pz_l2norm_bounds(
 
     _require_interval_tensor_domain(domain)
     _require_l2_output(output)
-    _require_adaptive_parameters(iterations, theta, remez_degree, residual_subdivisions)
+    _require_adaptive_parameters(iterations, theta, chebyshev_degree, residual_subdivisions)
     squared = _pz_adaptive_squared_integral(
         model,
         domain,
         integrand_kind="l2",
         iterations=iterations,
         theta=theta,
-        remez_degree=remez_degree,
+        chebyshev_degree=chebyshev_degree,
         residual_subdivisions=residual_subdivisions,
     )
     return _sqrt_interval_nonnegative(squared)
@@ -448,7 +448,7 @@ def pz_sobolev_norm_bounds(
     order: Literal[1, 2] = 1,
     iterations: int = 0,
     theta: float = 0.5,
-    remez_degree: int = 5,
+    chebyshev_degree: int = 5,
     residual_subdivisions: int = 128,
     output: IntegrationOutput = "interval",
 ) -> Interval:
@@ -456,7 +456,7 @@ def pz_sobolev_norm_bounds(
 
     _require_interval_tensor_domain(domain)
     _require_l2_output(output)
-    _require_adaptive_parameters(iterations, theta, remez_degree, residual_subdivisions)
+    _require_adaptive_parameters(iterations, theta, chebyshev_degree, residual_subdivisions)
     if order not in {1, 2}:
         raise ValueError("order must be either 1 or 2.")
     squared = _pz_adaptive_squared_integral(
@@ -465,7 +465,7 @@ def pz_sobolev_norm_bounds(
         integrand_kind="w12" if order == 1 else "w22",
         iterations=iterations,
         theta=theta,
-        remez_degree=remez_degree,
+        chebyshev_degree=chebyshev_degree,
         residual_subdivisions=residual_subdivisions,
     )
     return _sqrt_interval_nonnegative(squared)

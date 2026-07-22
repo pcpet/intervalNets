@@ -85,9 +85,9 @@ After this, every `torch.nn.Module` gets:
     - `order=2`: `|f|^p + |Df|^p + |D^2 f|^p`.
 - `model.sobolev_norm(..., method="pz")`
   - Uses the polynomial-zonotope two-jet backend while preserving the existing interval backend as the default.
-- `model.pz_l2norm(domain: IntervalTensor, p: float = 2.0, iterations: int = 0, theta: float = 0.5, remez_degree: int = 5, residual_subdivisions: int = 128, output: str = "interval")`
+- `model.pz_l2norm(domain: IntervalTensor, p: float = 2.0, iterations: int = 0, theta: float = 0.5, chebyshev_degree: int = 5, residual_subdivisions: int = 128, output: str = "interval")`
   - Convenience alias for the PZ two-jet `L^2` norm backend.
-- `model.pz_sobolev_norm(domain: IntervalTensor, p: float = 2.0, order: int = 1, iterations: int = 0, theta: float = 0.5, remez_degree: int = 5, residual_subdivisions: int = 128, output: str = "interval")`
+- `model.pz_sobolev_norm(domain: IntervalTensor, p: float = 2.0, order: int = 1, iterations: int = 0, theta: float = 0.5, chebyshev_degree: int = 5, residual_subdivisions: int = 128, output: str = "interval")`
   - Convenience alias for the PZ two-jet `W^{1,2}` or `W^{2,2}` norm backend.
 
 > Note: these methods are attached by monkey-patching `torch.nn.Module`. If patching is not desired in your application architecture, call `interval_forward(...)` directly for pure forward enclosure and avoid the norm/Jacobian helpers.

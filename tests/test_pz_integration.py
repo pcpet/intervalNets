@@ -69,7 +69,7 @@ def test_symbolic_mode_keeps_residual_symbol_and_integrates_by_moments_only_when
 def test_tanh_pz_scalar_marks_default_residual_as_pointwise():
     z = PolynomialZonotope(torch.tensor(0.1, dtype=torch.float64), {(1,): torch.tensor(0.05, dtype=torch.float64)}, num_noise=1, noise_kinds=("domain",))
 
-    out = tanh_pz_scalar(z, remez_degree=3, residual_subdivisions=16)
+    out = tanh_pz_scalar(z, chebyshev_degree=3, residual_subdivisions=16)
 
     assert out.noise_kinds[-1] == "approximation_pointwise"
 
@@ -207,7 +207,7 @@ def test_pz_tanh_w22_norm_contains_dense_autograd_quadrature():
         model[0].bias.fill_(0.1)
     domain = IntervalTensor.from_bounds([-0.5], [0.5])
 
-    bounds = model.pz_sobolev_norm(domain, order=2, remez_degree=5, residual_subdivisions=96)
+    bounds = model.pz_sobolev_norm(domain, order=2, chebyshev_degree=5, residual_subdivisions=96)
     xs = torch.linspace(-0.5, 0.5, steps=401, dtype=torch.float64)
     values = []
     for x_value in xs:

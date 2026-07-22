@@ -166,7 +166,7 @@ def test_tanh_pz_scalar_adds_certified_fresh_noise_and_encloses_samples():
     from intervalnets.pz_tanh import tanh_pz_scalar
 
     z = PolynomialZonotope.from_box(torch.tensor(-0.5, dtype=torch.float64), torch.tensor(0.75, dtype=torch.float64))
-    out = tanh_pz_scalar(z, remez_degree=5, residual_subdivisions=64)
+    out = tanh_pz_scalar(z, chebyshev_degree=5, residual_subdivisions=64)
     assert out.shape == ()
     assert out.num_noise == z.num_noise + 1
     assert any(exp[-1] == 1 for exp in out.terms)
@@ -186,7 +186,7 @@ def test_pz_twojet_tanh_forward_preserves_shapes_and_encloses_autograd_samples()
     X = PolynomialZonotope.from_box(lower, upper)
     jet = PZTwoJet.from_input(X, input_dim=2)
 
-    out = _pz_twojet_tanh_forward(jet, remez_degree=5, residual_subdivisions=64)
+    out = _pz_twojet_tanh_forward(jet, chebyshev_degree=5, residual_subdivisions=64)
 
     assert out.Y.shape == (2,)
     assert out.J.shape == (2, 2)
@@ -240,7 +240,7 @@ def test_tanh_residual_noise_is_appended_and_labeled_after_domain_noise():
     from intervalnets.pz_tanh import tanh_pz_scalar
 
     z = PolynomialZonotope.from_box(torch.tensor(-0.5, dtype=torch.float64), torch.tensor(0.75, dtype=torch.float64))
-    out = tanh_pz_scalar(z, remez_degree=5, residual_subdivisions=64)
+    out = tanh_pz_scalar(z, chebyshev_degree=5, residual_subdivisions=64)
 
     assert z.noise_kinds == ("domain",)
     assert out.noise_kinds == ("domain", "approximation_pointwise")

@@ -536,7 +536,7 @@ The main user-facing method should accept:
 \subsection{Pseudocode}
 
 \begin{verbatim}
-def eval_pz_twojet(model, X, remez_degree, options):
+def eval_pz_twojet(model, X, chebyshev_degree, options):
     # X is a PolynomialZonotope with shape (d_in,)
     d_in = X.shape[0]
 
@@ -553,7 +553,7 @@ def eval_pz_twojet(model, X, remez_degree, options):
 
         elif isinstance(layer, nn.Tanh):
             jet = pz_twojet_tanh(layer, jet,
-                                  remez_degree=remez_degree,
+                                  chebyshev_degree=chebyshev_degree,
                                   options=options)
 
         else:
@@ -571,7 +571,7 @@ def eval_pz_twojet(model, X, remez_degree, options):
 \subsection{Tanh layer pseudocode}
 
 \begin{verbatim}
-def pz_twojet_tanh(layer, jet, remez_degree, options):
+def pz_twojet_tanh(layer, jet, chebyshev_degree, options):
     Z = jet.Y
     Jz = jet.J
     Hz = jet.H
@@ -587,7 +587,7 @@ def pz_twojet_tanh(layer, jet, remez_degree, options):
 
         Ii = Zi.interval_enclosure(outward=True)
 
-        p_i = compute_remez_tanh(Ii, degree=remez_degree)
+        p_i = compute_chebyshev_tanh(Ii, degree=chebyshev_degree)
         Delta_i = certify_tanh_residual(Ii, p_i, options)
 
         eta_i = new_noise_symbol()
@@ -778,7 +778,7 @@ from intervalnets import PolynomialZonotope, enable_pz_jet_eval
 enable_pz_jet_eval()
 
 X = PolynomialZonotope.from_generators(center, generators, exponents)
-jet = model.eval_pz_twojet(X, remez_degree=5)
+jet = model.eval_pz_twojet(X, chebyshev_degree=5)
 
 Y = jet.Y
 J = jet.J
