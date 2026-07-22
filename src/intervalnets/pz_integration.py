@@ -344,15 +344,46 @@ def _eval_pz_twojet(model, domain: PolynomialZonotope, *, chebyshev_degree: int,
     return pz_twojet_forward(model, domain, chebyshev_degree=chebyshev_degree, residual_subdivisions=residual_subdivisions)
 
 
-def _integrated_squared_contribution(
+@dataclass(frozen=True)
+class _CachedSquaredContribution:
+    """Cached adaptive-quadrature data for one active PZ integration cell."""
+
+    box: "IntervalTensor"
+    contribution: Interval
+    jacobian: Any
+    split_dim: int
+
+
+def _squared_twojet_integrand(jet: Any, integrand_kind: Literal["l2", "w12", "w22"]) -> PolynomialZonotope:
+    from .pz_norms import pz_twojet_l2_integrand, pz_twojet_w12_integrand, pz_twojet_w22_integrand
+
+    integrands = {
+        "l2": pz_twojet_l2_integrand,
+        "w12": pz_twojet_w12_integrand,
+        "w22": pz_twojet_w22_integrand,
+    }
+    try:
+        return integrands[integrand_kind](jet)
+    except KeyError as exc:  # pragma: no cover - guarded by Literal/internal callers
+        raise ValueError("integrand_kind must be one of 'l2', 'w12', or 'w22'.") from exc
+
+
+def _evaluate_squared_contribution_cache(
     model,
     box: "IntervalTensor",
     *,
     integrand_kind: Literal["l2", "w12", "w22"],
     chebyshev_degree: int,
     residual_subdivisions: int,
-) -> tuple[Interval, Interval | None]:
-    from .pz_norms import pz_twojet_l2_integrand, pz_twojet_w12_integrand, pz_twojet_w22_integrand
+) -> _CachedSquaredContribution:
+    """Evaluate and cache all expensive data needed for one active cell.
+
+    The affine PZ integration cell, two-jet enclosure, squared integrand,
+    integrated interval contribution, Jacobian enclosure, and preferred split
+    dimension are computed exactly once for the cell lifetime. Refinement
+    discards only marked parent cells and computes fresh cache entries for
+    their children.
+    """
 
     cell = PZIntegrationCell.from_affine_box(box)
     jet = _eval_pz_twojet(
@@ -361,13 +392,33 @@ def _integrated_squared_contribution(
         chebyshev_degree=chebyshev_degree,
         residual_subdivisions=residual_subdivisions,
     )
-    if integrand_kind == "l2":
-        integrand = pz_twojet_l2_integrand(jet)
-    elif integrand_kind == "w12":
-        integrand = pz_twojet_w12_integrand(jet)
-    else:
-        integrand = pz_twojet_w22_integrand(jet)
-    return integrate_over_cell(integrand, cell, output="interval"), jet.J.interval_enclosure()
+    integrand = _squared_twojet_integrand(jet, integrand_kind)
+    contribution = integrate_over_cell(integrand, cell, output="interval")
+    jacobian = jet.J.interval_enclosure()
+    return _CachedSquaredContribution(
+        box=box,
+        contribution=contribution,
+        jacobian=jacobian,
+        split_dim=_choose_split_dim_from_jacobian(box, jacobian),
+    )
+
+
+def _integrated_squared_contribution(
+    model,
+    box: "IntervalTensor",
+    *,
+    integrand_kind: Literal["l2", "w12", "w22"],
+    chebyshev_degree: int,
+    residual_subdivisions: int,
+) -> tuple[Interval, Interval | None]:
+    cached = _evaluate_squared_contribution_cache(
+        model,
+        box,
+        integrand_kind=integrand_kind,
+        chebyshev_degree=chebyshev_degree,
+        residual_subdivisions=residual_subdivisions,
+    )
+    return cached.contribution, cached.jacobian
 
 
 def _pz_adaptive_squared_integral(
@@ -380,39 +431,38 @@ def _pz_adaptive_squared_integral(
     chebyshev_degree: int,
     residual_subdivisions: int,
 ) -> Interval:
-    boxes = [domain]
-    for _ in range(iterations):
-        indicators: list[float] = []
-        split_dims: list[int] = []
-        for box in boxes:
-            contribution, jacobian = _integrated_squared_contribution(
-                model,
-                box,
-                integrand_kind=integrand_kind,
-                chebyshev_degree=chebyshev_degree,
-                residual_subdivisions=residual_subdivisions,
-            )
-            indicators.append(_interval_width(contribution))
-            split_dims.append(_choose_split_dim_from_jacobian(box, jacobian))
-        marked_indices = set(_dorfler_marking(indicators, theta))
-        refined_boxes = []
-        for idx, box in enumerate(boxes):
-            if idx in marked_indices:
-                refined_boxes.extend(_split_box(box, split_dim=split_dims[idx]))
-            else:
-                refined_boxes.append(box)
-        boxes = refined_boxes
-
-    integral = Interval.point(0.0)
-    for box in boxes:
-        contribution, _ = _integrated_squared_contribution(
+    active_cells = [
+        _evaluate_squared_contribution_cache(
             model,
-            box,
+            domain,
             integrand_kind=integrand_kind,
             chebyshev_degree=chebyshev_degree,
             residual_subdivisions=residual_subdivisions,
         )
-        integral = _interval_add(integral, contribution)
+    ]
+    for _ in range(iterations):
+        indicators = [_interval_width(cell.contribution) for cell in active_cells]
+        marked_indices = set(_dorfler_marking(indicators, theta))
+        refined_cells: list[_CachedSquaredContribution] = []
+        for idx, cell in enumerate(active_cells):
+            if idx not in marked_indices:
+                refined_cells.append(cell)
+                continue
+            for child_box in _split_box(cell.box, split_dim=cell.split_dim):
+                refined_cells.append(
+                    _evaluate_squared_contribution_cache(
+                        model,
+                        child_box,
+                        integrand_kind=integrand_kind,
+                        chebyshev_degree=chebyshev_degree,
+                        residual_subdivisions=residual_subdivisions,
+                    )
+                )
+        active_cells = refined_cells
+
+    integral = Interval.point(0.0)
+    for cell in active_cells:
+        integral = _interval_add(integral, cell.contribution)
     return integral
 
 
