@@ -336,7 +336,7 @@ def _choose_split_dim_from_jacobian(box: "IntervalTensor", jacobian: Interval | 
     return max(range(len(widths)), key=lambda idx: widths[idx])
 
 
-def _eval_pz_twojet(model, domain: PolynomialZonotope, *, chebyshev_degree: int, residual_subdivisions: int):
+def _eval_pz_twojet(model, domain: PolynomialZonotope, *, chebyshev_degree: int = 5, residual_subdivisions: int = 128):
     if hasattr(model, "eval_pz_twojet"):
         return model.eval_pz_twojet(domain, chebyshev_degree=chebyshev_degree, residual_subdivisions=residual_subdivisions)
     from .pytorch import pz_twojet_forward
@@ -373,8 +373,8 @@ def _evaluate_squared_contribution_cache(
     box: "IntervalTensor",
     *,
     integrand_kind: Literal["l2", "w12", "w22"],
-    chebyshev_degree: int,
-    residual_subdivisions: int,
+    chebyshev_degree: int = 5,
+    residual_subdivisions: int = 128,
 ) -> _CachedSquaredContribution:
     """Evaluate and cache all expensive data needed for one active cell.
 
