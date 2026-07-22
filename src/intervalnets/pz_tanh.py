@@ -9,7 +9,7 @@ future root-isolation/Remez certificate backend) for the rigorous residual
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import inf, nextafter, tanh
+from math import acos, atanh, cos, inf, nextafter, pi, sqrt, tanh
 from typing import Any, Mapping, Sequence
 from warnings import warn
 
@@ -41,6 +41,185 @@ class TanhApproximation:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class AffineTanhEnclosure:
+    """Scalar affine-plus-error enclosure for a tanh jet on an interval.
+
+    The returned parameters certify ``function(x) in p*x + q +
+    delta*[-1, 1]`` for every scalar ``x`` in ``[lower, upper]``.
+    ``metadata`` records the finite stationary candidates and the final
+    floating-point safety inflation used for outward rounding.
+    """
+
+    p: float
+    q: float
+    delta: float
+    lower: float
+    upper: float
+    function: str
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+def _tanh_value_from_t(j: int, t: float) -> float:
+    if j == 0:
+        return t
+    if j == 1:
+        return 1.0 - t * t
+    if j == 2:
+        return -2.0 * t + 2.0 * t * t * t
+    raise ValueError("j must be 0, 1, or 2.")
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return min(max(value, lower), upper)
+
+
+def _append_unique(
+    values: list[float], value: float, *, abs_tol: float = 1e-14
+) -> None:
+    if not any(abs(value - existing) <= abs_tol for existing in values):
+        values.append(value)
+
+
+def _append_if_in_t_interval(
+    values: list[float], t: float, ta: float, tb: float
+) -> None:
+    tlo = min(ta, tb)
+    thi = max(ta, tb)
+    tol = 8.0 * 2.220446049250313e-16 * max(1.0, abs(tlo), abs(thi), abs(t))
+    if -1.0 < t < 1.0 and tlo - tol <= t <= thi + tol:
+        _append_unique(values, _clamp(t, -1.0 + 5e-324, 1.0 - 2.220446049250313e-16))
+
+
+def _stationary_t_candidates(
+    j: int, p: float, ta: float, tb: float
+) -> tuple[float, ...]:
+    candidates: list[float] = []
+    if j == 0:
+        d = max(0.0, 1.0 - p)
+        s = sqrt(d)
+        _append_if_in_t_interval(candidates, s, ta, tb)
+        _append_if_in_t_interval(candidates, -s, ta, tb)
+    elif j == 1:
+        z = _clamp((3.0 * sqrt(3.0) / 4.0) * p, -1.0, 1.0)
+        theta = acos(z) / 3.0
+        for k in range(3):
+            t = (2.0 / sqrt(3.0)) * cos(theta - 2.0 * pi * k / 3.0)
+            _append_if_in_t_interval(candidates, t, ta, tb)
+    elif j == 2:
+        d = max(0.0, 1.0 - 1.5 * p)
+        s = sqrt(d)
+        for u in ((2.0 + s) / 3.0, (2.0 - s) / 3.0):
+            if 0.0 <= u < 1.0:
+                v = sqrt(u)
+                _append_if_in_t_interval(candidates, v, ta, tb)
+                _append_if_in_t_interval(candidates, -v, ta, tb)
+    else:
+        raise ValueError("j must be 0, 1, or 2.")
+    return tuple(candidates)
+
+
+def _affine_tanh_jet_enclosure(
+    interval: Interval | Sequence[float], j: int, function_name: str
+) -> AffineTanhEnclosure:
+    lower, upper = _scalar_interval_bounds(interval)
+    if lower == upper:
+        value = _tanh_value_from_t(j, tanh(lower))
+        return AffineTanhEnclosure(
+            p=0.0,
+            q=value,
+            delta=0.0,
+            lower=lower,
+            upper=upper,
+            function=function_name,
+            metadata={
+                "method": "point-interval",
+                "x_candidates": (lower,),
+                "t_candidates": (tanh(lower),),
+                "residuals": (value,),
+                "outward_rounding": "exact point interval; no inflation required",
+            },
+        )
+
+    ta = tanh(lower)
+    tb = tanh(upper)
+    fa = _tanh_value_from_t(j, ta)
+    fb = _tanh_value_from_t(j, tb)
+    p = (fb - fa) / (upper - lower)
+    t_candidates = _stationary_t_candidates(j, p, ta, tb)
+
+    x_candidates = [lower, upper]
+    for t in t_candidates:
+        x = atanh(t)
+        if lower < x < upper:
+            _append_unique(x_candidates, x)
+
+    residuals = []
+    candidate_records = []
+    for x in x_candidates:
+        t = tanh(x)
+        value = _tanh_value_from_t(j, t)
+        residual = value - p * x
+        residuals.append(residual)
+        candidate_records.append({"x": x, "t": t, "residual": residual})
+
+    rmin = min(residuals)
+    rmax = max(residuals)
+    q = (rmax + rmin) / 2.0
+    delta = (rmax - rmin) / 2.0
+
+    # The formulas above identify the exact real residual extrema.  Inflate the
+    # final symmetric radius to account for ordinary floating-point evaluation
+    # of candidates, residuals, and midpoint/radius arithmetic.
+    rounding_inflation = (
+        nextafter(max(abs(q), abs(delta), abs(p), abs(rmin), abs(rmax), 1.0), inf)
+        * 32.0
+        * 2.220446049250313e-16
+    )
+    delta = nextafter(delta + rounding_inflation, inf)
+
+    return AffineTanhEnclosure(
+        p=p,
+        q=q,
+        delta=delta,
+        lower=lower,
+        upper=upper,
+        function=function_name,
+        metadata={
+            "method": "finite-stationary-candidates",
+            "candidate_t_values": t_candidates,
+            "x_candidates": tuple(x_candidates),
+            "candidate_records": tuple(candidate_records),
+            "residual_min": rmin,
+            "residual_max": rmax,
+            "outward_rounding": "final nextafter(delta + 32*eps*scale, +inf) safety inflation",
+            "rounding_inflation": rounding_inflation,
+        },
+    )
+
+
+def affine_tanh_enclosure(interval: Interval | Sequence[float]) -> AffineTanhEnclosure:
+    """Return a certified scalar affine enclosure for ``tanh`` on ``interval``."""
+
+    return _affine_tanh_jet_enclosure(interval, 0, "tanh")
+
+
+def affine_tanh_prime_enclosure(
+    interval: Interval | Sequence[float],
+) -> AffineTanhEnclosure:
+    """Return a certified scalar affine enclosure for ``tanh'`` on ``interval``."""
+
+    return _affine_tanh_jet_enclosure(interval, 1, "tanh_prime")
+
+
+def affine_tanh_double_prime_enclosure(
+    interval: Interval | Sequence[float],
+) -> AffineTanhEnclosure:
+    """Return a certified scalar affine enclosure for ``tanh''`` on ``interval``."""
+
+    return _affine_tanh_jet_enclosure(interval, 2, "tanh_double_prime")
+
+
 def _solve_dense_system(matrix: list[list[float]], rhs: list[float]) -> list[float]:
     """Solve a small dense linear system by Gaussian elimination."""
 
@@ -58,11 +237,16 @@ def _solve_dense_system(matrix: list[list[float]], rhs: list[float]) -> list[flo
                 continue
             factor = aug[row][col]
             if factor:
-                aug[row] = [value - factor * pivot_value for value, pivot_value in zip(aug[row], aug[col])]
+                aug[row] = [
+                    value - factor * pivot_value
+                    for value, pivot_value in zip(aug[row], aug[col])
+                ]
     return [aug[row][-1] for row in range(n)]
 
 
-def _chebyshev_interpolation_power_coeffs(lower: float, upper: float, degree: int) -> tuple[float, ...]:
+def _chebyshev_interpolation_power_coeffs(
+    lower: float, upper: float, degree: int
+) -> tuple[float, ...]:
     """Return a Chebyshev-node interpolation proposal in power basis."""
 
     from math import cos, pi
@@ -71,13 +255,18 @@ def _chebyshev_interpolation_power_coeffs(lower: float, upper: float, degree: in
         return (tanh((lower + upper) / 2.0),)
     midpoint = (lower + upper) / 2.0
     half_width = (upper - lower) / 2.0
-    nodes = [midpoint + half_width * cos((2 * k + 1) * pi / (2 * (degree + 1))) for k in range(degree + 1)]
+    nodes = [
+        midpoint + half_width * cos((2 * k + 1) * pi / (2 * (degree + 1)))
+        for k in range(degree + 1)
+    ]
     vandermonde = [[node**power for power in range(degree + 1)] for node in nodes]
     values = [tanh(node) for node in nodes]
     return tuple(_solve_dense_system(vandermonde, values))
 
 
-def _scalar_interval_bounds(interval: Interval | Sequence[float]) -> tuple[float, float]:
+def _scalar_interval_bounds(
+    interval: Interval | Sequence[float],
+) -> tuple[float, float]:
     if isinstance(interval, Interval):
         lower, upper = interval.lower, interval.upper
     else:
@@ -134,7 +323,9 @@ def compute_tanh_polynomial(
     if not configured:
         raise TypeError("Either degree or chebyshev_degree must be supplied.")
     if len({value for _, value in configured}) != 1:
-        raise ValueError("degree, chebyshev_degree, and remez_degree must agree when supplied together.")
+        raise ValueError(
+            "degree, chebyshev_degree, and remez_degree must agree when supplied together."
+        )
     configured_degree = configured[0][1]
     used_legacy_remez = remez_degree is not None
     if used_legacy_remez:
@@ -158,19 +349,27 @@ def compute_tanh_polynomial(
             # Chebyshev-node interpolation is a stable numerical proposal even
             # when NumPy is unavailable.  Certification below still provides
             # the proof rather than trusting this fit.
-            coeffs = _chebyshev_interpolation_power_coeffs(lower, upper, configured_degree)
+            coeffs = _chebyshev_interpolation_power_coeffs(
+                lower, upper, configured_degree
+            )
             proposal = "chebyshev-interpolation-proposal"
         else:
             xs = np.linspace(lower, upper, max(2 * (configured_degree + 1), 32))
-            cheb = Chebyshev.fit(xs, np.tanh(xs), deg=configured_degree, domain=[lower, upper])
+            cheb = Chebyshev.fit(
+                xs, np.tanh(xs), deg=configured_degree, domain=[lower, upper]
+            )
             power: Polynomial = cheb.convert(kind=Polynomial)
             coeff_arr = np.asarray(power.coef, dtype=float)
             if coeff_arr.size < configured_degree + 1:
-                coeff_arr = np.pad(coeff_arr, (0, configured_degree + 1 - coeff_arr.size))
+                coeff_arr = np.pad(
+                    coeff_arr, (0, configured_degree + 1 - coeff_arr.size)
+                )
             coeffs = tuple(float(c) for c in coeff_arr[: configured_degree + 1])
             proposal = "chebyshev-fit-proposal"
 
-    delta, cert_meta = certify_tanh_residual_subdivision((lower, upper), coeffs, subdivisions=subdivisions)
+    delta, cert_meta = certify_tanh_residual_subdivision(
+        (lower, upper), coeffs, subdivisions=subdivisions
+    )
     metadata = {
         "chebyshev_degree": configured_degree,
         "proposal": proposal,
@@ -245,7 +444,9 @@ def _scalar_interval_from_enclosure(enclosure: Any) -> Interval:
     if torch is not None and isinstance(lower, torch.Tensor):
         if lower.numel() != 1 or upper.numel() != 1:
             raise ValueError("tanh_pz_scalar expects a scalar polynomial zonotope.")
-        return Interval(float(lower.reshape(()).item()), float(upper.reshape(()).item()))
+        return Interval(
+            float(lower.reshape(()).item()), float(upper.reshape(()).item())
+        )
     if isinstance(lower, tuple) or isinstance(upper, tuple):
         raise ValueError("tanh_pz_scalar expects a scalar polynomial zonotope.")
     return Interval(float(lower), float(upper))
@@ -274,8 +475,14 @@ def tanh_pz_scalar(
         raise ValueError("tanh_pz_scalar expects a scalar polynomial zonotope.")
     if chebyshev_degree is None and remez_degree is None:
         raise TypeError("chebyshev_degree must be supplied.")
-    if chebyshev_degree is not None and remez_degree is not None and int(chebyshev_degree) != int(remez_degree):
-        raise ValueError("chebyshev_degree and remez_degree must agree when both are supplied.")
+    if (
+        chebyshev_degree is not None
+        and remez_degree is not None
+        and int(chebyshev_degree) != int(remez_degree)
+    ):
+        raise ValueError(
+            "chebyshev_degree and remez_degree must agree when both are supplied."
+        )
     if residual_subdivisions is None:
         raise TypeError("residual_subdivisions must be supplied.")
     interval = _scalar_interval_from_enclosure(Z_i.interval_enclosure())
@@ -285,4 +492,6 @@ def tanh_pz_scalar(
         remez_degree=remez_degree,
         subdivisions=residual_subdivisions,
     )
-    return Z_i.evaluate_polynomial(approx.coeffs).add_independent_error(approx.delta, kind="approximation_pointwise")
+    return Z_i.evaluate_polynomial(approx.coeffs).add_independent_error(
+        approx.delta, kind="approximation_pointwise"
+    )
