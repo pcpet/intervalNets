@@ -1,0 +1,514 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\newtheorem{remark}{Remark}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\abs}[1]{\left\lvert #1\right\rvert}
+\newcommand{\norm}[1]{\left\lVert #1\right\rVert}
+
+\title{Certified Integration over Polynomial-Zonotope Domains}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Setting and interpretation}
+\label{sec:pz-integration}
+
+Let
+\[
+\Xi=[-1,1]^s
+\]
+be a reference parameter box, and let
+\[
+X:\Xi\to\R^n
+\]
+be a polynomial map of the form
+\begin{equation}
+    X(\alpha)
+    =
+    c+\sum_{\beta\in\mathcal{B}} g_\beta \alpha^\beta,
+    \qquad
+    \alpha=(\alpha_1,\ldots,\alpha_s)\in\Xi,
+    \label{eq:pz-parametrization}
+\end{equation}
+where
+\[
+    c,g_\beta\in\R^n,
+    \qquad
+    \alpha^\beta
+    :=
+    \prod_{j=1}^s \alpha_j^{\beta_j}.
+\]
+The corresponding polynomial zonotope is
+\[
+    \mathcal{X}=X(\Xi).
+\]
+
+Let \(f:\mathcal{X}\to\R\) be a scalar-valued function. Assume that a certified polynomial enclosure of \(f\) on \(\mathcal{X}\) has been computed:
+\begin{equation}
+    f(x)=p(x)+r(x),
+    \qquad
+    \abs{r(x)}\leq E
+    \quad\text{for all }x\in\mathcal{X},
+    \label{eq:polynomial-remainder-enclosure}
+\end{equation}
+where \(p:\R^n\to\R\) is a polynomial and \(E\geq 0\).
+
+Equivalently, one may write the pointwise enclosure as
+\begin{equation}
+    f(x)\in p(x)+E[-1,1].
+    \label{eq:pointwise-noise}
+\end{equation}
+The interval in \eqref{eq:pointwise-noise} is a pointwise remainder enclosure. In general, it does not mean that there exists one constant noise value \(\eta\in[-1,1]\) such that
+\[
+    f(x)=p(x)+E\eta
+\]
+simultaneously for all \(x\in\mathcal{X}\). Rather, the remainder is an unknown function \(r(x)\) satisfying \(\abs{r(x)}\leq E\).
+
+There are two different integrals associated with the parametrization \eqref{eq:pz-parametrization}:
+\begin{enumerate}[label=\arabic*.]
+    \item the parameter-space integral
+    \[
+        \int_\Xi f(X(\alpha))\,d\alpha,
+    \]
+    \item the geometric integral
+    \[
+        \int_{\mathcal{X}} f(x)\,dx,
+    \]
+    where \(dx\) denotes \(n\)-dimensional Lebesgue measure.
+\end{enumerate}
+These integrals agree only in special cases. The geometric integral requires an appropriate Jacobian factor.
+
+\section{Exact integration of polynomials on the reference box}
+
+Let
+\[
+    q(\alpha)=\sum_{\gamma\in\mathcal{G}} q_\gamma\alpha^\gamma
+\]
+be a polynomial on \(\Xi=[-1,1]^s\). Then
+\begin{equation}
+    \int_\Xi q(\alpha)\,d\alpha
+    =
+    \sum_{\gamma\in\mathcal{G}} q_\gamma\,\mu_\gamma,
+    \label{eq:box-polynomial-integration}
+\end{equation}
+where
+\begin{equation}
+    \mu_\gamma
+    :=
+    \int_\Xi \alpha^\gamma\,d\alpha
+    =
+    \prod_{j=1}^s\int_{-1}^1 t^{\gamma_j}\,dt.
+    \label{eq:box-moment}
+\end{equation}
+For every \(k\in\N_0\),
+\begin{equation}
+    \int_{-1}^1 t^k\,dt
+    =
+    \begin{cases}
+        0, & k\text{ odd},\\[1mm]
+        \displaystyle\frac{2}{k+1}, & k\text{ even}.
+    \end{cases}
+    \label{eq:one-dimensional-moment}
+\end{equation}
+Consequently,
+\begin{equation}
+    \mu_\gamma
+    =
+    \begin{cases}
+        \displaystyle\prod_{j=1}^s \frac{2}{\gamma_j+1},
+        & \gamma_j\text{ is even for every }j,\\[3mm]
+        0, & \text{otherwise}.
+    \end{cases}
+    \label{eq:multivariate-moment}
+\end{equation}
+Thus polynomial integration over the reference box is a linear coefficient operation. No range enclosure of the polynomial is needed.
+
+\section{Integration with respect to parameter measure}
+
+Define the polynomial pullback
+\begin{equation}
+    q(\alpha):=(p\circ X)(\alpha).
+    \label{eq:pullback-polynomial}
+\end{equation}
+Since both \(p\) and \(X\) are polynomial, \(q\) is polynomial.
+
+From \eqref{eq:polynomial-remainder-enclosure},
+\[
+    f(X(\alpha))=q(\alpha)+r(X(\alpha)),
+    \qquad
+    \abs{r(X(\alpha))}\leq E.
+\]
+Therefore,
+\begin{align}
+    \int_\Xi f(X(\alpha))\,d\alpha
+    &=
+    \int_\Xi q(\alpha)\,d\alpha
+    +
+    \int_\Xi r(X(\alpha))\,d\alpha \\
+    &\in
+    \int_\Xi q(\alpha)\,d\alpha
+    +
+    E\,\abs{\Xi}[-1,1].
+\end{align}
+Since \(\abs{\Xi}=2^s\),
+\begin{equation}
+    \boxed{
+    \int_\Xi f(X(\alpha))\,d\alpha
+    \in
+    I_{\mathrm{poly}}+2^sE[-1,1],
+    }
+    \label{eq:parameter-integral-enclosure}
+\end{equation}
+where
+\[
+    I_{\mathrm{poly}}:=\int_\Xi q(\alpha)\,d\alpha.
+\]
+Equivalently, introducing one fresh noise symbol,
+\begin{equation}
+    \int_\Xi f(X(\alpha))\,d\alpha
+    \in
+    I_{\mathrm{poly}}+2^sE\,\eta_{\mathrm{int}},
+    \qquad
+    \eta_{\mathrm{int}}\in[-1,1].
+    \label{eq:parameter-integral-noise}
+\end{equation}
+
+\section{Geometric integration over the polynomial-zonotope image}
+
+Assume now that \(s=n\), and that \(X:\Xi\to\mathcal{X}\subset\R^n\) is injective and continuously differentiable, with
+\[
+    \det DX(\alpha)\neq 0
+    \qquad
+    \text{for all }\alpha\in\Xi.
+\]
+Then the change-of-variables formula gives
+\begin{equation}
+    \int_{\mathcal{X}} f(x)\,dx
+    =
+    \int_\Xi f(X(\alpha))J_X(\alpha)\,d\alpha,
+    \label{eq:change-of-variables}
+\end{equation}
+where
+\begin{equation}
+    J_X(\alpha):=\abs{\det DX(\alpha)}.
+    \label{eq:jacobian-density}
+\end{equation}
+Using \eqref{eq:polynomial-remainder-enclosure},
+\begin{align}
+    \int_{\mathcal{X}} f(x)\,dx
+    &=
+    \int_\Xi p(X(\alpha))J_X(\alpha)\,d\alpha
+    +
+    \int_\Xi r(X(\alpha))J_X(\alpha)\,d\alpha.
+\end{align}
+Since \(J_X(\alpha)\geq 0\),
+\[
+    \abs{\int_\Xi r(X(\alpha))J_X(\alpha)\,d\alpha}
+    \leq
+    E\int_\Xi J_X(\alpha)\,d\alpha.
+\]
+Moreover,
+\begin{equation}
+    \abs{\mathcal{X}}=\int_\Xi J_X(\alpha)\,d\alpha.
+    \label{eq:image-volume}
+\end{equation}
+Hence
+\begin{equation}
+    \boxed{
+    \int_{\mathcal{X}} f(x)\,dx
+    \in
+    I_{\mathrm{poly}}+E\abs{\mathcal{X}}[-1,1],
+    }
+    \label{eq:geometric-integral-general}
+\end{equation}
+where
+\begin{equation}
+    I_{\mathrm{poly}}
+    :=
+    \int_\Xi p(X(\alpha))J_X(\alpha)\,d\alpha.
+    \label{eq:geometric-polynomial-part}
+\end{equation}
+
+\section{Fixed-orientation case}
+
+Suppose that the sign of the Jacobian determinant is known:
+\begin{equation}
+    \sigma\det DX(\alpha)>0
+    \qquad
+    \text{for all }\alpha\in\Xi,
+    \qquad
+    \sigma\in\{-1,1\}.
+    \label{eq:fixed-orientation}
+\end{equation}
+Then
+\[
+    J_X(\alpha)=\sigma\det DX(\alpha).
+\]
+Because \(X\) is polynomial, both \(\det DX(\alpha)\) and \(p(X(\alpha))\det DX(\alpha)\) are polynomials in \(\alpha\). Therefore,
+\begin{equation}
+    I_{\mathrm{poly}}
+    =
+    \sigma\int_\Xi p(X(\alpha))\det DX(\alpha)\,d\alpha,
+    \label{eq:fixed-orientation-poly-integral}
+\end{equation}
+and
+\begin{equation}
+    \abs{\mathcal{X}}
+    =
+    \sigma\int_\Xi \det DX(\alpha)\,d\alpha
+    \label{eq:fixed-orientation-volume}
+\end{equation}
+can both be computed by exact polynomial moment integration.
+
+\section{Affine-zonotope special case}
+
+Suppose
+\begin{equation}
+    X(\alpha)=c+G\alpha,
+    \qquad
+    G\in\R^{n\times n},
+    \qquad
+    \det G\neq 0.
+    \label{eq:affine-zonotope-map}
+\end{equation}
+Then \(DX(\alpha)=G\) and \(J_X(\alpha)=\abs{\det G}\) is constant. Hence
+\begin{equation}
+    \int_{\mathcal{X}} f(x)\,dx
+    \in
+    \abs{\det G}\int_\Xi p(c+G\alpha)\,d\alpha
+    +
+    E\abs{\det G}\,2^n[-1,1].
+    \label{eq:affine-zonotope-integral}
+\end{equation}
+Since \(\abs{\mathcal{X}}=2^n\abs{\det G}\), this becomes
+\begin{equation}
+    \boxed{
+    \int_{\mathcal{X}} f(x)\,dx
+    \in
+    \abs{\det G}\int_\Xi p(c+G\alpha)\,d\alpha
+    +
+    E\abs{\mathcal{X}}[-1,1].
+    }
+    \label{eq:affine-zonotope-boxed}
+\end{equation}
+
+\section{Jacobian sign changes and injectivity}
+
+If \(\det DX\) changes sign on \(\Xi\), then \(\abs{\det DX}\) is generally only piecewise polynomial. A practical certified procedure is to subdivide
+\[
+    \Xi=\bigcup_{\ell=1}^N \Xi_\ell
+\]
+into boxes with pairwise disjoint interiors until the sign of \(\det DX\) can be certified on every \(\Xi_\ell\). On each subbox, choose \(\sigma_\ell\in\{-1,1\}\) such that
+\[
+    \sigma_\ell\det DX(\alpha)>0
+    \qquad
+    \text{for all }\alpha\in\Xi_\ell.
+\]
+Then each local contribution is again the integral of a polynomial after affine rescaling to \([-1,1]^n\).
+
+If injectivity of \(X\) is not known, the parameter-space integral
+\[
+    \int_\Xi f(X(\alpha))\abs{\det DX(\alpha)}\,d\alpha
+\]
+may count points of the image with multiplicity. Therefore certified geometric integration over \(\mathcal{X}\) requires either a proof that \(X\) is injective on \(\Xi\), or a subdivision into pieces on which \(X\) is injective and whose images overlap only on sets of measure zero.
+
+\section{Spatially varying interval remainder}
+
+Assume more generally that
+\begin{equation}
+    f(x)=p(x)+r(x),
+    \qquad
+    \abs{r(x)}\leq \rho(x)
+    \quad
+    \text{for all }x\in\mathcal{X},
+    \label{eq:variable-remainder}
+\end{equation}
+where \(\rho:\mathcal{X}\to[0,\infty)\). Then
+\begin{equation}
+    \int_{\mathcal{X}} f(x)\,dx
+    \in
+    \int_{\mathcal{X}}p(x)\,dx
+    +
+    \left[
+        -\int_{\mathcal{X}}\rho(x)\,dx,
+        \int_{\mathcal{X}}\rho(x)\,dx
+    \right].
+    \label{eq:variable-remainder-integral}
+\end{equation}
+If \(\rho\circ X\) is polynomial and the Jacobian sign is fixed, then the remainder radius can itself be computed exactly by polynomial moment integration.
+
+\section{Several cells}
+
+Suppose
+\[
+    \Omega=\bigcup_{k=1}^N\mathcal{X}_k
+\]
+with pairwise disjoint interiors, and assume
+\[
+    f(x)=p_k(x)+r_k(x),
+    \qquad
+    \abs{r_k(x)}\leq E_k
+    \quad
+    \text{for }x\in\mathcal{X}_k.
+\]
+Let
+\[
+    I_k^{\mathrm{poly}}:=\int_{\mathcal{X}_k}p_k(x)\,dx,
+    \qquad
+    V_k:=\abs{\mathcal{X}_k}.
+\]
+Then
+\begin{equation}
+    \boxed{
+    \int_\Omega f(x)\,dx
+    \in
+    \sum_{k=1}^N I_k^{\mathrm{poly}}
+    +
+    \left(\sum_{k=1}^N E_kV_k\right)[-1,1].
+    }
+    \label{eq:multi-cell-integral}
+\end{equation}
+For a scalar final integral, a single fresh final noise symbol is sufficient:
+\begin{equation}
+    \int_\Omega f(x)\,dx
+    \in
+    \sum_{k=1}^N I_k^{\mathrm{poly}}
+    +
+    \left(\sum_{k=1}^N E_kV_k\right)\eta_{\mathrm{int}},
+    \qquad
+    \eta_{\mathrm{int}}\in[-1,1].
+\end{equation}
+
+\section{Coefficient-level implementation}
+
+Let
+\[
+    h(\alpha)=\sum_{\gamma\in\mathcal{G}} h_\gamma\alpha^\gamma.
+\]
+Define the integration operator
+\begin{equation}
+    \mathcal{I}(h)
+    :=
+    \sum_{\gamma\in\mathcal{G}} h_\gamma\mu_\gamma,
+    \label{eq:integration-operator}
+\end{equation}
+where \(\mu_\gamma\) is given by \eqref{eq:multivariate-moment}. The operator \(\mathcal{I}\) is linear, so it should be applied directly to sparse polynomial coefficients without first range-enclosing the polynomial.
+
+\begin{algorithm}[ht]
+\caption{Exact polynomial integration on \([-1,1]^s\)}
+\label{alg:polynomial-box-integration}
+\begin{algorithmic}[1]
+\Require Sparse polynomial \(h(\alpha)=\sum_{\gamma\in\mathcal{G}}h_\gamma\alpha^\gamma\)
+\Ensure \(I=\int_{[-1,1]^s}h(\alpha)\,d\alpha\)
+\State \(I\gets 0\)
+\ForAll{\(\gamma\in\mathcal{G}\)}
+    \If{some component \(\gamma_j\) is odd}
+        \State \(\mu_\gamma\gets 0\)
+    \Else
+        \State \(\mu_\gamma\gets\prod_{j=1}^s\frac{2}{\gamma_j+1}\)
+    \EndIf
+    \State \(I\gets I+h_\gamma\mu_\gamma\)
+\EndFor
+\State \Return \(I\)
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[ht]
+\caption{Certified integration over a polynomial-zonotope image}
+\label{alg:certified-pz-integration}
+\begin{algorithmic}[1]
+\Require Polynomial parametrization \(X:\Xi=[-1,1]^n\to\R^n\)
+\Require Polynomial \(p:\R^n\to\R\)
+\Require Certified bound \(\abs{f(x)-p(x)}\leq E\) on \(\mathcal{X}=X(\Xi)\)
+\Require Certificate that \(X\) is injective on \(\Xi\)
+\Require Certificate \(\sigma\det DX(\alpha)>0\) on \(\Xi\)
+\State \(d(\alpha)\gets\sigma\det DX(\alpha)\)
+\State \(q(\alpha)\gets p(X(\alpha))\)
+\State \(h(\alpha)\gets q(\alpha)d(\alpha)\)
+\State \(I_{\mathrm{poly}}\gets\int_\Xi h(\alpha)\,d\alpha\)
+\State \(V\gets\int_\Xi d(\alpha)\,d\alpha\)
+\State \(R\gets EV\)
+\State \Return \([I_{\mathrm{poly}}-R,\,I_{\mathrm{poly}}+R]\)
+\end{algorithmic}
+\end{algorithm}
+
+\section{Floating-point rigor}
+
+The mathematical formulas above are exact. A computer implementation must additionally enclose floating-point roundoff. Two common approaches are:
+\begin{enumerate}[label=\arabic*.]
+    \item store the polynomial coefficients as intervals and perform all coefficient operations with outward rounding;
+    \item store floating-point coefficients and compute an additional certified roundoff remainder.
+\end{enumerate}
+If
+\[
+    I_{\mathrm{poly}}
+    \in
+    [\underline{I}_{\mathrm{poly}},\overline{I}_{\mathrm{poly}}]
+\]
+and
+\[
+    \abs{\mathcal{X}}
+    \in
+    [\underline{V},\overline{V}],
+    \qquad
+    0\leq\underline{V}\leq\overline{V},
+\]
+then a rigorous final enclosure is
+\begin{equation}
+    \int_{\mathcal{X}}f(x)\,dx
+    \in
+    [\underline{I}_{\mathrm{poly}}-E\overline{V},
+     \overline{I}_{\mathrm{poly}}+E\overline{V}].
+    \label{eq:roundoff-safe-final}
+\end{equation}
+
+\section{Recommended computational pipeline}
+
+The recommended procedure is
+\[
+\boxed{
+\begin{aligned}
+&\text{polynomial-zonotope parametrization}
+\\
+&\quad\longrightarrow\text{polynomial pullback}
+\\
+&\quad\longrightarrow\text{Jacobian multiplication}
+\\
+&\quad\longrightarrow\text{exact coefficient-level moment integration}
+\\
+&\quad\longrightarrow\text{add the integrated interval remainder}.
+\end{aligned}
+}
+\]
+In particular, one should avoid replacing the polynomial by a range interval and multiplying that interval by the volume. That procedure discards cancellation and the exact moment structure of the polynomial.
+
+The final enclosure has the form
+\[
+    \boxed{
+    \int_{\mathcal{X}}f(x)\,dx
+    \in
+    I_{\mathrm{poly}}+R_{\mathrm{int}}[-1,1],
+    }
+\]
+with
+\[
+    R_{\mathrm{int}}=E\abs{\mathcal{X}}
+\]
+for a constant pointwise remainder radius, or more generally
+\[
+    R_{\mathrm{int}}=\int_{\mathcal{X}}\rho(x)\,dx
+\]
+for a spatially varying certified remainder radius.
+
+\end{document}
