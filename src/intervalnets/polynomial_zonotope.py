@@ -221,6 +221,129 @@ def _merge_noise_kinds(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[s
             raise ValueError(f"Incompatible noise metadata: {l_kind!r} != {r_kind!r}.")
     return tuple(merged)
 
+
+
+def _format_latex_number(value: Any, precision: int) -> str:
+    number = float(value)
+    if number == 0.0:
+        number = 0.0
+    return f"{number:.{precision}g}"
+
+
+def _coefficient_scalar(value: Any, index: tuple[int, ...]) -> float:
+    if torch is not None and isinstance(value, torch.Tensor):
+        return float(value[index].item() if index else value.item())
+    return float(_fallback_get(value, index) if index else value)
+
+
+def _coefficient_indices(shape: tuple[int, ...]) -> list[tuple[int, ...]]:
+    if not shape:
+        return [()]
+    indices: list[tuple[int, ...]] = []
+    def rec(prefix: tuple[int, ...], dims: tuple[int, ...]) -> None:
+        if not dims:
+            indices.append(prefix)
+            return
+        for i in range(dims[0]):
+            rec(prefix + (i,), dims[1:])
+    rec((), shape)
+    return indices
+
+
+def _latex_noise_symbol(kind: str, position: int, variable_prefix: str) -> str:
+    if kind == "domain":
+        base = r"\xi"
+    elif kind.startswith("approximation"):
+        base = r"\eta"
+    else:
+        base = variable_prefix
+    return f"{base}_{{{position + 1}}}"
+
+
+def _latex_monomial(exponent: Exponent, noise_kinds: tuple[str, ...], variable_prefix: str) -> str:
+    factors = []
+    for i, power in enumerate(exponent):
+        if power == 0:
+            continue
+        symbol = _latex_noise_symbol(noise_kinds[i], i, variable_prefix)
+        factors.append(symbol if power == 1 else f"{symbol}^{{{power}}}")
+    return " ".join(factors)
+
+
+def _latex_entry_label(base_label: str, index: tuple[int, ...]) -> str:
+    if not index:
+        return base_label
+    return f"{base_label}_{{{','.join(str(i) for i in index)}}}"
+
+
+def _format_latex_expression(center: float, terms: list[tuple[Exponent, float]], noise_kinds: tuple[str, ...], *, variable_prefix: str, max_terms: int | None, precision: int) -> str:
+    pieces = [_format_latex_number(center, precision)]
+    visible_terms = terms if max_terms is None else terms[:max_terms]
+    for exponent, coeff in visible_terms:
+        if coeff == 0.0:
+            continue
+        sign = "+" if coeff >= 0 else "-"
+        magnitude = abs(coeff)
+        monomial = _latex_monomial(exponent, noise_kinds, variable_prefix)
+        coeff_text = _format_latex_number(magnitude, precision)
+        if monomial and coeff_text == "1":
+            body = monomial
+        elif monomial:
+            body = f"{coeff_text} {monomial}"
+        else:
+            body = coeff_text
+        pieces.append(f"{sign} {body}")
+    omitted = max(0, len(terms) - len(visible_terms))
+    if omitted:
+        pieces.append(f"+ \\cdots\\;({omitted} omitted terms)")
+    return " ".join(pieces)
+
+
+def pz_to_latex(z: PolynomialZonotope, *, variable_prefix: str = r"\epsilon", max_terms: int | None = None, precision: int = 4) -> str:
+    """Render a polynomial zonotope as compact LaTeX.
+
+    Scalar coefficients are rendered as one expression. Vector, matrix, and
+    higher-order tensor coefficients are rendered entrywise in an ``aligned``
+    block using zero-based tensor indices.
+    """
+
+    if max_terms is not None and max_terms < 0:
+        raise ValueError("max_terms must be non-negative or None.")
+    if precision < 1:
+        raise ValueError("precision must be positive.")
+
+    rows = []
+    sorted_terms = sorted(z.terms.items(), key=lambda item: (sum(item[0]), item[0]))
+    for index in _coefficient_indices(z.shape):
+        center = _coefficient_scalar(z.center, index)
+        entry_terms = [(exp, _coefficient_scalar(coeff, index)) for exp, coeff in sorted_terms]
+        entry_terms = [(exp, coeff) for exp, coeff in entry_terms if coeff != 0.0]
+        rows.append(f"{_latex_entry_label('Z', index)} &= {_format_latex_expression(center, entry_terms, z.noise_kinds, variable_prefix=variable_prefix, max_terms=max_terms, precision=precision)}")
+    if len(rows) == 1:
+        return rows[0].replace("Z &= ", "")
+    return "\\begin{aligned}\n" + " \\\\\n".join(rows) + "\n\\end{aligned}"
+
+
+def twojet_to_latex(jet: PZTwoJet, *, max_terms: int | None = None, precision: int = 4) -> str:
+    """Render a polynomial-zonotope two-jet as compact LaTeX sections."""
+
+    sections = []
+    for label, z in (("Y", jet.Y), ("J", jet.J), ("H", jet.H)):
+        rendered = pz_to_latex(z, max_terms=max_terms, precision=precision)
+        if z.shape:
+            rendered = rendered.replace("Z_{", f"{label}_{{")
+        else:
+            rendered = f"{label} = {rendered}"
+        sections.append(rendered)
+    return "\n\n".join(sections)
+
+
+def pz_to_markdown_code(z: PolynomialZonotope, *, variable_prefix: str = r"\epsilon", max_terms: int | None = None, precision: int = 4) -> str:
+    """Render a polynomial zonotope in a fenced LaTeX Markdown code block."""
+
+    return f"```latex\n{pz_to_latex(z, variable_prefix=variable_prefix, max_terms=max_terms, precision=precision)}\n```"
+
+
 @dataclass(frozen=True, init=False)
 class PolynomialZonotope:
     """Polynomial zonotope with explicit monomial dependencies.

@@ -367,3 +367,74 @@ def test_integrate_noise_vector_matrix_and_tensor_coefficients_preserve_metadata
     assert tensor_out.shape == (2, 3, 4)
     assert tensor_out.noise_kinds == ("approximation", "approximation")
     assert torch.allclose(tensor_out.terms[(0, 1)], tensor_coeff * (2.0 / 3.0) + torch.ones(2, 3, 4, dtype=dtype) * 2.0)
+
+
+def test_pz_to_latex_scalar_terms_render_variable_powers():
+    from intervalnets import pz_to_latex
+
+    z = PolynomialZonotope(
+        1.0,
+        {(2, 0): 3.0, (0, 1): -1.0},
+        num_noise=2,
+        noise_kinds=("domain", "unknown"),
+    )
+
+    rendered = pz_to_latex(z)
+
+    assert "1" in rendered
+    assert r"3 \xi_{1}^{2}" in rendered
+    assert r"- \epsilon_{2}" in rendered
+
+
+def test_pz_to_latex_vector_and_tensor_entries_include_indices_fallback():
+    from intervalnets import pz_to_latex, twojet_to_latex
+
+    vector = PolynomialZonotope((1.0, 2.0), {(1,): (0.5, 1.5)}, num_noise=1)
+    rendered_vector = pz_to_latex(vector)
+    assert "Z_{0} &= 1" in rendered_vector
+    assert "Z_{1} &= 2" in rendered_vector
+
+    y = PolynomialZonotope((1.0, 2.0), {}, num_noise=1)
+    j = PolynomialZonotope(((1.0, 0.0), (0.0, 1.0)), {(1,): ((2.0, 0.0), (0.0, 3.0))}, num_noise=1)
+    h = PolynomialZonotope(
+        (((0.0, 0.0), (0.0, 0.0)), ((0.0, 0.0), (0.0, 0.0))),
+        {(1,): (((4.0, 0.0), (0.0, 0.0)), ((0.0, 0.0), (0.0, 5.0)))},
+        num_noise=1,
+    )
+    rendered_jet = twojet_to_latex(PZTwoJet(y, j, h))
+    assert "Y_{0}" in rendered_jet
+    assert "J_{0,0}" in rendered_jet
+    assert "H_{1,1,1}" in rendered_jet
+
+
+def test_pz_to_latex_distinguishes_domain_approximation_and_unknown_noise():
+    from intervalnets import pz_to_latex
+
+    z = PolynomialZonotope(
+        0.0,
+        {(1, 0, 0): 1.0, (0, 1, 0): 2.0, (0, 0, 1): 3.0},
+        num_noise=3,
+        noise_kinds=("domain", "approximation_pointwise", "unknown"),
+    )
+
+    rendered = pz_to_latex(z)
+
+    assert r"\xi_{1}" in rendered
+    assert r"\eta_{2}" in rendered
+    assert r"\epsilon_{3}" in rendered
+
+
+def test_pz_to_latex_truncation_reports_omitted_terms():
+    from intervalnets import pz_to_latex, pz_to_markdown_code
+
+    z = PolynomialZonotope(
+        0.0,
+        {(1, 0, 0): 1.0, (0, 1, 0): 2.0, (0, 0, 1): 3.0},
+        num_noise=3,
+    )
+
+    rendered = pz_to_latex(z, max_terms=1)
+
+    assert "omitted terms" in rendered
+    assert "2 omitted terms" in rendered
+    assert pz_to_markdown_code(z, max_terms=1).startswith("```latex\n")
