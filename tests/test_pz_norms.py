@@ -1,8 +1,8 @@
 import pytest
 
-from intervalnets import IntervalTensor, PolynomialZonotope, enable_interval_eval
+from intervalnets import IntervalTensor, PZTwoJet, PolynomialZonotope, enable_interval_eval
 from intervalnets.pz_integration import PZIntegrationCell, integrate_over_cell
-from intervalnets.pz_norms import pz_twojet_l2_integrand
+from intervalnets.pz_norms import pz_sum_squares, pz_symmetric_hessian_sum_squares, pz_twojet_l2_integrand, pz_twojet_w22_integrand
 
 try:
     import torch
@@ -12,6 +12,57 @@ except ImportError:  # pragma: no cover
     nn = None
 
 pytestmark = pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+
+
+def _assert_same_pz(left: PolynomialZonotope, right: PolynomialZonotope):
+    assert left.num_noise == right.num_noise
+    assert left.noise_kinds == right.noise_kinds
+    assert left.shape == right.shape
+    if torch is not None and isinstance(left.center, torch.Tensor):
+        assert torch.allclose(left.center, right.center)
+        assert set(left.terms) == set(right.terms)
+        for exponent in left.terms:
+            assert torch.allclose(left.terms[exponent], right.terms[exponent])
+    else:
+        assert left.center == pytest.approx(right.center)
+        assert left.terms == pytest.approx(right.terms)
+
+
+def test_pz_symmetric_hessian_sum_squares_matches_dense_full_sum_for_symmetric_hessian():
+    center = torch.tensor(
+        [
+            [[1.0, 2.0, -0.5], [2.0, -1.0, 0.75], [-0.5, 0.75, 1.5]],
+            [[-0.25, 1.25, 0.5], [1.25, 0.5, -1.5], [0.5, -1.5, 2.0]],
+        ],
+        dtype=torch.float64,
+    )
+    coeff = torch.tensor(
+        [
+            [[0.2, -0.1, 0.3], [-0.1, 0.4, -0.2], [0.3, -0.2, 0.1]],
+            [[-0.3, 0.2, 0.15], [0.2, -0.05, 0.35], [0.15, 0.35, -0.25]],
+        ],
+        dtype=torch.float64,
+    )
+    hessian = PolynomialZonotope(center, {(1,): coeff}, num_noise=1, noise_kinds=("domain",))
+
+    optimized = pz_symmetric_hessian_sum_squares(hessian)
+    dense = pz_sum_squares(hessian)
+
+    _assert_same_pz(optimized, dense)
+
+
+def test_pz_twojet_w22_integrand_uses_symmetric_hessian_accumulation_equivalent_to_dense_sum():
+    y = PolynomialZonotope.constant(torch.tensor([0.5], dtype=torch.float64), num_noise=1, noise_kinds=("domain",))
+    j = PolynomialZonotope.constant(torch.tensor([[1.0, -2.0]], dtype=torch.float64), num_noise=1, noise_kinds=("domain",))
+    h_center = torch.tensor([[[1.0, 0.25], [0.25, -0.5]]], dtype=torch.float64)
+    h_coeff = torch.tensor([[[0.1, -0.2], [-0.2, 0.3]]], dtype=torch.float64)
+    h = PolynomialZonotope(h_center, {(1,): h_coeff}, num_noise=1, noise_kinds=("domain",))
+    jet = PZTwoJet(y, j, h)
+
+    optimized = pz_twojet_w22_integrand(jet)
+    dense = pz_sum_squares(y) + pz_sum_squares(j) + pz_sum_squares(h)
+
+    _assert_same_pz(optimized, dense)
 
 
 def _small_tanh_model(input_dim=1, hidden_dim=2, output_dim=1):
