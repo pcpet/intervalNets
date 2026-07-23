@@ -1,6 +1,6 @@
 import pytest
 
-from intervalnets import PZTwoJet, PolynomialZonotope
+from intervalnets import PZTwoJet, PolynomialZonotope, collect_pz_diagnostics
 
 try:
     import torch
@@ -33,6 +33,28 @@ def test_scalar_polynomial_multiplication_convolves_exponents():
     assert out.center == 1.0
     assert out.terms[(1,)] == 4.0
     assert out.terms[(2,)] == 4.0
+
+
+def test_collect_pz_diagnostics_records_polynomial_multiplication_complexity():
+    left = PolynomialZonotope(1.0, {(1,): 2.0, (2,): 3.0}, num_noise=1)
+    right = PolynomialZonotope(3.0, {(1,): 4.0}, num_noise=1)
+
+    _ = left * right
+
+    with collect_pz_diagnostics("unit") as records:
+        _ = left * right
+
+    assert records == [
+        {
+            "phase": "unit",
+            "left_term_count": 2,
+            "right_term_count": 1,
+            "raw_pair_count": 2,
+            "output_term_count": 3,
+            "coefficient_shape": (),
+            "max_output_degree": 3,
+        }
+    ]
 
 
 @pytest.mark.skipif(torch is None, reason="PyTorch not installed")

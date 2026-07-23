@@ -1,7 +1,7 @@
 """Interval arithmetic utilities for neural network evaluation."""
 
 from .interval import Interval
-from .polynomial_zonotope import PZTwoJet, PolynomialZonotope
+from .polynomial_zonotope import PZTwoJet, PolynomialZonotope, collect_pz_diagnostics
 from .pz_tanh import (
     AffineTanhEnclosure,
     TanhApproximation,
@@ -36,6 +36,7 @@ __all__ = [
     "Interval",
     "PolynomialZonotope",
     "PZTwoJet",
+    "collect_pz_diagnostics",
     "AffineTanhEnclosure",
     "TanhApproximation",
     "affine_tanh_double_prime_enclosure",
