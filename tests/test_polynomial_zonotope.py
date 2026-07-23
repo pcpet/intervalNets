@@ -35,6 +35,22 @@ def test_scalar_polynomial_multiplication_convolves_exponents():
     assert out.terms[(2,)] == 4.0
 
 
+def test_fallback_tuple_backed_matrix_getitem_indexes_recursively():
+    z = PolynomialZonotope(
+        ((1.0, 2.0), (3.0, 4.0)),
+        {(1,): ((0.1, 0.2), (0.3, 0.4))},
+        num_noise=1,
+    )
+
+    out = z[0, 1]
+
+    assert out.shape == ()
+    assert out.center == 2.0
+    assert out.terms == {(1,): 0.2}
+    assert out.num_noise == z.num_noise
+    assert out.noise_kinds == z.noise_kinds
+
+
 def test_collect_pz_diagnostics_records_polynomial_multiplication_complexity():
     left = PolynomialZonotope(1.0, {(1,): 2.0, (2,): 3.0}, num_noise=1)
     right = PolynomialZonotope(3.0, {(1,): 4.0}, num_noise=1)
