@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from math import inf, nextafter, prod
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 from .interval import Interval
 
@@ -12,6 +13,52 @@ except ImportError:  # pragma: no cover
     torch = None
 
 Exponent = tuple[int, ...]
+
+
+_PZ_DIAGNOSTIC_STACK: list[tuple[list[dict[str, Any]], str | None]] = []
+
+
+@contextmanager
+def collect_pz_diagnostics(phase: str | None = None) -> Iterator[list[dict[str, Any]]]:
+    """Collect opt-in polynomial-zonotope multiplication diagnostics.
+
+    The default behavior is unchanged unless this context manager is active.
+    While active, every ``PolynomialZonotope * PolynomialZonotope`` operation
+    appends a record containing input term counts, the raw Cartesian-product
+    pair count, merged output term count, coefficient shape, and maximum output
+    monomial degree. ``phase`` is copied into each record so callers can group
+    diagnostics from different parts of a computation.
+    """
+
+    records: list[dict[str, Any]] = []
+    _PZ_DIAGNOSTIC_STACK.append((records, phase))
+    try:
+        yield records
+    finally:
+        _PZ_DIAGNOSTIC_STACK.pop()
+
+
+def _record_pz_multiplication(
+    *,
+    left_term_count: int,
+    right_term_count: int,
+    output_terms: Mapping[Exponent, Any],
+    coefficient_shape: tuple[int, ...],
+) -> None:
+    if not _PZ_DIAGNOSTIC_STACK:
+        return
+    max_output_degree = max((sum(exp) for exp in output_terms), default=0)
+    raw_pair_count = left_term_count * right_term_count
+    for records, phase in _PZ_DIAGNOSTIC_STACK:
+        records.append({
+            "phase": phase,
+            "left_term_count": left_term_count,
+            "right_term_count": right_term_count,
+            "raw_pair_count": raw_pair_count,
+            "output_term_count": len(output_terms),
+            "coefficient_shape": coefficient_shape,
+            "max_output_degree": max_output_degree,
+        })
 
 
 def box_monomial_moment(exponent: tuple[int, ...]) -> float:
@@ -306,6 +353,12 @@ class PolynomialZonotope:
         for exp, coeff in left.terms.items(): add(exp, _mul_coeff(coeff, right.center))
         for e1, c1 in left.terms.items():
             for e2, c2 in right.terms.items(): add(tuple(a + b for a, b in zip(e1, e2)), _mul_coeff(c1, c2))
+        _record_pz_multiplication(
+            left_term_count=len(left.terms),
+            right_term_count=len(right.terms),
+            output_terms=terms,
+            coefficient_shape=left.shape if left.shape != () else right.shape,
+        )
         return PolynomialZonotope(_mul_coeff(left.center, right.center), terms, num_noise=left.num_noise, noise_kinds=left.noise_kinds)
 
     __rmul__ = __mul__
