@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from itertools import product
 from math import exp, inf, isfinite, log, nextafter, tanh
 from typing import Any
@@ -13,6 +14,45 @@ from .pz_tanh import (
 )
 from .pz_integration import PZIntegrationCell, pz_l2norm_bounds, pz_sobolev_norm_bounds
 from .pz_norms import pz_twojet_l2_norm, pz_twojet_w12_norm, pz_twojet_w22_norm
+
+
+@dataclass(frozen=True)
+class PZTwoJetTraceRecord:
+    """One opt-in trace snapshot from polynomial-zonotope two-jet propagation."""
+
+    layer_index: int
+    layer_name: str
+    layer_type: str
+    jet: PZTwoJet
+    summary: dict[str, dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class PZTwoJetTraceResult:
+    """Final two-jet plus per-layer trace snapshots."""
+
+    final: PZTwoJet
+    records: list[PZTwoJetTraceRecord]
+
+
+def _pz_summary(zonotope: PolynomialZonotope) -> dict[str, Any]:
+    return {
+        "shape": zonotope.shape,
+        "num_noise": zonotope.num_noise,
+        "noise_kinds": zonotope.noise_kinds,
+        "term_count": len(zonotope.terms),
+        "max_degree": max((sum(exp) for exp in zonotope.terms), default=0),
+    }
+
+
+def _pz_twojet_trace_record(layer_index: int, layer_name: str, layer_type: str, jet: PZTwoJet) -> PZTwoJetTraceRecord:
+    return PZTwoJetTraceRecord(
+        layer_index=layer_index,
+        layer_name=layer_name,
+        layer_type=layer_type,
+        jet=jet,
+        summary={"Y": _pz_summary(jet.Y), "J": _pz_summary(jet.J), "H": _pz_summary(jet.H)},
+    )
 
 try:
     import torch
@@ -419,7 +459,8 @@ def _pz_twojet_forward_from_jet(
     chebyshev_degree: int = 5,
     residual_subdivisions: int = 128,
     reduce: bool = False,
-) -> PZTwoJet:
+    return_trace: bool = False,
+) -> PZTwoJet | PZTwoJetTraceResult:
     """Propagate an initialized two-jet through supported PyTorch modules."""
 
     _require_torch()
@@ -427,32 +468,44 @@ def _pz_twojet_forward_from_jet(
         raise NotImplementedError("PZ two-jet reduction is not implemented yet.")
     if isinstance(module, nn.Sequential):
         result = jet
-        for child in module:
+        records = [_pz_twojet_trace_record(-1, "input", "Input", result)] if return_trace else []
+        for index, (name, child) in enumerate(module.named_children()):
             result = _pz_twojet_forward_from_jet(
                 child,
                 result,
                 chebyshev_degree=chebyshev_degree,
                 residual_subdivisions=residual_subdivisions,
                 reduce=reduce,
+                return_trace=False,
             )
-        return result
+            if return_trace:
+                records.append(_pz_twojet_trace_record(index, name, type(child).__name__, result))
+        return PZTwoJetTraceResult(final=result, records=records) if return_trace else result
     if isinstance(module, nn.Linear):
-        return _pz_twojet_linear_forward(module, jet)
-    if isinstance(module, nn.Tanh):
-        return _pz_twojet_tanh_forward(
+        result = _pz_twojet_linear_forward(module, jet)
+    elif isinstance(module, nn.Tanh):
+        result = _pz_twojet_tanh_forward(
             jet,
             chebyshev_degree=chebyshev_degree,
             residual_subdivisions=residual_subdivisions,
         )
-    if isinstance(module, nn.Identity):
-        return jet
-    if isinstance(module, nn.Flatten):
+    elif isinstance(module, nn.Identity):
+        result = jet
+    elif isinstance(module, nn.Flatten):
         if len(jet.Y.shape) > 1:
             raise NotImplementedError("PZ two-jet Flatten currently supports already-flat vectors only.")
-        return jet
-    raise NotImplementedError(
-        f"PZ two-jet forward currently supports nn.Sequential, nn.Linear, nn.Tanh, nn.Identity, and flat-vector nn.Flatten only; got {type(module).__name__}."
-    )
+        result = jet
+    else:
+        raise NotImplementedError(
+            f"PZ two-jet forward currently supports nn.Sequential, nn.Linear, nn.Tanh, nn.Identity, and flat-vector nn.Flatten only; got {type(module).__name__}."
+        )
+    if return_trace:
+        records = [
+            _pz_twojet_trace_record(-1, "input", "Input", jet),
+            _pz_twojet_trace_record(0, "0", type(module).__name__, result),
+        ]
+        return PZTwoJetTraceResult(final=result, records=records)
+    return result
 
 
 def pz_twojet_forward(
@@ -463,7 +516,8 @@ def pz_twojet_forward(
     residual_subdivisions: int = 128,
     reduce: bool = False,
     input_dim: int | None = None,
-) -> PZTwoJet:
+    return_trace: bool = False,
+) -> PZTwoJet | PZTwoJetTraceResult:
     """Evaluate a supported PyTorch module on a polynomial-zonotope two-jet.
 
     ``x`` must be a flat scalar/vector polynomial zonotope.  The returned
@@ -487,6 +541,7 @@ def pz_twojet_forward(
         chebyshev_degree=chebyshev_degree,
         residual_subdivisions=residual_subdivisions,
         reduce=reduce,
+        return_trace=return_trace,
     )
 
 
@@ -1589,6 +1644,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         chebyshev_degree: int = 5,
         residual_subdivisions: int = 128,
         reduce: bool = False,
+        return_trace: bool = False,
     ):
         _ORIGINAL_EVAL(self)
         if not isinstance(domain, PolynomialZonotope):
@@ -1599,6 +1655,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
             chebyshev_degree=chebyshev_degree,
             residual_subdivisions=residual_subdivisions,
             reduce=reduce,
+            return_trace=return_trace,
         )
 
     def pz_l2norm_with_interval(
