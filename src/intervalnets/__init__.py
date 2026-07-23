@@ -72,6 +72,8 @@ try:
         pz_l2norm,
         pz_sobolev_norm,
         pz_twojet_forward,
+        PZTwoJetTraceRecord,
+        PZTwoJetTraceResult,
     )
 except ImportError:  # pragma: no cover - optional dependency
     pass
@@ -87,5 +89,7 @@ else:
             "pz_l2norm",
             "pz_sobolev_norm",
             "pz_twojet_forward",
+            "PZTwoJetTraceRecord",
+            "PZTwoJetTraceResult",
         ]
     )

@@ -190,3 +190,67 @@ def test_small_tanh_network_pz_twojet_encloses_autograd_samples():
         _assert_contains(y_interval, y)
         _assert_contains(j_interval, jac)
         _assert_contains(h_interval, hess)
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_pz_twojet_trace_is_opt_in_and_records_sequential_children():
+    from intervalnets import PZTwoJet, PZTwoJetTraceResult
+
+    model = nn.Sequential(nn.Identity(), nn.Linear(2, 3, dtype=torch.float64), nn.Tanh(), nn.Linear(3, 1, dtype=torch.float64)).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.2, 0.1], dtype=torch.float64),
+        torch.tensor([0.3, 0.4], dtype=torch.float64),
+    )
+
+    untraced = pz_twojet_forward(model, domain, residual_subdivisions=32)
+    traced = pz_twojet_forward(model, domain, residual_subdivisions=32, return_trace=True)
+
+    assert isinstance(untraced, PZTwoJet)
+    assert isinstance(traced, PZTwoJetTraceResult)
+    assert len(traced.records) == 1 + len(model)
+    assert traced.records[0].layer_index == -1
+    assert traced.records[0].layer_name == "input"
+    assert traced.records[0].layer_type == "Input"
+    assert [record.layer_type for record in traced.records[1:]] == ["Identity", "Linear", "Tanh", "Linear"]
+
+    for record in traced.records:
+        assert set(record.summary) == {"Y", "J", "H"}
+        for component_name in ("Y", "J", "H"):
+            component = getattr(record.jet, component_name)
+            summary = record.summary[component_name]
+            assert summary["shape"] == component.shape
+            assert summary["num_noise"] == component.num_noise
+            assert summary["noise_kinds"] == component.noise_kinds
+            assert summary["term_count"] == len(component.terms)
+            assert summary["max_degree"] == max((sum(exp) for exp in component.terms), default=0)
+
+    assert traced.final.Y.shape == untraced.Y.shape
+    assert traced.final.J.shape == untraced.J.shape
+    assert traced.final.H.shape == untraced.H.shape
+    assert traced.final.Y.num_noise == untraced.Y.num_noise
+    assert traced.final.J.num_noise == untraced.J.num_noise
+    assert traced.final.H.num_noise == untraced.H.num_noise
+    for traced_interval, untraced_interval in (
+        (traced.final.Y.interval_enclosure(), untraced.Y.interval_enclosure()),
+        (traced.final.J.interval_enclosure(), untraced.J.interval_enclosure()),
+        (traced.final.H.interval_enclosure(), untraced.H.interval_enclosure()),
+    ):
+        traced_lower, traced_upper = traced_interval.to_torch(dtype=torch.float64)
+        untraced_lower, untraced_upper = untraced_interval.to_torch(dtype=torch.float64)
+        assert torch.allclose(traced_lower, untraced_lower)
+        assert torch.allclose(traced_upper, untraced_upper)
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_eval_pz_twojet_return_trace_uses_monkey_patched_method():
+    from intervalnets import PZTwoJetTraceResult
+
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 2, dtype=torch.float64), nn.Tanh()).double()
+    domain = PolynomialZonotope.from_box(torch.tensor([-0.1], dtype=torch.float64), torch.tensor([0.2], dtype=torch.float64))
+
+    traced = model.eval_pz_twojet(domain, residual_subdivisions=32, return_trace=True)
+
+    assert isinstance(traced, PZTwoJetTraceResult)
+    assert len(traced.records) == 1 + len(model)
+    assert traced.records[-1].jet is traced.final
