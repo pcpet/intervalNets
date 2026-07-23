@@ -27,6 +27,61 @@ def test_addition_merges_equal_exponents():
     assert out.terms[(1,)] == 6.0
 
 
+def test_constructor_sums_duplicate_canonical_exponents():
+    z = PolynomialZonotope(0.0, {(1,): 2.0, (1, 0): 3.0}, num_noise=2)
+
+    assert z.terms == {(1, 0): 5.0}
+
+
+def test_constructor_prunes_cancelled_monomials_after_duplicate_merge():
+    z = PolynomialZonotope(0.0, {(1,): 2.0, (1, 0): -2.0, (0, 1): 4.0}, num_noise=2)
+
+    assert z.terms == {(0, 1): 4.0}
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_constructor_prunes_all_zero_torch_tensor_coefficients():
+    z = PolynomialZonotope(
+        torch.zeros(2, dtype=torch.float64),
+        {
+            (1,): torch.zeros(2, dtype=torch.float64),
+            (2,): torch.tensor([0.0, 1.0], dtype=torch.float64),
+        },
+        num_noise=1,
+    )
+
+    assert (1,) not in z.terms
+    assert torch.allclose(z.terms[(2,)], torch.tensor([0.0, 1.0], dtype=torch.float64))
+
+
+def test_constructor_keeps_exact_nonzero_coefficients_without_tolerance_pruning():
+    z = PolynomialZonotope(0.0, {(1,): 1e-300}, num_noise=1)
+
+    assert z.terms == {(1,): 1e-300}
+
+
+def test_operations_prune_terms_that_cancel_to_zero():
+    z = PolynomialZonotope(0.0, {(1,): 2.0}, num_noise=1)
+    neg_z = PolynomialZonotope(0.0, {(1,): -2.0}, num_noise=1)
+    vector = PolynomialZonotope((0.0,), {(1,): (2.0,)}, num_noise=1)
+
+    assert (z + neg_z).terms == {}
+    assert (z * 0.0).terms == {}
+    assert vector.linear_map(((0.0,),)).terms == {}
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_stack_and_tensor_product_prune_zero_terms_via_constructor():
+    zero = PolynomialZonotope(torch.tensor(0.0), {(1,): torch.tensor(0.0)}, num_noise=1)
+    nonzero = PolynomialZonotope(torch.tensor(1.0), {(1,): torch.tensor(2.0)}, num_noise=1)
+
+    stacked = PolynomialZonotope.stack((zero, zero))
+    product = zero.tensor_product(nonzero)
+
+    assert stacked.terms == {}
+    assert product.terms == {}
+
+
 def test_scalar_polynomial_multiplication_convolves_exponents():
     z = PolynomialZonotope(1.0, {(1,): 2.0}, num_noise=1)
     out = z * z

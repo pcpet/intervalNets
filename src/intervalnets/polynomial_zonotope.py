@@ -143,6 +143,22 @@ def _fallback_linear_contract(matrix: Any, coeff: Any):
     return tuple(outputs)
 
 
+def _is_zero_coeff(value: Any, *, atol: float = 0.0) -> bool:
+    """Return whether a coefficient is identically zero.
+
+    By default this performs exact zero detection so certified arithmetic does
+    not silently discard small nonzero dependencies. A positive ``atol`` may be
+    supplied by explicit opt-in callers for tolerance-based cleanup.
+    """
+
+    if torch is not None and isinstance(value, torch.Tensor):
+        if atol == 0.0:
+            return bool(torch.all(value == 0).item())
+        return bool(torch.all(torch.abs(value) <= atol).item())
+    if isinstance(value, tuple):
+        return all(_is_zero_coeff(item, atol=atol) for item in value)
+    return abs(float(value)) <= atol if atol != 0.0 else float(value) == 0.0
+
 def _zero_like(value: Any):
     if torch is not None and isinstance(value, torch.Tensor):
         return torch.zeros_like(value)
@@ -193,8 +209,6 @@ def _canonical_exponent(exponent: tuple[int, ...], num_noise: int) -> Exponent:
         raise ValueError("Exponents must be non-negative.")
     return padded
 
-
-
 def _canonical_noise_kinds(noise_kinds: tuple[str, ...] | list[str] | None, num_noise: int) -> tuple[str, ...]:
     if num_noise < 0:
         raise ValueError("num_noise must be non-negative.")
@@ -220,8 +234,6 @@ def _merge_noise_kinds(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[s
         else:
             raise ValueError(f"Incompatible noise metadata: {l_kind!r} != {r_kind!r}.")
     return tuple(merged)
-
-
 
 def _format_latex_number(value: Any, precision: int) -> str:
     number = float(value)
@@ -375,7 +387,12 @@ class PolynomialZonotope:
             value = _as_tensor(coeff, dtype=c.dtype, device=c.device) if torch is not None and isinstance(c, torch.Tensor) else _to_fallback(coeff)
             if (torch is not None and isinstance(c, torch.Tensor) and tuple(value.shape) != tuple(c.shape)) or (not (torch is not None and isinstance(c, torch.Tensor)) and _fallback_shape(value) != _fallback_shape(c)):
                 raise ValueError("Term coefficient shape must match center shape.")
-            clean[key] = _add_coeff(clean[key], value) if key in clean else value
+            if key in clean:
+                value = _add_coeff(clean[key], value)
+            if _is_zero_coeff(value):
+                clean.pop(key, None)
+            else:
+                clean[key] = value
         object.__setattr__(self, "center", c)
         object.__setattr__(self, "terms", clean)
         object.__setattr__(self, "num_noise", p)
