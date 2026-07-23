@@ -59,25 +59,32 @@ def pz_sum_squares(z: PolynomialZonotope) -> PolynomialZonotope:
 
 
 def pz_symmetric_hessian_sum_squares(hessian: PolynomialZonotope) -> PolynomialZonotope:
-    """Return ``sum_{o,a,b} H[o,a,b]^2`` using Hessian symmetry.
+    """Return the dense Hessian square sum using Hessian symmetry.
 
     The dense two-jet Hessian convention stores one full symmetric matrix per
     output with shape ``(output_dim, input_dim, input_dim)``.  For that shape,
     off-diagonal entries occur twice in the full Frobenius sum, so accumulate
     only the upper-triangular entries and double the off-diagonal squares.
+    Scalar-output Hessians may also be stored as ``(input_dim, input_dim)``;
+    that lower-rank convention is handled analogously.
     """
 
-    if len(hessian.shape) != 3 or hessian.shape[1] != hessian.shape[2]:
+    if len(hessian.shape) == 3 and hessian.shape[1] == hessian.shape[2]:
+        output_dim, input_dim, _ = hessian.shape
+        output_indices: range | tuple[None, ...] = range(output_dim)
+    elif len(hessian.shape) == 2 and hessian.shape[0] == hessian.shape[1]:
+        input_dim = hessian.shape[0]
+        output_indices = (None,)
+    else:
         return pz_sum_squares(hessian)
 
     total = _zero_scalar_like(hessian)
-    output_dim, input_dim, _ = hessian.shape
-    for out in range(output_dim):
+    for out in output_indices:
         for a in range(input_dim):
-            diagonal = hessian[out, a, a]
+            diagonal = hessian[a, a] if out is None else hessian[out, a, a]
             total = total + diagonal * diagonal
             for b in range(a + 1, input_dim):
-                off_diagonal = hessian[out, a, b]
+                off_diagonal = hessian[a, b] if out is None else hessian[out, a, b]
                 total = total + 2.0 * off_diagonal * off_diagonal
     return total
 
