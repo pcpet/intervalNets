@@ -51,6 +51,23 @@ def test_pz_symmetric_hessian_sum_squares_matches_dense_full_sum_for_symmetric_h
     _assert_same_pz(optimized, dense)
 
 
+def test_pz_symmetric_hessian_sum_squares_matches_dense_full_sum_for_scalar_output_hessian():
+    center = torch.tensor(
+        [[1.0, 2.0, -0.5], [2.0, -1.0, 0.75], [-0.5, 0.75, 1.5]],
+        dtype=torch.float64,
+    )
+    coeff = torch.tensor(
+        [[0.2, -0.1, 0.3], [-0.1, 0.4, -0.2], [0.3, -0.2, 0.1]],
+        dtype=torch.float64,
+    )
+    hessian = PolynomialZonotope(center, {(1,): coeff}, num_noise=1, noise_kinds=("domain",))
+
+    optimized = pz_symmetric_hessian_sum_squares(hessian)
+    dense = pz_sum_squares(hessian)
+
+    _assert_same_pz(optimized, dense)
+
+
 def test_pz_twojet_w22_integrand_uses_symmetric_hessian_accumulation_equivalent_to_dense_sum():
     y = PolynomialZonotope.constant(torch.tensor([0.5], dtype=torch.float64), num_noise=1, noise_kinds=("domain",))
     j = PolynomialZonotope.constant(torch.tensor([[1.0, -2.0]], dtype=torch.float64), num_noise=1, noise_kinds=("domain",))
