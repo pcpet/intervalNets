@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from math import inf, isfinite, nextafter, sqrt
 from typing import Any, Sequence
 
 from .interval import Interval
-from .polynomial_zonotope import PZTwoJet, PolynomialZonotope
+from .polynomial_zonotope import PZTwoJet, PolynomialZonotope, pz_to_latex, pz_to_markdown_code, twojet_to_latex
 from .pz_integration import PZIntegrationCell, integrate_over_cell, integrate_pz_over_domain
 
 try:  # pragma: no cover - optional dependency
@@ -48,6 +49,81 @@ def _scalar_entries(z: PolynomialZonotope):
     for index in _fallback_scalar_indices(z.center):
         yield PolynomialZonotope(_nested_get(z.center, index), {exp: _nested_get(coeff, index) for exp, coeff in z.terms.items()}, num_noise=z.num_noise, noise_kinds=z.noise_kinds)
 
+
+
+def _pz_metadata_summary(z: PolynomialZonotope) -> dict[str, Any]:
+    """Return lightweight structural metadata for a polynomial zonotope."""
+
+    return {
+        "shape": z.shape,
+        "term_count": len(z.terms),
+        "max_degree": max((sum(exp) for exp in z.terms), default=0),
+        "num_noise": z.num_noise,
+        "noise_kind_counts": dict(Counter(z.noise_kinds)),
+    }
+
+
+def build_pz_twojet_norm_diagnostics(
+    jet: PZTwoJet,
+    *,
+    include_integrands: bool = True,
+    render: bool = True,
+    max_terms: int | None = 12,
+    precision: int = 4,
+) -> dict[str, Any]:
+    """Build pre-norm diagnostics for a polynomial-zonotope two-jet.
+
+    The returned dictionary exposes the raw ``Y``, ``J``, and ``H`` zonotopes
+    by reference so callers can inspect the exact final two-jet before norm
+    integrand construction. Optional integrands are produced with the same
+    public helpers used by the norm routines, and renderer output is included
+    when ``render`` is true. The input jet is never modified.
+    """
+
+    diagnostics: dict[str, Any] = {
+        "jet": {"Y": jet.Y, "J": jet.J, "H": jet.H},
+        "metadata": {
+            "Y": _pz_metadata_summary(jet.Y),
+            "J": _pz_metadata_summary(jet.J),
+            "H": _pz_metadata_summary(jet.H),
+        },
+    }
+    diagnostics["metadata"]["total_term_count"] = sum(
+        diagnostics["metadata"][label]["term_count"] for label in ("Y", "J", "H")
+    )
+    diagnostics["metadata"]["max_degree"] = max(
+        diagnostics["metadata"][label]["max_degree"] for label in ("Y", "J", "H")
+    )
+    diagnostics["metadata"]["shapes"] = {
+        label: diagnostics["metadata"][label]["shape"] for label in ("Y", "J", "H")
+    }
+    diagnostics["metadata"]["noise_kind_counts"] = dict(
+        Counter(kind for label in ("Y", "J", "H") for kind in getattr(jet, label).noise_kinds)
+    )
+
+    if render:
+        diagnostics["rendered"] = {
+            "latex": {
+                "twojet": twojet_to_latex(jet, max_terms=max_terms, precision=precision),
+                "Y": pz_to_latex(jet.Y, max_terms=max_terms, precision=precision),
+                "J": pz_to_latex(jet.J, max_terms=max_terms, precision=precision),
+                "H": pz_to_latex(jet.H, max_terms=max_terms, precision=precision),
+            },
+            "markdown": {
+                "Y": pz_to_markdown_code(jet.Y, max_terms=max_terms, precision=precision),
+                "J": pz_to_markdown_code(jet.J, max_terms=max_terms, precision=precision),
+                "H": pz_to_markdown_code(jet.H, max_terms=max_terms, precision=precision),
+            },
+        }
+
+    if include_integrands:
+        diagnostics["integrands"] = {
+            "l2_integrand": pz_twojet_l2_integrand(jet),
+            "w12_integrand": pz_twojet_w12_integrand(jet),
+            "w22_integrand": pz_twojet_w22_integrand(jet),
+        }
+
+    return diagnostics
 
 def pz_sum_squares(z: PolynomialZonotope) -> PolynomialZonotope:
     """Return the algebraic sum of squares of every scalar entry in ``z``."""
