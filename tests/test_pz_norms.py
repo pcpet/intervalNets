@@ -2,7 +2,7 @@ import pytest
 
 from intervalnets import IntervalTensor, PZTwoJet, PolynomialZonotope, enable_interval_eval
 from intervalnets.pz_integration import PZIntegrationCell, integrate_over_cell
-from intervalnets.pz_norms import pz_sum_squares, pz_symmetric_hessian_sum_squares, pz_twojet_l2_integrand, pz_twojet_w22_integrand
+from intervalnets.pz_norms import build_pz_twojet_norm_diagnostics, pz_sum_squares, pz_symmetric_hessian_sum_squares, pz_twojet_l2_integrand, pz_twojet_w12_integrand, pz_twojet_w22_integrand
 
 try:
     import torch
@@ -27,6 +27,37 @@ def _assert_same_pz(left: PolynomialZonotope, right: PolynomialZonotope):
         assert left.center == pytest.approx(right.center)
         assert left.terms == pytest.approx(right.terms)
 
+
+
+def test_pz_twojet_norm_diagnostics_do_not_mutate_input_jet():
+    y = PolynomialZonotope(torch.tensor([1.0, -0.5], dtype=torch.float64), {(1, 0): torch.tensor([0.25, 0.1], dtype=torch.float64)}, num_noise=2, noise_kinds=("domain", "approximation"))
+    j = PolynomialZonotope(torch.tensor([[1.0], [-1.0]], dtype=torch.float64), {(0, 1): torch.tensor([[0.1], [0.2]], dtype=torch.float64)}, num_noise=2, noise_kinds=("domain", "approximation"))
+    h = PolynomialZonotope.constant(torch.zeros(2, 1, 1, dtype=torch.float64), num_noise=2, noise_kinds=("domain", "approximation"))
+    jet = PZTwoJet(y, j, h)
+
+    before = (jet.Y, jet.J, jet.H)
+    diagnostics = build_pz_twojet_norm_diagnostics(jet, max_terms=2)
+
+    assert (jet.Y, jet.J, jet.H) == before
+    assert diagnostics["jet"] == {"Y": jet.Y, "J": jet.J, "H": jet.H}
+    assert diagnostics["metadata"]["shapes"] == {"Y": (2,), "J": (2, 1), "H": (2, 1, 1)}
+    assert diagnostics["metadata"]["noise_kind_counts"] == {"domain": 3, "approximation": 3}
+    assert "twojet" in diagnostics["rendered"]["latex"]
+    assert diagnostics["rendered"]["markdown"]["Y"].startswith("```latex\n")
+
+
+def test_pz_twojet_norm_diagnostics_integrands_match_norm_helpers():
+    y = PolynomialZonotope(torch.tensor([0.5], dtype=torch.float64), {(1,): torch.tensor([0.2], dtype=torch.float64)}, num_noise=1, noise_kinds=("domain",))
+    j = PolynomialZonotope(torch.tensor([[1.0, -2.0]], dtype=torch.float64), {(1,): torch.tensor([[0.1, -0.3]], dtype=torch.float64)}, num_noise=1, noise_kinds=("domain",))
+    h = PolynomialZonotope(torch.tensor([[[1.0, 0.25], [0.25, -0.5]]], dtype=torch.float64), {(1,): torch.tensor([[[0.1, -0.2], [-0.2, 0.3]]], dtype=torch.float64)}, num_noise=1, noise_kinds=("domain",))
+    jet = PZTwoJet(y, j, h)
+
+    diagnostics = build_pz_twojet_norm_diagnostics(jet, render=False)
+
+    assert "rendered" not in diagnostics
+    _assert_same_pz(diagnostics["integrands"]["l2_integrand"], pz_twojet_l2_integrand(jet))
+    _assert_same_pz(diagnostics["integrands"]["w12_integrand"], pz_twojet_w12_integrand(jet))
+    _assert_same_pz(diagnostics["integrands"]["w22_integrand"], pz_twojet_w22_integrand(jet))
 
 def test_pz_symmetric_hessian_sum_squares_matches_dense_full_sum_for_symmetric_hessian():
     center = torch.tensor(

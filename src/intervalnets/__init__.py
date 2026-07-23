@@ -29,6 +29,7 @@ from .pz_integration import (
 )
 
 from .pz_norms import (
+    build_pz_twojet_norm_diagnostics,
     pz_norm_from_integrand,
     pz_sum_squares,
     pz_twojet_l2_integrand,
@@ -61,6 +62,7 @@ __all__ = [
     "integrate_pz_over_domain",
     "pz_l2norm_bounds",
     "pz_sobolev_norm_bounds",
+    "build_pz_twojet_norm_diagnostics",
     "pz_norm_from_integrand",
     "pz_sum_squares",
     "pz_twojet_l2_integrand",
