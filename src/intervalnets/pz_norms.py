@@ -58,6 +58,30 @@ def pz_sum_squares(z: PolynomialZonotope) -> PolynomialZonotope:
     return total
 
 
+def pz_symmetric_hessian_sum_squares(hessian: PolynomialZonotope) -> PolynomialZonotope:
+    """Return ``sum_{o,a,b} H[o,a,b]^2`` using Hessian symmetry.
+
+    The dense two-jet Hessian convention stores one full symmetric matrix per
+    output with shape ``(output_dim, input_dim, input_dim)``.  For that shape,
+    off-diagonal entries occur twice in the full Frobenius sum, so accumulate
+    only the upper-triangular entries and double the off-diagonal squares.
+    """
+
+    if len(hessian.shape) != 3 or hessian.shape[1] != hessian.shape[2]:
+        return pz_sum_squares(hessian)
+
+    total = _zero_scalar_like(hessian)
+    output_dim, input_dim, _ = hessian.shape
+    for out in range(output_dim):
+        for a in range(input_dim):
+            diagonal = hessian[out, a, a]
+            total = total + diagonal * diagonal
+            for b in range(a + 1, input_dim):
+                off_diagonal = hessian[out, a, b]
+                total = total + 2.0 * off_diagonal * off_diagonal
+    return total
+
+
 def pz_twojet_l2_integrand(jet: PZTwoJet) -> PolynomialZonotope:
     """Squared L2 integrand ``sum_i Y_i^2`` for a two-jet."""
 
@@ -73,7 +97,7 @@ def pz_twojet_w12_integrand(jet: PZTwoJet) -> PolynomialZonotope:
 def pz_twojet_w22_integrand(jet: PZTwoJet) -> PolynomialZonotope:
     """Squared W^{2,2} integrand including value, Jacobian, and Hessian."""
 
-    return pz_twojet_w12_integrand(jet) + pz_sum_squares(jet.H)
+    return pz_twojet_w12_integrand(jet) + pz_symmetric_hessian_sum_squares(jet.H)
 
 
 def _require_p2(p: float) -> None:
