@@ -118,6 +118,15 @@ def _fallback_zip(left: Any, right: Any, op):
     return op(left, right)
 
 
+def _fallback_get(value: Any, item: Any):
+    if not isinstance(item, tuple):
+        return value[item]
+    out = value
+    for idx in item:
+        out = out[idx]
+    return out
+
+
 def _fallback_linear_contract(matrix: Any, coeff: Any):
     rows = tuple(tuple(float(value) for value in row) for row in matrix)
     if not isinstance(coeff, tuple):
@@ -518,7 +527,12 @@ class PolynomialZonotope:
     def __getitem__(self, item: Any) -> "PolynomialZonotope":
         if torch is not None and isinstance(self.center, torch.Tensor):
             return PolynomialZonotope(self.center[item], {e: c[item] for e, c in self.terms.items()}, num_noise=self.num_noise, noise_kinds=self.noise_kinds)
-        return PolynomialZonotope(self.center[item], {e: c[item] for e, c in self.terms.items()}, num_noise=self.num_noise, noise_kinds=self.noise_kinds)
+        return PolynomialZonotope(
+            _fallback_get(self.center, item),
+            {e: _fallback_get(c, item) for e, c in self.terms.items()},
+            num_noise=self.num_noise,
+            noise_kinds=self.noise_kinds,
+        )
 
     @staticmethod
     def stack(items: list["PolynomialZonotope"] | tuple["PolynomialZonotope", ...], dim: int = 0) -> "PolynomialZonotope":
