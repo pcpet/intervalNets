@@ -1,7 +1,14 @@
 """Interval arithmetic utilities for neural network evaluation."""
 
 from .interval import Interval
-from .polynomial_zonotope import PZTwoJet, PolynomialZonotope, collect_pz_diagnostics
+from .polynomial_zonotope import (
+    PZTwoJet,
+    PolynomialZonotope,
+    collect_pz_diagnostics,
+    pz_to_latex,
+    pz_to_markdown_code,
+    twojet_to_latex,
+)
 from .pz_tanh import (
     AffineTanhEnclosure,
     TanhApproximation,
@@ -37,6 +44,9 @@ __all__ = [
     "PolynomialZonotope",
     "PZTwoJet",
     "collect_pz_diagnostics",
+    "pz_to_latex",
+    "pz_to_markdown_code",
+    "twojet_to_latex",
     "AffineTanhEnclosure",
     "TanhApproximation",
     "affine_tanh_double_prime_enclosure",
