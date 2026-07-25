@@ -10,19 +10,24 @@ into a purely symbolic treatment explicitly.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import product
 from math import inf, isfinite, nextafter, prod, sqrt
+from numbers import Real
 from typing import Any, Literal, Sequence
 
 from .interval import Interval
 from .polynomial_zonotope import (
     Exponent,
+    PZTwoJet,
     PolynomialZonotope,
     _abs_coeff,
     _add_coeff,
     _mul_coeff,
+    _merge_noise_kinds,
     _to_fallback,
     _zero_like,
     box_monomial_moment,
+    torch,
 )
 
 try:  # pragma: no cover - optional dependency
@@ -233,6 +238,183 @@ def integrate_over_cell(pz_expr: PolynomialZonotope, cell: PZIntegrationCell, *,
     if output == "pz":
         return integrate_pz_over_domain(weighted, cell.domain_noise_indices, mode="symbolic").polynomial
     return integrate_pz_over_domain(weighted, cell.domain_noise_indices, mode="pointwise_interval").interval_enclosure()
+
+
+TwoJetIntegrandKind = Literal["l2", "w12", "w22"]
+
+
+def _scalar_coordinates(zonotope: PolynomialZonotope) -> list[PolynomialZonotope]:
+    """Flatten a tensor-valued PZ without converting its scalar coefficients."""
+
+    if zonotope.shape == ():
+        return [zonotope]
+    return [zonotope[index] for index in product(*(range(size) for size in zonotope.shape))]
+
+
+def _twojet_weighted_coordinates(
+    jet: PZTwoJet, integrand_kind: TwoJetIntegrandKind
+) -> tuple[list[PolynomialZonotope], list[float]]:
+    if integrand_kind not in {"l2", "w12", "w22"}:
+        raise ValueError("integrand_kind must be 'l2', 'w12', or 'w22'.")
+
+    coordinates = _scalar_coordinates(jet.Y)
+    weights = [1.0] * len(coordinates)
+    if integrand_kind in {"w12", "w22"}:
+        jacobian = _scalar_coordinates(jet.J)
+        coordinates.extend(jacobian)
+        weights.extend([1.0] * len(jacobian))
+    if integrand_kind == "w22":
+        shape = jet.H.shape
+        if len(shape) == 3 and shape[1] == shape[2]:
+            output_indices: tuple[int | None, ...] = tuple(range(shape[0]))
+            input_dim = shape[1]
+        elif len(shape) == 2 and shape[0] == shape[1]:
+            output_indices = (None,)
+            input_dim = shape[0]
+        else:
+            raise ValueError("w22 direct integration requires a square stored Hessian.")
+        for output in output_indices:
+            for row in range(input_dim):
+                for column in range(row, input_dim):
+                    index = (row, column) if output is None else (output, row, column)
+                    coordinates.append(jet.H[index])
+                    weights.append(1.0 if row == column else 2.0)
+    return coordinates, weights
+
+
+def _validate_twojet_metadata(jet: PZTwoJet) -> tuple[int, tuple[str, ...]]:
+    components = (jet.Y, jet.J, jet.H)
+    num_noise = components[0].num_noise
+    if any(component.num_noise != num_noise for component in components[1:]):
+        raise ValueError("Y, J, and H must have identical num_noise metadata.")
+    noise_kinds = components[0].noise_kinds
+    for component in components[1:]:
+        noise_kinds = _merge_noise_kinds(noise_kinds, component.noise_kinds)
+    return num_noise, noise_kinds
+
+
+def _coefficient_matrix(
+    coordinates: Sequence[PolynomialZonotope], union_support: Sequence[Exponent]
+) -> tuple[Any, Any]:
+    centers = [coordinate.center for coordinate in coordinates]
+    matrix = [
+        [coordinate.terms.get(exponent, _zero_like(coordinate.center)) for coordinate in coordinates]
+        for exponent in union_support
+    ]
+    if torch is not None and isinstance(centers[0], torch.Tensor):
+        center_vector = torch.stack(centers)
+        if matrix:
+            return center_vector, torch.stack([torch.stack(row) for row in matrix])
+        return center_vector, torch.empty((0, len(centers)), dtype=center_vector.dtype, device=center_vector.device)
+    return centers, matrix
+
+
+def _weighted_dot(left: Sequence[Any], right: Sequence[Any], weights: Sequence[float]):
+    result = _zero_like(left[0])
+    for lhs, rhs, weight in zip(left, right, weights):
+        result = _add_coeff(result, _mul_coeff(_mul_coeff(lhs, rhs), weight))
+    return result
+
+
+def integrate_pz_twojet_squared(
+    jet: PZTwoJet, cell: PZIntegrationCell, integrand_kind: TwoJetIntegrandKind
+):
+    """Directly integrate a squared two-jet over a supported affine cell.
+
+    Unsupported densities and Hessian layouts deliberately use the explicit
+    squared-integrand reference pipeline.
+    """
+
+    def explicit_fallback():
+        from .pz_norms import (
+            pz_twojet_l2_integrand,
+            pz_twojet_w12_integrand,
+            pz_twojet_w22_integrand,
+        )
+
+        constructor = {
+            "l2": pz_twojet_l2_integrand,
+            "w12": pz_twojet_w12_integrand,
+            "w22": pz_twojet_w22_integrand,
+        }.get(integrand_kind)
+        if constructor is None:
+            raise ValueError("integrand_kind must be 'l2', 'w12', or 'w22'.")
+        return integrate_over_cell(constructor(jet), cell, output="interval")
+
+    density = cell.jacobian_density
+    if not isinstance(density, Real) or not isfinite(float(density)) or float(density) < 0.0:
+        return explicit_fallback()
+
+    num_noise, noise_kinds = _validate_twojet_metadata(jet)
+    try:
+        coordinates, weights = _twojet_weighted_coordinates(jet, integrand_kind)
+    except ValueError as error:
+        if "Hessian" in str(error):
+            return explicit_fallback()
+        raise
+    if not coordinates:
+        return explicit_fallback()
+
+    domain_indices = tuple(int(index) for index in cell.domain_noise_indices)
+    if len(set(domain_indices)) != len(domain_indices) or any(index < 0 or index >= num_noise for index in domain_indices):
+        raise ValueError("cell domain noise index out of range or duplicated.")
+    domain_set = set(domain_indices)
+    retained_indices = tuple(index for index in range(num_noise) if index not in domain_set)
+    retained_kinds = tuple(noise_kinds[index] for index in retained_indices)
+    pointwise_indices = tuple(index for index, kind in enumerate(noise_kinds) if kind in POINTWISE_RESIDUAL_KINDS)
+    measure = float(2 ** len(domain_indices))
+    scale = float(density)
+
+    support = sorted(set().union(*(coordinate.terms for coordinate in coordinates)))
+    centers, matrix = _coefficient_matrix(coordinates, support)
+    if torch is not None and isinstance(centers, torch.Tensor):
+        weight_vector = torch.tensor(weights, dtype=centers.dtype, device=centers.device)
+        weighted_matrix = matrix * weight_vector.unsqueeze(0)
+        center_cross = weighted_matrix @ centers
+        gram = weighted_matrix @ matrix.T
+        center_square = torch.dot(centers * weight_vector, centers)
+    else:
+        center_cross = [_weighted_dot(row, centers, weights) for row in matrix]
+        gram = [[_weighted_dot(left, right, weights) for right in matrix] for left in matrix]
+        center_square = _weighted_dot(centers, centers, weights)
+
+    retained: dict[Exponent, Any] = {}
+    pointwise: dict[Exponent, Any] = {}
+    zero_retained = (0,) * len(retained_indices)
+
+    def accumulate(target: dict[Exponent, Any], exponent: Exponent, coefficient: Any) -> None:
+        target[exponent] = _add_coeff(target[exponent], coefficient) if exponent in target else coefficient
+
+    def route(exponent: Exponent, coefficient: Any) -> None:
+        scaled = _mul_coeff(coefficient, scale)
+        if any(exponent[index] for index in pointwise_indices):
+            accumulate(pointwise, exponent, scaled)
+            return
+        moment = box_monomial_moment(tuple(exponent[index] for index in domain_indices))
+        if moment == 0.0:
+            return
+        retained_exponent = tuple(exponent[index] for index in retained_indices)
+        accumulate(retained, retained_exponent, _mul_coeff(scaled, moment))
+
+    route((0,) * num_noise, center_square)
+    for index, exponent in enumerate(support):
+        route(exponent, _mul_coeff(center_cross[index], 2.0))
+        for other_index in range(index, len(support)):
+            pair_exponent = tuple(a + b for a, b in zip(exponent, support[other_index]))
+            factor = 1.0 if index == other_index else 2.0
+            route(pair_exponent, _mul_coeff(gram[index][other_index], factor))
+
+    center = retained.pop(zero_retained, _zero_like(centers[0]))
+    radius = _zero_like(center)
+    for coefficient in pointwise.values():
+        radius = _add_coeff(radius, _mul_coeff(_abs_coeff(coefficient), measure))
+    result = IntegratedPZResult(
+        polynomial=PolynomialZonotope(center, retained, num_noise=len(retained_indices), noise_kinds=retained_kinds),
+        interval_radius=radius,
+        measure=measure,
+        metadata={"mode": "pointwise_interval", "direct_twojet_squared": True, "integrand_kind": integrand_kind},
+    )
+    return result.interval_enclosure()
 
 
 def _require_interval_tensor_domain(domain: Any):

@@ -1,12 +1,15 @@
+from dataclasses import replace
+
 import pytest
 
-from intervalnets import PolynomialZonotope
+from intervalnets import PZTwoJet, PolynomialZonotope
 from intervalnets.pz_integration import (
     IntegratedPZResult,
     POINTWISE_RESIDUAL_KINDS,
     PZIntegrationCell,
     integrate_over_cell,
     integrate_pz_over_domain,
+    integrate_pz_twojet_squared,
 )
 from intervalnets.pz_tanh import (
     affine_tanh_double_prime_enclosure,
@@ -19,6 +22,69 @@ try:
     import torch
 except ImportError:  # pragma: no cover
     torch = None
+
+
+def _assert_interval_close(left, right):
+    assert float(left.lower) == pytest.approx(float(right.lower), rel=1e-12, abs=1e-12)
+    assert float(left.upper) == pytest.approx(float(right.upper), rel=1e-12, abs=1e-12)
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+@pytest.mark.parametrize("kind", ["l2", "w12", "w22"])
+def test_direct_twojet_square_matches_explicit_with_unequal_tensor_supports(kind):
+    from intervalnets.pz_norms import pz_twojet_l2_integrand, pz_twojet_w12_integrand, pz_twojet_w22_integrand
+
+    torch.manual_seed(19)
+    kinds = ("domain", "approximation_symbolic", "approximation_pointwise")
+    y = PolynomialZonotope(torch.randn(2, dtype=torch.float64), {(1, 0, 0): torch.randn(2, dtype=torch.float64)}, num_noise=3, noise_kinds=kinds)
+    j = PolynomialZonotope(torch.randn(2, 2, dtype=torch.float64), {(0, 1, 0): torch.randn(2, 2, dtype=torch.float64), (1, 0, 1): torch.randn(2, 2, dtype=torch.float64)}, num_noise=3, noise_kinds=kinds)
+    h = PolynomialZonotope(torch.randn(2, 2, 2, dtype=torch.float64), {(2, 0, 0): torch.randn(2, 2, 2, dtype=torch.float64), (0, 0, 1): torch.randn(2, 2, 2, dtype=torch.float64)}, num_noise=3, noise_kinds=kinds)
+    jet = PZTwoJet(y, j, h)
+    cell = PZIntegrationCell.from_bounds((-2.0,), (2.0,))
+    constructors = {"l2": pz_twojet_l2_integrand, "w12": pz_twojet_w12_integrand, "w22": pz_twojet_w22_integrand}
+
+    direct = integrate_pz_twojet_squared(jet, cell, kind)
+    explicit = integrate_over_cell(constructors[kind](jet), cell, output="interval")
+
+    _assert_interval_close(direct, explicit)
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_direct_twojet_square_canonicalizes_pointwise_cancellation_and_keeps_odd_domain_terms():
+    kinds = ("domain", "approximation_pointwise")
+    zero_j = PolynomialZonotope.constant(torch.zeros((2, 1), dtype=torch.float64), num_noise=2, noise_kinds=kinds)
+    zero_h = PolynomialZonotope.constant(torch.zeros((2, 1, 1), dtype=torch.float64), num_noise=2, noise_kinds=kinds)
+    cell = PZIntegrationCell.from_bounds((-1.0,), (1.0,))
+
+    cancelling_y = PolynomialZonotope(torch.tensor([1.0, 1.0], dtype=torch.float64), {(0, 1): torch.tensor([1.0, -1.0], dtype=torch.float64)}, num_noise=2, noise_kinds=kinds)
+    cancelling = integrate_pz_twojet_squared(PZTwoJet(cancelling_y, zero_j, zero_h), cell, "l2")
+    assert float(cancelling.lower) == pytest.approx(0.0, abs=1e-14)
+    assert float(cancelling.upper) == pytest.approx(8.0)
+
+    odd_y = PolynomialZonotope(torch.tensor([0.0], dtype=torch.float64), {(1, 0): torch.tensor([1.0], dtype=torch.float64), (0, 1): torch.tensor([1.0], dtype=torch.float64)}, num_noise=2, noise_kinds=kinds)
+    odd_jet = PZTwoJet(odd_y, zero_j[:1], zero_h[:1])
+    direct = integrate_pz_twojet_squared(odd_jet, cell, "l2")
+    from intervalnets.pz_norms import pz_twojet_l2_integrand
+    explicit = integrate_over_cell(pz_twojet_l2_integrand(odd_jet), cell, output="interval")
+    _assert_interval_close(direct, explicit)
+    assert float(direct.lower) < -5.0  # The odd alpha*eta term receives full measure.
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_direct_twojet_square_falls_back_for_polynomial_density():
+    kinds = ("domain",)
+    cell = PZIntegrationCell.from_bounds((-1.0,), (1.0,))
+    cell = replace(cell, jacobian_density=PolynomialZonotope.constant(1.0, num_noise=1, noise_kinds=kinds))
+    jet = PZTwoJet(
+        PolynomialZonotope(torch.tensor([1.0], dtype=torch.float64), {(1,): torch.tensor([0.5], dtype=torch.float64)}, num_noise=1, noise_kinds=kinds),
+        PolynomialZonotope.constant(torch.zeros((1, 1), dtype=torch.float64), num_noise=1, noise_kinds=kinds),
+        PolynomialZonotope.constant(torch.zeros((1, 1, 1), dtype=torch.float64), num_noise=1, noise_kinds=kinds),
+    )
+    from intervalnets.pz_norms import pz_twojet_l2_integrand
+
+    direct = integrate_pz_twojet_squared(jet, cell, "l2")
+    explicit = integrate_over_cell(pz_twojet_l2_integrand(jet), cell, output="interval")
+    _assert_interval_close(direct, explicit)
 
 
 def test_integrating_pointwise_residual_adds_radius_not_symbolic_moment():
