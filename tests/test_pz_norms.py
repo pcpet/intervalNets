@@ -2,7 +2,7 @@ import pytest
 
 from intervalnets import IntervalTensor, PZTwoJet, PolynomialZonotope, enable_interval_eval
 from intervalnets.pz_integration import PZIntegrationCell, integrate_over_cell
-from intervalnets.pz_norms import build_pz_twojet_norm_diagnostics, pz_sum_squares, pz_symmetric_hessian_sum_squares, pz_twojet_l2_integrand, pz_twojet_w12_integrand, pz_twojet_w22_integrand
+from intervalnets.pz_norms import build_pz_twojet_norm_diagnostics, pz_norm_from_integrand, pz_sum_squares, pz_symmetric_hessian_sum_squares, pz_twojet_l2_integrand, pz_twojet_l2_norm, pz_twojet_w12_integrand, pz_twojet_w12_norm, pz_twojet_w22_integrand, pz_twojet_w22_norm
 
 try:
     import torch
@@ -111,6 +111,43 @@ def test_pz_twojet_w22_integrand_uses_symmetric_hessian_accumulation_equivalent_
     dense = pz_sum_squares(y) + pz_sum_squares(j) + pz_sum_squares(h)
 
     _assert_same_pz(optimized, dense)
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+@pytest.mark.parametrize(
+    ("norm", "integrand"),
+    [(pz_twojet_l2_norm, pz_twojet_l2_integrand), (pz_twojet_w12_norm, pz_twojet_w12_integrand), (pz_twojet_w22_norm, pz_twojet_w22_integrand)],
+)
+@pytest.mark.parametrize("constant", [0.0, 2.5])
+def test_public_twojet_norm_direct_path_matches_explicit_for_zero_and_constant_jets(norm, integrand, constant):
+    kinds = ("domain",)
+    jet = PZTwoJet(
+        PolynomialZonotope.constant(torch.tensor([constant], dtype=torch.float64), num_noise=1, noise_kinds=kinds),
+        PolynomialZonotope.constant(torch.zeros((1, 2), dtype=torch.float64), num_noise=1, noise_kinds=kinds),
+        PolynomialZonotope.constant(torch.zeros((1, 2, 2), dtype=torch.float64), num_noise=1, noise_kinds=kinds),
+    )
+    cell = PZIntegrationCell.from_bounds((-1.0,), (1.0,))
+
+    direct = norm(jet, cell)
+    explicit = pz_norm_from_integrand(integrand(jet), cell)
+
+    assert float(direct.lower) == pytest.approx(float(explicit.lower), abs=1e-12)
+    assert float(direct.upper) == pytest.approx(float(explicit.upper), abs=1e-12)
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_direct_w22_uses_authoritative_upper_hessian_and_weight_two():
+    kinds = ("domain",)
+    zero_y = PolynomialZonotope.constant(torch.zeros(1, dtype=torch.float64), num_noise=1, noise_kinds=kinds)
+    zero_j = PolynomialZonotope.constant(torch.zeros((1, 2), dtype=torch.float64), num_noise=1, noise_kinds=kinds)
+    # The deliberately different lower entry must be ignored.
+    h = PolynomialZonotope.constant(torch.tensor([[[0.0, 3.0], [100.0, 0.0]]], dtype=torch.float64), num_noise=1, noise_kinds=kinds)
+    jet = PZTwoJet(zero_y, zero_j, h)
+    result = pz_twojet_w22_norm(jet, PZIntegrationCell.from_bounds((-1.0,), (1.0,)))
+
+    expected = (2.0 * 2.0 * 3.0**2) ** 0.5
+    assert float(result.lower) == pytest.approx(expected)
+    assert float(result.upper) == pytest.approx(expected)
 
 
 def _small_tanh_model(input_dim=1, hidden_dim=2, output_dim=1):

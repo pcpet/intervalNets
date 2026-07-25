@@ -8,7 +8,7 @@ from typing import Any, Sequence
 
 from .interval import Interval
 from .polynomial_zonotope import PZTwoJet, PolynomialZonotope, pz_to_latex, pz_to_markdown_code, twojet_to_latex
-from .pz_integration import PZIntegrationCell, integrate_over_cell, integrate_pz_over_domain
+from .pz_integration import PZIntegrationCell, integrate_over_cell, integrate_pz_over_domain, integrate_pz_twojet_squared
 
 try:  # pragma: no cover - optional dependency
     import torch
@@ -212,12 +212,21 @@ def pz_norm_from_integrand(
 
 
 def pz_twojet_l2_norm(jet: PZTwoJet, cell: PZIntegrationCell | None = None, *, p: float = 2.0) -> Interval:
-    return pz_norm_from_integrand(pz_twojet_l2_integrand(jet), cell, p=p)
+    _require_p2(p)
+    if cell is not None:
+        return _sqrt_interval_nonnegative(integrate_pz_twojet_squared(jet, cell, "l2"))
+    return pz_norm_from_integrand(pz_twojet_l2_integrand(jet), p=p)
 
 
 def pz_twojet_w12_norm(jet: PZTwoJet, cell: PZIntegrationCell | None = None, *, p: float = 2.0) -> Interval:
-    return pz_norm_from_integrand(pz_twojet_w12_integrand(jet), cell, p=p)
+    _require_p2(p)
+    if cell is not None:
+        return _sqrt_interval_nonnegative(integrate_pz_twojet_squared(jet, cell, "w12"))
+    return pz_norm_from_integrand(pz_twojet_w12_integrand(jet), p=p)
 
 
 def pz_twojet_w22_norm(jet: PZTwoJet, cell: PZIntegrationCell | None = None, *, p: float = 2.0) -> Interval:
-    return pz_norm_from_integrand(pz_twojet_w22_integrand(jet), cell, p=p)
+    _require_p2(p)
+    if cell is not None:
+        return _sqrt_interval_nonnegative(integrate_pz_twojet_squared(jet, cell, "w22"))
+    return pz_norm_from_integrand(pz_twojet_w22_integrand(jet), p=p)
