@@ -87,6 +87,71 @@ def test_direct_twojet_square_falls_back_for_polynomial_density():
     _assert_interval_close(direct, explicit)
 
 
+def test_direct_twojet_square_vectorizes_float_coefficients(monkeypatch):
+    import intervalnets.pz_integration as pz_integration
+
+    if pz_integration.np is None:
+        pytest.skip("NumPy not installed")
+    kinds = ("domain", "approximation_pointwise")
+    y = PolynomialZonotope(
+        (1.0, -0.5),
+        {
+            (1, 0): (0.25, 0.75),
+            (0, 1): (-0.1, 0.2),
+        },
+        num_noise=2,
+        noise_kinds=kinds,
+    )
+    zero_j = PolynomialZonotope.constant(((0.0,), (0.0,)), num_noise=2, noise_kinds=kinds)
+    zero_h = PolynomialZonotope.constant((((0.0,),), ((0.0,),)), num_noise=2, noise_kinds=kinds)
+    jet = PZTwoJet(y, zero_j, zero_h)
+    cell = PZIntegrationCell.from_bounds((-1.0,), (1.0,))
+
+    from intervalnets.pz_norms import pz_twojet_l2_integrand
+
+    explicit = integrate_over_cell(pz_twojet_l2_integrand(jet), cell, output="interval")
+
+    def fail_python_dot(*args, **kwargs):
+        raise AssertionError("float coefficients should use the vectorized NumPy path")
+
+    monkeypatch.setattr(pz_integration, "_weighted_dot", fail_python_dot)
+    direct = integrate_pz_twojet_squared(jet, cell, "l2")
+
+    _assert_interval_close(direct, explicit)
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_adaptive_squared_contribution_avoids_explicit_integrand(monkeypatch):
+    import intervalnets.pz_integration as pz_integration
+    from intervalnets import IntervalTensor, enable_interval_eval
+
+    enable_interval_eval()
+    model = torch.nn.Sequential(
+        torch.nn.Linear(1, 2, dtype=torch.float64),
+        torch.nn.Tanh(),
+        torch.nn.Linear(2, 1, dtype=torch.float64),
+    )
+    domain = IntervalTensor.from_bounds([-0.5], [0.5])
+
+    def fail_explicit_integrand(*args, **kwargs):
+        raise AssertionError("adaptive affine cells must use direct squared integration")
+
+    def fail_python_dot(*args, **kwargs):
+        raise AssertionError("adaptive scalar coefficients should use a vectorized path")
+
+    monkeypatch.setattr(pz_integration, "_squared_twojet_integrand", fail_explicit_integrand)
+    monkeypatch.setattr(pz_integration, "_weighted_dot", fail_python_dot)
+    cached = pz_integration._evaluate_squared_contribution_cache(
+        model,
+        domain,
+        integrand_kind="w22",
+        chebyshev_degree=3,
+        residual_subdivisions=16,
+    )
+
+    assert cached.contribution.lower <= cached.contribution.upper
+
+
 def test_integrating_pointwise_residual_adds_radius_not_symbolic_moment():
     z = PolynomialZonotope(
         1.0,

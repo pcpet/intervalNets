@@ -30,6 +30,11 @@ from .polynomial_zonotope import (
     torch,
 )
 
+try:  # pragma: no cover - optional acceleration
+    import numpy as np
+except ImportError:  # pragma: no cover
+    np = None  # type: ignore[assignment]
+
 try:  # pragma: no cover - optional dependency
     from .pytorch import IntervalTensor
 except ImportError:  # pragma: no cover
@@ -316,6 +321,183 @@ def _weighted_dot(left: Sequence[Any], right: Sequence[Any], weights: Sequence[f
     return result
 
 
+def _is_real_scalar_coefficient(value: Any) -> bool:
+    if isinstance(value, Real):
+        return True
+    return bool(
+        torch is not None
+        and isinstance(value, torch.Tensor)
+        and value.numel() == 1
+        and not value.is_complex()
+    )
+
+
+def _real_scalar_value(value: Any) -> float:
+    if torch is not None and isinstance(value, torch.Tensor):
+        return float(value.detach().item())
+    return float(value)
+
+
+def _all_real_scalar_coefficients(centers: Sequence[Any], matrix: Sequence[Sequence[Any]]) -> bool:
+    """Return whether a possibly mixed coefficient table can use NumPy."""
+
+    return all(_is_real_scalar_coefficient(value) for value in centers) and all(
+        _is_real_scalar_coefficient(value) for row in matrix for value in row
+    )
+
+
+def _integrate_numpy_twojet_square(
+    *,
+    support: Sequence[Exponent],
+    num_noise: int,
+    center_square: float,
+    center_cross: Any,
+    gram: Any,
+    scale: float,
+    measure: float,
+    domain_indices: tuple[int, ...],
+    retained_indices: tuple[int, ...],
+    pointwise_indices: tuple[int, ...],
+):
+    """Canonicalize and integrate the dense-real contraction in vectorized batches."""
+
+    support_size = len(support)
+    support_array = np.asarray(support, dtype=np.int64).reshape(support_size, num_noise)
+    row_indices, column_indices = np.triu_indices(support_size)
+    pair_coefficients = gram[row_indices, column_indices].copy()
+    pair_coefficients[row_indices != column_indices] *= 2.0
+
+    all_coefficients = np.concatenate(
+        (
+            np.asarray((center_square,), dtype=float),
+            2.0 * np.asarray(center_cross, dtype=float),
+            pair_coefficients,
+        )
+    )
+
+    # Canonicalize before any absolute value, exactly as required for
+    # pointwise approximation residuals. Encode exponent rows as collision-free
+    # mixed-radix int64 keys whenever possible. Pair exponents then correspond
+    # exactly to adding their keys, and NumPy sorts eight-byte integers instead
+    # of repeatedly comparing full exponent rows.
+    maximum_pair_exponents = (
+        2 * support_array.max(axis=0)
+        if support_size
+        else np.zeros(num_noise, dtype=np.int64)
+    )
+    bases = maximum_pair_exponents + 1
+    strides_list: list[int] = []
+    capacity = 1
+    for base in bases:
+        strides_list.append(capacity)
+        capacity *= int(base)
+    if capacity <= np.iinfo(np.int64).max:
+        strides = np.asarray(strides_list, dtype=np.int64)
+        support_codes = support_array @ strides
+        pair_codes = support_codes[row_indices] + support_codes[column_indices]
+        all_codes = np.concatenate(
+            (
+                np.zeros(1, dtype=np.int64),
+                support_codes,
+                pair_codes,
+            )
+        )
+        canonical_codes, inverse = np.unique(all_codes, return_inverse=True)
+        canonical_exponents = (
+            (canonical_codes[:, np.newaxis] // strides[np.newaxis, :])
+            % bases[np.newaxis, :]
+        )
+    else:
+        # Extremely wide supports may exceed a signed 64-bit mixed-radix key.
+        # Keep an exact row-based path for those cases.
+        pair_exponents = support_array[row_indices] + support_array[column_indices]
+        all_exponents = np.concatenate(
+            (
+                np.zeros((1, num_noise), dtype=np.int64),
+                support_array,
+                pair_exponents,
+            ),
+            axis=0,
+        )
+        canonical_exponents, inverse = np.unique(
+            all_exponents,
+            axis=0,
+            return_inverse=True,
+        )
+    canonical_coefficients = np.bincount(
+        inverse,
+        weights=all_coefficients,
+        minlength=len(canonical_exponents),
+    )
+
+    if pointwise_indices:
+        pointwise_mask = np.any(canonical_exponents[:, pointwise_indices] != 0, axis=1)
+    else:
+        pointwise_mask = np.zeros(len(canonical_exponents), dtype=bool)
+    radius = float(scale * measure * np.abs(canonical_coefficients[pointwise_mask]).sum())
+
+    exact_exponents = canonical_exponents[~pointwise_mask]
+    exact_coefficients = canonical_coefficients[~pointwise_mask]
+    if domain_indices:
+        domain_exponents = exact_exponents[:, domain_indices]
+        even_mask = np.all(domain_exponents % 2 == 0, axis=1)
+        exact_exponents = exact_exponents[even_mask]
+        exact_coefficients = exact_coefficients[even_mask]
+        domain_exponents = domain_exponents[even_mask]
+        moments = np.prod(2.0 / (domain_exponents + 1.0), axis=1)
+    else:
+        moments = np.ones(len(exact_coefficients), dtype=float)
+    integrated_coefficients = scale * moments * exact_coefficients
+
+    if retained_indices:
+        retained_exponents = exact_exponents[:, retained_indices]
+        retained_bases = bases[np.asarray(retained_indices)]
+        retained_strides_list: list[int] = []
+        retained_capacity = 1
+        for base in retained_bases:
+            retained_strides_list.append(retained_capacity)
+            retained_capacity *= int(base)
+        encoded_retained = retained_capacity <= np.iinfo(np.int64).max
+        if encoded_retained:
+            retained_strides = np.asarray(retained_strides_list, dtype=np.int64)
+            retained_codes = retained_exponents @ retained_strides
+            canonical_retained_codes, retained_inverse = np.unique(
+                retained_codes,
+                return_inverse=True,
+            )
+            retained_group_count = len(canonical_retained_codes)
+        else:
+            canonical_retained, retained_inverse = np.unique(
+                retained_exponents,
+                axis=0,
+                return_inverse=True,
+            )
+            retained_group_count = len(canonical_retained)
+        canonical_integrated = np.bincount(
+            retained_inverse,
+            weights=integrated_coefficients,
+            minlength=retained_group_count,
+        )
+        zero_mask = (
+            canonical_retained_codes == 0
+            if encoded_retained
+            else np.all(canonical_retained == 0, axis=1)
+        )
+        center = float(canonical_integrated[zero_mask].sum())
+        symbolic_radius = float(np.abs(canonical_integrated[~zero_mask]).sum())
+    else:
+        center = float(integrated_coefficients.sum())
+        symbolic_radius = 0.0
+
+    # Match ``IntegratedPZResult.interval_enclosure`` without materializing a
+    # retained PolynomialZonotope containing tens of thousands of terms.
+    base = Interval.from_bounds(
+        nextafter(center - symbolic_radius, -inf),
+        nextafter(center + symbolic_radius, inf),
+    )
+    return base + Interval.from_bounds(-radius, radius)
+
+
 def integrate_pz_twojet_squared(
     jet: PZTwoJet, cell: PZIntegrationCell, integrand_kind: TwoJetIntegrandKind
 ):
@@ -367,15 +549,46 @@ def integrate_pz_twojet_squared(
 
     support = sorted(set().union(*(coordinate.terms for coordinate in coordinates)))
     centers, matrix = _coefficient_matrix(coordinates, support)
+    gram = None
     if torch is not None and isinstance(centers, torch.Tensor):
         weight_vector = torch.tensor(weights, dtype=centers.dtype, device=centers.device)
         weighted_matrix = matrix * weight_vector.unsqueeze(0)
         center_cross = weighted_matrix @ centers
         gram = weighted_matrix @ matrix.T
         center_square = torch.dot(centers * weight_vector, centers)
+    elif np is not None and _all_real_scalar_coefficients(centers, matrix):
+        # Affine PZ propagation may produce a mixture of lightweight floats and
+        # zero-dimensional torch tensors. Normalize them once, then use one
+        # BLAS contraction instead of millions of Python scalar operations.
+        center_vector = np.fromiter(
+            (_real_scalar_value(value) for value in centers),
+            dtype=float,
+            count=len(centers),
+        )
+        coefficient_matrix = np.fromiter(
+            (_real_scalar_value(value) for row in matrix for value in row),
+            dtype=float,
+            count=len(matrix) * len(centers),
+        ).reshape(len(matrix), len(centers))
+        weight_vector = np.asarray(weights, dtype=float)
+        weighted_matrix = coefficient_matrix * weight_vector[np.newaxis, :]
+        center_cross = weighted_matrix @ center_vector
+        gram = weighted_matrix @ coefficient_matrix.T
+        center_square = float(np.dot(center_vector * weight_vector, center_vector))
+        return _integrate_numpy_twojet_square(
+            support=support,
+            num_noise=num_noise,
+            center_square=center_square,
+            center_cross=center_cross,
+            gram=gram,
+            scale=scale,
+            measure=measure,
+            domain_indices=domain_indices,
+            retained_indices=retained_indices,
+            pointwise_indices=pointwise_indices,
+        )
     else:
         center_cross = [_weighted_dot(row, centers, weights) for row in matrix]
-        gram = [[_weighted_dot(left, right, weights) for right in matrix] for left in matrix]
         center_square = _weighted_dot(centers, centers, weights)
 
     retained: dict[Exponent, Any] = {}
@@ -398,11 +611,20 @@ def integrate_pz_twojet_squared(
 
     route((0,) * num_noise, center_square)
     for index, exponent in enumerate(support):
-        route(exponent, _mul_coeff(center_cross[index], 2.0))
+        center_coefficient = center_cross[index]
+        if np is not None and isinstance(center_coefficient, np.generic):
+            center_coefficient = float(center_coefficient)
+        route(exponent, _mul_coeff(center_coefficient, 2.0))
         for other_index in range(index, len(support)):
             pair_exponent = tuple(a + b for a, b in zip(exponent, support[other_index]))
             factor = 1.0 if index == other_index else 2.0
-            route(pair_exponent, _mul_coeff(gram[index][other_index], factor))
+            if gram is None:
+                gram_coefficient = _weighted_dot(matrix[index], matrix[other_index], weights)
+            else:
+                gram_coefficient = gram[index][other_index]
+                if np is not None and isinstance(gram_coefficient, np.generic):
+                    gram_coefficient = float(gram_coefficient)
+            route(pair_exponent, _mul_coeff(gram_coefficient, factor))
 
     center = retained.pop(zero_retained, _zero_like(centers[0]))
     radius = _zero_like(center)
@@ -560,11 +782,10 @@ def _evaluate_squared_contribution_cache(
 ) -> _CachedSquaredContribution:
     """Evaluate and cache all expensive data needed for one active cell.
 
-    The affine PZ integration cell, two-jet enclosure, squared integrand,
-    integrated interval contribution, Jacobian enclosure, and preferred split
-    dimension are computed exactly once for the cell lifetime. Refinement
-    discards only marked parent cells and computes fresh cache entries for
-    their children.
+    The affine PZ integration cell, two-jet enclosure, directly integrated
+    squared contribution, Jacobian enclosure, and preferred split dimension
+    are computed exactly once for the cell lifetime. Refinement discards only
+    marked parent cells and computes fresh cache entries for their children.
     """
 
     cell = PZIntegrationCell.from_affine_box(box)
@@ -574,8 +795,7 @@ def _evaluate_squared_contribution_cache(
         chebyshev_degree=chebyshev_degree,
         residual_subdivisions=residual_subdivisions,
     )
-    integrand = _squared_twojet_integrand(jet, integrand_kind)
-    contribution = integrate_over_cell(integrand, cell, output="interval")
+    contribution = integrate_pz_twojet_squared(jet, cell, integrand_kind)
     jacobian = jet.J.interval_enclosure()
     return _CachedSquaredContribution(
         box=box,
