@@ -2,13 +2,14 @@ from dataclasses import replace
 
 import pytest
 
-from intervalnets import PZTwoJet, PolynomialZonotope
+from intervalnets import PZOneJet, PZTwoJet, PolynomialZonotope
 from intervalnets.pz_integration import (
     IntegratedPZResult,
     POINTWISE_RESIDUAL_KINDS,
     PZIntegrationCell,
     integrate_over_cell,
     integrate_pz_over_domain,
+    integrate_pz_onejet_squared,
     integrate_pz_twojet_squared,
 )
 from intervalnets.pz_tanh import (
@@ -22,6 +23,32 @@ try:
     import torch
 except ImportError:  # pragma: no cover
     torch = None
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_direct_onejet_square_uses_exact_pointwise_jacobian_box_range():
+    cell = PZIntegrationCell.from_bounds([-1.0], [1.0])
+    value = PolynomialZonotope.constant(
+        torch.tensor([1.0], dtype=torch.float64),
+        num_noise=1,
+        noise_kinds=("domain",),
+    )
+    jacobian = PolynomialZonotope.constant(
+        torch.tensor([[2.0]], dtype=torch.float64),
+        num_noise=1,
+        noise_kinds=("domain",),
+    ).add_independent_errors(
+        torch.tensor([[0.5]], dtype=torch.float64),
+        kind="approximation_pointwise",
+    )
+    value = value.with_num_noise(jacobian.num_noise).with_noise_kinds(
+        jacobian.noise_kinds
+    )
+
+    result = integrate_pz_onejet_squared(PZOneJet(value, jacobian), cell)
+
+    assert result.lower == pytest.approx(6.5)
+    assert result.upper == pytest.approx(14.5)
 
 
 def _assert_interval_close(left, right):

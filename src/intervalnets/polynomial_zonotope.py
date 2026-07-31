@@ -766,6 +766,39 @@ class PolynomialZonotope:
 
 
 @dataclass(frozen=True)
+class PZOneJet:
+    """Polynomial-zonotope value/Jacobian one-jet.
+
+    ``J`` is the derivative with respect to the physical input variable.  The
+    scalable neural-network path retains a dependent polynomial core and adds
+    certified pointwise residual symbols only for explicitly reduced terms.
+    """
+
+    Y: PolynomialZonotope
+    J: PolynomialZonotope
+
+    @classmethod
+    def from_input(cls, X: PolynomialZonotope, input_dim: int) -> "PZOneJet":
+        """Initialize the exact one-jet ``(X, I)`` for a flat input PZ."""
+
+        if torch is None:
+            raise ImportError("PyTorch is required to initialize PZOneJet constants.")
+        if input_dim < 0:
+            raise ValueError("input_dim must be non-negative.")
+        kwargs = {}
+        if isinstance(X.center, torch.Tensor):
+            kwargs = {"dtype": X.center.dtype, "device": X.center.device}
+        return cls(
+            Y=X,
+            J=PolynomialZonotope.constant(
+                torch.eye(input_dim, **kwargs),
+                num_noise=X.num_noise,
+                noise_kinds=X.noise_kinds,
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class PZTwoJet:
     """Polynomial-zonotope value/Jacobian/Hessian two-jet.
 

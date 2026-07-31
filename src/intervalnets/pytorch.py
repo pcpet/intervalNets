@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import heapq
 from itertools import product
 from math import exp, inf, isfinite, log, nextafter, tanh
+from time import perf_counter
 from typing import Any
 
 from .interval import Interval
-from .polynomial_zonotope import PZTwoJet, PolynomialZonotope
+from .polynomial_zonotope import PZOneJet, PZTwoJet, PolynomialZonotope
 from .pz_tanh import (
     affine_tanh_double_prime_enclosure,
     affine_tanh_enclosure,
@@ -54,6 +56,72 @@ class PZValueTraceResult:
     records: list[PZValueTraceRecord]
 
 
+@dataclass(frozen=True)
+class PZOneJetTraceRecord:
+    """Per-layer diagnostics for certified polynomial one-jet propagation."""
+
+    layer_index: int
+    layer_name: str
+    layer_type: str
+    value: PolynomialZonotope
+    jacobian: PolynomialZonotope
+    jacobian_remainder_radius: Any
+    elapsed_s: float
+    summary: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PZOneJetTraceResult:
+    """Final one-jet plus lightweight per-layer diagnostic snapshots."""
+
+    final: PZOneJet
+    records: list[PZOneJetTraceRecord]
+
+
+@dataclass(frozen=True)
+class _PZOneJetPolynomialState:
+    """Dependent Jacobian polynomial plus a certified pointwise box remainder."""
+
+    Y: PolynomialZonotope
+    J: PolynomialZonotope
+    jacobian_remainder_radius: Any
+
+
+@dataclass(frozen=True)
+class PZReductionConfig:
+    """Certified monomial reduction used by the polynomial one-jet path.
+
+    ``strategy`` may be ``"none"``, ``"topk"``, ``"degree"``, or
+    ``"pca"``.  Every discarded contribution is enclosed by the pointwise
+    remainder; PCA additionally replaces a bounded candidate set by a few
+    coefficient-space generators and bounds its orthogonal residual.
+    """
+
+    strategy: str = "topk"
+    max_terms: int = 96
+    max_degree: int = 4
+    pca_rank: int = 4
+    pca_candidates: int = 48
+
+    def __post_init__(self) -> None:
+        if self.strategy not in {"none", "topk", "degree", "pca"}:
+            raise ValueError("strategy must be one of: none, topk, degree, pca.")
+        if self.max_terms < 1:
+            raise ValueError("max_terms must be positive.")
+        if self.max_degree < 0 or self.pca_rank < 0 or self.pca_candidates < 0:
+            raise ValueError("reduction degrees, ranks, and candidate counts must be non-negative.")
+
+
+def _pad_nonnegative_radius(radius: torch.Tensor) -> torch.Tensor:
+    """Round positive radii upward without turning exact zeros into errors."""
+
+    return torch.where(
+        radius == 0,
+        radius,
+        torch.nextafter(radius, torch.full_like(radius, float("inf"))),
+    )
+
+
 def _pz_summary(zonotope: PolynomialZonotope) -> dict[str, Any]:
     return {
         "shape": zonotope.shape,
@@ -86,6 +154,34 @@ def _pz_value_trace_record(
         layer_type=layer_type,
         value=value,
         summary=_pz_summary(value),
+    )
+
+
+def _pz_onejet_trace_record(
+    layer_index: int,
+    layer_name: str,
+    layer_type: str,
+    state: _PZOneJetPolynomialState,
+    elapsed_s: float,
+) -> PZOneJetTraceRecord:
+    return PZOneJetTraceRecord(
+        layer_index=layer_index,
+        layer_name=layer_name,
+        layer_type=layer_type,
+        value=state.Y,
+        jacobian=state.J,
+        jacobian_remainder_radius=state.jacobian_remainder_radius.detach().clone(),
+        elapsed_s=float(elapsed_s),
+        summary={
+            "Y": _pz_summary(state.Y),
+            "J": {
+                **_pz_summary(state.J),
+                "remainder_max_radius": float(state.jacobian_remainder_radius.max().item())
+                if state.jacobian_remainder_radius.numel() else 0.0,
+                "remainder_mean_radius": float(state.jacobian_remainder_radius.mean().item())
+                if state.jacobian_remainder_radius.numel() else 0.0,
+            },
+        },
     )
 
 try:
@@ -663,6 +759,372 @@ def _pz_value_forward_from_value(
     return result
 
 
+def _pz_onejet_linear_forward(
+    layer: nn.Linear,
+    state: _PZOneJetPolynomialState,
+) -> _PZOneJetPolynomialState:
+    """Propagate the polynomial core and box remainder through a linear layer."""
+
+    value = _pz_value_linear_forward(layer, state.Y)
+    weight = layer.weight.detach().to(dtype=state.J.center.dtype, device=state.J.center.device)
+    jacobian = state.J.linear_map(weight)
+    radius = torch.abs(weight) @ state.jacobian_remainder_radius
+    radius = _pad_nonnegative_radius(radius)
+    return _PZOneJetPolynomialState(value, jacobian, radius)
+
+
+class _CertifiedTermReducer:
+    """Streaming top-k generator reducer with a sound pointwise remainder."""
+
+    def __init__(self, config: PZReductionConfig, shape: tuple[int, ...], template: torch.Tensor):
+        self.config = config
+        self.shape = shape
+        self.kept: list[tuple[float, int, tuple[int, ...], torch.Tensor]] = []
+        self.pca: list[tuple[float, int, torch.Tensor]] = []
+        self.radius = torch.zeros(shape, dtype=template.dtype, device=template.device)
+        self.counter = 0
+
+    def _box(self, coefficient: torch.Tensor) -> None:
+        self.radius = self.radius + torch.abs(coefficient)
+
+    def _offer_pca(self, score: float, coefficient: torch.Tensor) -> None:
+        if self.config.strategy != "pca" or self.config.pca_candidates == 0:
+            self._box(coefficient)
+            return
+        item = (score, self.counter, coefficient)
+        self.counter += 1
+        if len(self.pca) < self.config.pca_candidates:
+            heapq.heappush(self.pca, item)
+        elif score > self.pca[0][0]:
+            _, _, evicted = heapq.heapreplace(self.pca, item)
+            self._box(evicted)
+        else:
+            self._box(coefficient)
+
+    def offer(self, exponent: tuple[int, ...], coefficient: torch.Tensor) -> None:
+        if not bool(torch.any(coefficient != 0).item()):
+            return
+        if self.config.strategy == "degree" and sum(exponent) > self.config.max_degree:
+            self._box(coefficient)
+            return
+        score = float(torch.linalg.vector_norm(coefficient).item())
+        item = (score, self.counter, exponent, coefficient)
+        self.counter += 1
+        if len(self.kept) < self.config.max_terms:
+            heapq.heappush(self.kept, item)
+        elif score > self.kept[0][0]:
+            _, _, _, evicted = heapq.heapreplace(self.kept, item)
+            self._offer_pca(float(torch.linalg.vector_norm(evicted).item()), evicted)
+        else:
+            self._offer_pca(score, coefficient)
+
+    def finish(
+        self,
+        center: torch.Tensor,
+        *,
+        num_noise: int,
+        noise_kinds: tuple[str, ...],
+    ) -> tuple[PolynomialZonotope, torch.Tensor]:
+        terms: dict[tuple[int, ...], torch.Tensor] = {}
+        for _, _, exponent, coefficient in self.kept:
+            terms[exponent] = terms.get(exponent, torch.zeros_like(center)) + coefficient
+
+        kinds = noise_kinds
+        if self.pca and self.config.pca_rank:
+            generators = torch.stack([item[2].reshape(-1) for item in self.pca], dim=0)
+            rank = min(self.config.pca_rank, generators.shape[0], generators.shape[1])
+            _, _, vh = torch.linalg.svd(generators, full_matrices=False)
+            directions = vh[:rank]
+            coordinates = generators @ directions.T
+            projected_radii = torch.sum(torch.abs(coordinates), dim=0)
+            residual = generators - coordinates @ directions
+            self.radius = self.radius + torch.sum(torch.abs(residual), dim=0).reshape(self.shape)
+            base_num_noise = num_noise
+            terms = {
+                old_exp + (0,) * rank: old_coeff for old_exp, old_coeff in terms.items()
+            }
+            for index in range(rank):
+                coefficient = (projected_radii[index] * directions[index]).reshape(self.shape)
+                exponent = (0,) * (base_num_noise + index) + (1,) + (0,) * (rank - index - 1)
+                terms[exponent] = coefficient
+            num_noise += rank
+            kinds = kinds + ("approximation_pointwise",) * rank
+        elif self.pca:
+            for _, _, coefficient in self.pca:
+                self._box(coefficient)
+
+        radius = _pad_nonnegative_radius(self.radius)
+        return PolynomialZonotope(center, terms, num_noise=num_noise, noise_kinds=kinds), radius
+
+
+def _rowwise_pz_product(
+    derivative: PolynomialZonotope,
+    jacobian: PolynomialZonotope,
+    config: PZReductionConfig,
+) -> tuple[PolynomialZonotope, torch.Tensor]:
+    """Multiply a vector PZ into Jacobian rows and reduce generators soundly."""
+
+    derivative, jacobian = derivative._align(jacobian)
+    center = derivative.center.unsqueeze(1) * jacobian.center
+    if config.strategy == "none":
+        terms: dict[tuple[int, ...], torch.Tensor] = {}
+        def add(exponent, coefficient):
+            terms[exponent] = terms.get(exponent, torch.zeros_like(center)) + coefficient
+        for exponent, coefficient in derivative.terms.items():
+            add(exponent, coefficient.unsqueeze(1) * jacobian.center)
+        for exponent, coefficient in jacobian.terms.items():
+            add(exponent, derivative.center.unsqueeze(1) * coefficient)
+        for d_exp, d_coeff in derivative.terms.items():
+            for j_exp, j_coeff in jacobian.terms.items():
+                add(tuple(a + b for a, b in zip(d_exp, j_exp)), d_coeff.unsqueeze(1) * j_coeff)
+        return PolynomialZonotope(center, terms, num_noise=derivative.num_noise, noise_kinds=derivative.noise_kinds), torch.zeros_like(center)
+
+    reducer = _CertifiedTermReducer(config, tuple(center.shape), center)
+    for exponent, coefficient in derivative.terms.items():
+        reducer.offer(exponent, coefficient.unsqueeze(1) * jacobian.center)
+    for exponent, coefficient in jacobian.terms.items():
+        reducer.offer(exponent, derivative.center.unsqueeze(1) * coefficient)
+    for d_exp, d_coeff in derivative.terms.items():
+        for j_exp, j_coeff in jacobian.terms.items():
+            reducer.offer(tuple(a + b for a, b in zip(d_exp, j_exp)), d_coeff.unsqueeze(1) * j_coeff)
+    return reducer.finish(center, num_noise=derivative.num_noise, noise_kinds=derivative.noise_kinds)
+
+
+def _batched_tanh_derivative_core(
+    value: PolynomialZonotope,
+) -> tuple[PolynomialZonotope, torch.Tensor]:
+    enclosure = value.interval_enclosure()
+    lower = torch.as_tensor(enclosure.lower, dtype=value.center.dtype, device=value.center.device).reshape(-1).detach().cpu().tolist()
+    upper = torch.as_tensor(enclosure.upper, dtype=value.center.dtype, device=value.center.device).reshape(-1).detach().cpu().tolist()
+    approximations = [
+        affine_tanh_prime_enclosure(Interval(float(lo), float(hi)))
+        for lo, hi in zip(lower, upper)
+    ]
+    slopes = torch.tensor([item.p for item in approximations], dtype=value.center.dtype, device=value.center.device).reshape(value.center.shape)
+    intercepts = torch.tensor([item.q for item in approximations], dtype=value.center.dtype, device=value.center.device).reshape(value.center.shape)
+    radii = torch.tensor([item.delta for item in approximations], dtype=value.center.dtype, device=value.center.device).reshape(value.center.shape)
+    core = PolynomialZonotope(
+        slopes * value.center + intercepts,
+        {exponent: slopes * coefficient for exponent, coefficient in value.terms.items()},
+        num_noise=value.num_noise,
+        noise_kinds=value.noise_kinds,
+    )
+    return core, _pad_nonnegative_radius(radii)
+
+
+def _pz_onejet_tanh_forward_reduced(
+    state: _PZOneJetPolynomialState,
+    chebyshev_degree: int,
+    residual_subdivisions: int,
+    config: PZReductionConfig,
+) -> _PZOneJetPolynomialState:
+    derivative, derivative_radius = _batched_tanh_derivative_core(state.Y)
+    value = _pz_value_tanh_forward(
+        state.Y,
+        chebyshev_degree=chebyshev_degree,
+        residual_subdivisions=residual_subdivisions,
+    )
+    value, jacobian_input = value._align(state.J)
+    derivative, jacobian_input = derivative._align(jacobian_input)
+    value = value.with_num_noise(jacobian_input.num_noise).with_noise_kinds(jacobian_input.noise_kinds)
+    polynomial, dropped_radius = _rowwise_pz_product(derivative, jacobian_input, config)
+
+    d_interval = derivative.interval_enclosure()
+    j_interval = jacobian_input.interval_enclosure()
+    d_lower = torch.as_tensor(d_interval.lower, dtype=derivative.center.dtype, device=derivative.center.device)
+    d_upper = torch.as_tensor(d_interval.upper, dtype=derivative.center.dtype, device=derivative.center.device)
+    j_lower = torch.as_tensor(j_interval.lower, dtype=jacobian_input.center.dtype, device=jacobian_input.center.device)
+    j_upper = torch.as_tensor(j_interval.upper, dtype=jacobian_input.center.dtype, device=jacobian_input.center.device)
+    d_abs = torch.maximum(torch.abs(d_lower), torch.abs(d_upper)).unsqueeze(1)
+    j_abs = torch.maximum(torch.abs(j_lower), torch.abs(j_upper))
+    propagated_radius = (
+        d_abs * state.jacobian_remainder_radius
+        + derivative_radius.unsqueeze(1) * j_abs
+        + derivative_radius.unsqueeze(1) * state.jacobian_remainder_radius
+    )
+    total_radius = _pad_nonnegative_radius(propagated_radius + dropped_radius)
+    final_noise = max(value.num_noise, polynomial.num_noise)
+    kinds = polynomial.with_num_noise(final_noise).noise_kinds
+    return _PZOneJetPolynomialState(
+        value.with_num_noise(final_noise).with_noise_kinds(kinds),
+        polynomial.with_num_noise(final_noise).with_noise_kinds(kinds),
+        total_radius,
+    )
+
+
+def _pz_onejet_forward_from_state(
+    module,
+    state: _PZOneJetPolynomialState,
+    *,
+    chebyshev_degree: int,
+    residual_subdivisions: int,
+    reduction: PZReductionConfig,
+) -> _PZOneJetPolynomialState:
+    if isinstance(module, nn.Sequential):
+        result = state
+        for child in module.children():
+            result = _pz_onejet_forward_from_state(
+                child,
+                result,
+                chebyshev_degree=chebyshev_degree,
+                residual_subdivisions=residual_subdivisions,
+                reduction=reduction,
+            )
+        return result
+    if isinstance(module, nn.Linear):
+        return _pz_onejet_linear_forward(module, state)
+    if isinstance(module, nn.Tanh):
+        return _pz_onejet_tanh_forward_reduced(
+            state,
+            chebyshev_degree=chebyshev_degree,
+            residual_subdivisions=residual_subdivisions,
+            config=reduction,
+        )
+    if isinstance(module, nn.Identity):
+        return state
+    if isinstance(module, nn.Flatten):
+        if len(state.Y.shape) > 1:
+            raise NotImplementedError(
+                "PZ one-jet Flatten currently supports already-flat vectors only."
+            )
+        return state
+    raise NotImplementedError(
+        "PZ one-jet forward currently supports nn.Sequential, nn.Linear, "
+        "nn.Tanh, nn.Identity, and flat-vector nn.Flatten only; got "
+        f"{type(module).__name__}."
+    )
+
+
+def _finalize_pz_onejet(state: _PZOneJetPolynomialState) -> PZOneJet:
+    """Attach only the accumulated reduction remainder as a pointwise box."""
+
+    jacobian = state.J.add_independent_errors(
+        state.jacobian_remainder_radius,
+        kind="approximation_pointwise",
+    )
+    value = state.Y.with_num_noise(jacobian.num_noise).with_noise_kinds(
+        jacobian.noise_kinds
+    )
+    return PZOneJet(Y=value, J=jacobian)
+
+
+def pz_onejet_forward(
+    module,
+    x: PolynomialZonotope,
+    *,
+    chebyshev_degree: int = 5,
+    residual_subdivisions: int = 128,
+    reduce: bool = True,
+    reduction_strategy: str = "topk",
+    max_terms: int = 96,
+    max_degree: int = 4,
+    pca_rank: int = 4,
+    pca_candidates: int = 48,
+    input_dim: int | None = None,
+    return_trace: bool = False,
+) -> PZOneJet | PZOneJetTraceResult:
+    """Evaluate a certified polynomial value/Jacobian one-jet.
+
+    Selected Jacobian monomials remain exact.  Discarded terms are enclosed by
+    a separately propagated pointwise remainder, so reduction never silently
+    becomes interval-only Jacobian propagation.
+    """
+
+    _require_torch()
+    if not isinstance(x, PolynomialZonotope):
+        raise TypeError("pz_onejet_forward(module, x) requires x to be a PolynomialZonotope.")
+    if len(x.shape) > 1:
+        raise NotImplementedError(
+            "PZ one-jet forward currently supports scalar or flat-vector inputs only."
+        )
+    inferred_dim = 1 if x.shape == () else x.shape[0]
+    dim = inferred_dim if input_dim is None else int(input_dim)
+    if dim != inferred_dim:
+        raise ValueError(
+            f"input_dim={dim} does not match polynomial-zonotope input dimension {inferred_dim}."
+        )
+
+    if not isinstance(x.center, torch.Tensor):
+        parameter = next(module.parameters(), None)
+        dtype = (
+            parameter.dtype
+            if parameter is not None and parameter.is_floating_point()
+            else torch.float64
+        )
+        device = parameter.device if parameter is not None else None
+        x = PolynomialZonotope(
+            torch.as_tensor(x.center, dtype=dtype, device=device),
+            {
+                exponent: torch.as_tensor(coefficient, dtype=dtype, device=device)
+                for exponent, coefficient in x.terms.items()
+            },
+            num_noise=x.num_noise,
+            noise_kinds=x.noise_kinds,
+        )
+
+    strategy = reduction_strategy if reduce else "none"
+    reduction = PZReductionConfig(
+        strategy=strategy,
+        max_terms=max_terms,
+        max_degree=max_degree,
+        pca_rank=pca_rank,
+        pca_candidates=pca_candidates,
+    )
+    identity = torch.eye(dim, dtype=x.center.dtype, device=x.center.device)
+    initial_jacobian = PolynomialZonotope.constant(
+        identity,
+        num_noise=x.num_noise,
+        noise_kinds=x.noise_kinds,
+    )
+    state = _PZOneJetPolynomialState(x, initial_jacobian, torch.zeros_like(identity))
+    records: list[PZOneJetTraceRecord] = []
+    if return_trace:
+        records.append(_pz_onejet_trace_record(-1, "input", "Input", state, 0.0))
+
+    if return_trace and isinstance(module, nn.Sequential):
+        result = state
+        for index, (name, child) in enumerate(module.named_children()):
+            start = perf_counter()
+            result = _pz_onejet_forward_from_state(
+                child,
+                result,
+                chebyshev_degree=chebyshev_degree,
+                residual_subdivisions=residual_subdivisions,
+                reduction=reduction,
+            )
+            records.append(
+                _pz_onejet_trace_record(
+                    index,
+                    name,
+                    type(child).__name__,
+                    result,
+                    perf_counter() - start,
+                )
+            )
+    else:
+        start = perf_counter()
+        result = _pz_onejet_forward_from_state(
+            module,
+            state,
+            chebyshev_degree=chebyshev_degree,
+            residual_subdivisions=residual_subdivisions,
+            reduction=reduction,
+        )
+        if return_trace:
+            records.append(
+                _pz_onejet_trace_record(
+                    0,
+                    "0",
+                    type(module).__name__,
+                    result,
+                    perf_counter() - start,
+                )
+            )
+
+    onejet = _finalize_pz_onejet(result)
+    return PZOneJetTraceResult(onejet, records) if return_trace else onejet
+
+
 def _pz_twojet_forward_from_jet(
     module,
     jet: PZTwoJet,
@@ -851,7 +1313,11 @@ def pz_sobolev_norm(
     residual_subdivisions: int = 128,
     output: str = "interval",
 ) -> Interval:
-    """Return a PZ two-jet enclosure of a module's W^{order,2} norm."""
+    """Return a certified PZ enclosure of a module's W^{order,2} norm.
+
+    Order one uses the reduced dependent-polynomial one-jet; order two uses
+    the dependent polynomial-zonotope two-jet.
+    """
 
     _require_torch()
     if not isfinite(float(p)) or float(p) != 2.0:
@@ -1946,6 +2412,39 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
             return_trace=return_trace,
         )
 
+    def eval_pz_onejet_with_interval(
+        self,
+        domain: PolynomialZonotope,
+        *,
+        chebyshev_degree: int = 5,
+        residual_subdivisions: int = 128,
+        reduce: bool = True,
+        reduction_strategy: str = "topk",
+        max_terms: int = 96,
+        max_degree: int = 4,
+        pca_rank: int = 4,
+        pca_candidates: int = 48,
+        return_trace: bool = False,
+    ):
+        _ORIGINAL_EVAL(self)
+        if not isinstance(domain, PolynomialZonotope):
+            raise TypeError(
+                "model.eval_pz_onejet(domain) requires a PolynomialZonotope input."
+            )
+        return pz_onejet_forward(
+            self,
+            domain,
+            chebyshev_degree=chebyshev_degree,
+            residual_subdivisions=residual_subdivisions,
+            reduce=reduce,
+            reduction_strategy=reduction_strategy,
+            max_terms=max_terms,
+            max_degree=max_degree,
+            pca_rank=pca_rank,
+            pca_candidates=pca_candidates,
+            return_trace=return_trace,
+        )
+
     def pz_l2norm_with_interval(
         self,
         domain: IntervalTensor,
@@ -2040,6 +2539,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
     nn.Module.eval_jacobian = eval_jacobian_with_interval
     nn.Module.eval_hessian = eval_hessian_with_interval
     nn.Module.eval_pz_value = eval_pz_value_with_interval
+    nn.Module.eval_pz_onejet = eval_pz_onejet_with_interval
     nn.Module.eval_pz_twojet = eval_pz_twojet_with_interval
     nn.Module.pz_l2norm = pz_l2norm_with_interval
     nn.Module.pz_sobolev_norm = pz_sobolev_norm_with_interval

@@ -18,6 +18,7 @@ from typing import Any, Literal, Sequence
 from .interval import Interval
 from .polynomial_zonotope import (
     Exponent,
+    PZOneJet,
     PZTwoJet,
     PolynomialZonotope,
     _abs_coeff,
@@ -755,6 +756,70 @@ def integrate_pz_value_squared(
     )
 
 
+def integrate_pz_onejet_squared(
+    jet: PZOneJet,
+    cell: PZIntegrationCell,
+):
+    """Directly integrate ``|Y|^2 + |J|_F^2`` for a PZ one-jet.
+
+    The fast one-jet forward path returns a pointwise box enclosure for the
+    Jacobian.  Its squared Frobenius range is therefore computed entrywise and
+    scaled by the physical cell volume, avoiding a quadratic Gram contraction
+    over the fresh Jacobian residual symbols.  Other one-jets retain the
+    generic direct PZ contraction as a safe fallback.
+    """
+
+    density = cell.jacobian_density
+    volume = cell.volume
+    y_noise_indices = {
+        index
+        for exponent in jet.Y.terms
+        for index, power in enumerate(exponent)
+        if power
+    }
+    jacobian_is_fresh_pointwise_box = all(
+        sum(exponent) == 1
+        and exponent.index(1) not in y_noise_indices
+        and jet.J.noise_kinds[exponent.index(1)] in POINTWISE_RESIDUAL_KINDS
+        for exponent in jet.J.terms
+    )
+    if (
+        isinstance(density, Real)
+        and isinstance(volume, Real)
+        and float(density) >= 0.0
+        and float(volume) >= 0.0
+        and jacobian_is_fresh_pointwise_box
+    ):
+        value_integral = integrate_pz_value_squared(jet.Y, cell)
+        enclosure = jet.J.interval_enclosure()
+        lower_square_sum = 0.0
+        upper_square_sum = 0.0
+        for lower, upper in zip(
+            _flatten_scalars(enclosure.lower),
+            _flatten_scalars(enclosure.upper),
+        ):
+            lo = float(lower)
+            hi = float(upper)
+            lower_square_sum += 0.0 if lo <= 0.0 <= hi else min(lo * lo, hi * hi)
+            upper_square_sum += max(lo * lo, hi * hi)
+        jacobian_integral = Interval.from_bounds(
+            nextafter(float(volume) * lower_square_sum, -inf),
+            nextafter(float(volume) * upper_square_sum, inf),
+        )
+        return value_integral + jacobian_integral
+
+    zero = PolynomialZonotope.constant(
+        0.0,
+        num_noise=jet.Y.num_noise,
+        noise_kinds=jet.Y.noise_kinds,
+    )
+    return integrate_pz_twojet_squared(
+        PZTwoJet(Y=jet.Y, J=jet.J, H=zero),
+        cell,
+        "w12",
+    )
+
+
 def _require_interval_tensor_domain(domain: Any):
     from .pytorch import IntervalTensor as RuntimeIntervalTensor
 
@@ -887,6 +952,29 @@ def _eval_pz_value(
     )
 
 
+def _eval_pz_onejet(
+    model,
+    domain: PolynomialZonotope,
+    *,
+    chebyshev_degree: int = 5,
+    residual_subdivisions: int = 128,
+):
+    if hasattr(model, "eval_pz_onejet"):
+        return model.eval_pz_onejet(
+            domain,
+            chebyshev_degree=chebyshev_degree,
+            residual_subdivisions=residual_subdivisions,
+        )
+    from .pytorch import pz_onejet_forward
+
+    return pz_onejet_forward(
+        model,
+        domain,
+        chebyshev_degree=chebyshev_degree,
+        residual_subdivisions=residual_subdivisions,
+    )
+
+
 @dataclass(frozen=True)
 class _CachedSquaredContribution:
     """Cached adaptive-quadrature data for one active PZ integration cell."""
@@ -937,6 +1025,15 @@ def _evaluate_squared_contribution_cache(
         )
         contribution = integrate_pz_value_squared(value, cell)
         jacobian = None
+    elif integrand_kind == "w12":
+        jet = _eval_pz_onejet(
+            model,
+            cell.domain,
+            chebyshev_degree=chebyshev_degree,
+            residual_subdivisions=residual_subdivisions,
+        )
+        contribution = integrate_pz_onejet_squared(jet, cell)
+        jacobian = jet.J.interval_enclosure()
     else:
         jet = _eval_pz_twojet(
             model,
@@ -1053,7 +1150,11 @@ def pz_sobolev_norm_bounds(
     residual_subdivisions: int = 128,
     output: IntegrationOutput = "interval",
 ) -> Interval:
-    """Adaptive PZ two-jet enclosure of W^{order,2} Sobolev norms."""
+    """Adaptive PZ enclosure of W^{order,2} Sobolev norms.
+
+    Order one uses the scalable PZ one-jet path and order two uses the full
+    dependent PZ two-jet path.
+    """
 
     _require_interval_tensor_domain(domain)
     _require_l2_output(output)

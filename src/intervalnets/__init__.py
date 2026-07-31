@@ -2,6 +2,7 @@
 
 from .interval import Interval
 from .polynomial_zonotope import (
+    PZOneJet,
     PZTwoJet,
     PolynomialZonotope,
     collect_pz_diagnostics,
@@ -24,6 +25,7 @@ from .pz_integration import (
     PZIntegrationCell,
     integrate_over_cell,
     integrate_pz_over_domain,
+    integrate_pz_onejet_squared,
     integrate_pz_value_squared,
     pz_l2norm_bounds,
     pz_sobolev_norm_bounds,
@@ -41,9 +43,12 @@ from .pz_norms import (
     pz_twojet_w22_norm,
 )
 
+from .pinn import sequential_value_jacobian_laplacian
+
 __all__ = [
     "Interval",
     "PolynomialZonotope",
+    "PZOneJet",
     "PZTwoJet",
     "collect_pz_diagnostics",
     "pz_to_latex",
@@ -61,6 +66,7 @@ __all__ = [
     "PZIntegrationCell",
     "integrate_over_cell",
     "integrate_pz_over_domain",
+    "integrate_pz_onejet_squared",
     "integrate_pz_value_squared",
     "pz_l2norm_bounds",
     "pz_sobolev_norm_bounds",
@@ -73,6 +79,7 @@ __all__ = [
     "pz_twojet_w12_norm",
     "pz_twojet_w22_integrand",
     "pz_twojet_w22_norm",
+    "sequential_value_jacobian_laplacian",
 ]
 
 try:
@@ -84,11 +91,15 @@ try:
         interval_forward,
         interval_forward_refine,
         pz_l2norm,
+        pz_onejet_forward,
         pz_sobolev_norm,
         pz_value_forward,
         pz_twojet_forward,
         PZValueTraceRecord,
         PZValueTraceResult,
+        PZOneJetTraceRecord,
+        PZOneJetTraceResult,
+        PZReductionConfig,
         PZTwoJetTraceRecord,
         PZTwoJetTraceResult,
     )
@@ -104,11 +115,15 @@ else:
             "interval_forward",
             "interval_forward_refine",
             "pz_l2norm",
+            "pz_onejet_forward",
             "pz_sobolev_norm",
             "pz_value_forward",
             "pz_twojet_forward",
             "PZValueTraceRecord",
             "PZValueTraceResult",
+            "PZOneJetTraceRecord",
+            "PZOneJetTraceResult",
+            "PZReductionConfig",
             "PZTwoJetTraceRecord",
             "PZTwoJetTraceResult",
         ]

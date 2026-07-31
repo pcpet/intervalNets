@@ -291,6 +291,30 @@ def test_pz_w12_order_one_sobolev_behavior():
     assert default_order.lower <= order_one.upper
 
 
+def test_pz_w12_uses_onejet_without_constructing_hessian(monkeypatch):
+    enable_interval_eval()
+    model = _small_tanh_model(input_dim=2, hidden_dim=3, output_dim=1)
+    domain = IntervalTensor.from_bounds([-0.2, -0.1], [0.3, 0.2])
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("W12 computation must not construct a two-jet")
+
+    monkeypatch.setattr(
+        "intervalnets.pz_integration._eval_pz_twojet",
+        fail_if_called,
+    )
+
+    bounds = model.pz_sobolev_norm(
+        domain,
+        order=1,
+        iterations=1,
+        chebyshev_degree=3,
+        residual_subdivisions=16,
+    )
+
+    assert bounds.lower <= bounds.upper
+
+
 def test_pz_w22_order_two_sobolev_behavior():
     enable_interval_eval()
     model = _small_tanh_model()
@@ -299,8 +323,10 @@ def test_pz_w22_order_two_sobolev_behavior():
     w12 = model.pz_sobolev_norm(domain, order=1, iterations=1, chebyshev_degree=3, residual_subdivisions=16)
     w22 = model.pz_sobolev_norm(domain, order=2, iterations=1, chebyshev_degree=3, residual_subdivisions=16)
 
-    assert w22.lower >= w12.lower
-    assert w22.upper >= w12.upper
+    # The reduced polynomial one-jet and full two-jet paths use different
+    # certified remainders, so their interval bounds need not be nested. Soundness
+    # and ||f||_{W12} <= ||f||_{W22} only require this cross-bound relation.
+    assert w22.upper >= w12.lower
 
 
 def test_pz_domain_integration_of_odd_monomials_gives_zero():

@@ -1117,6 +1117,139 @@ def test_enable_interval_eval_adds_eval_pz_value_method() -> None:
     assert out.num_noise == 2
 
 
+def test_pz_onejet_forward_encloses_sampled_jacobians() -> None:
+    from intervalnets import PZOneJet, PolynomialZonotope, pz_onejet_forward
+
+    torch.manual_seed(17)
+    model = nn.Sequential(
+        nn.Linear(3, 5),
+        nn.Tanh(),
+        nn.Linear(5, 4),
+        nn.Tanh(),
+        nn.Linear(4, 1),
+    ).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.2, -0.1, 0.0], dtype=torch.float64),
+        torch.tensor([0.3, 0.2, 0.4], dtype=torch.float64),
+    )
+
+    onejet = pz_onejet_forward(model, domain)
+    enclosure = onejet.J.interval_enclosure()
+
+    assert isinstance(onejet, PZOneJet)
+    assert onejet.Y.shape == (1,)
+    assert onejet.J.shape == (1, 3)
+    assert onejet.Y.num_noise == onejet.J.num_noise
+    for _ in range(32):
+        point = torch.empty(3, dtype=torch.float64).uniform_(-1.0, 1.0)
+        point = 0.5 * (
+            torch.tensor(domain.interval_enclosure().lower)
+            + torch.tensor(domain.interval_enclosure().upper)
+        ) + 0.5 * (
+            torch.tensor(domain.interval_enclosure().upper)
+            - torch.tensor(domain.interval_enclosure().lower)
+        ) * point
+        point.requires_grad_(True)
+        gradient = torch.autograd.grad(model(point).sum(), point)[0]
+        for column in range(3):
+            assert enclosure.lower[0][column] <= float(gradient[column])
+            assert float(gradient[column]) <= enclosure.upper[0][column]
+
+
+def test_pz_onejet_trace_is_lightweight_and_reports_layer_timings() -> None:
+    from intervalnets import PZOneJetTraceResult, PolynomialZonotope, pz_onejet_forward
+
+    model = nn.Sequential(nn.Linear(2, 3), nn.Tanh(), nn.Linear(3, 1)).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.2, -0.1], dtype=torch.float64),
+        torch.tensor([0.3, 0.2], dtype=torch.float64),
+    )
+
+    traced = pz_onejet_forward(model, domain, return_trace=True)
+
+    assert isinstance(traced, PZOneJetTraceResult)
+    assert [record.layer_type for record in traced.records] == [
+        "Input",
+        "Linear",
+        "Tanh",
+        "Linear",
+    ]
+    assert all(record.elapsed_s >= 0.0 for record in traced.records)
+    assert traced.records[-1].summary["J"]["shape"] == (1, 2)
+
+
+def test_enable_interval_eval_adds_eval_pz_onejet_method() -> None:
+    from intervalnets import PZOneJet, PolynomialZonotope
+
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(2, 3), nn.Tanh(), nn.Linear(3, 1)).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.2, -0.1], dtype=torch.float64),
+        torch.tensor([0.3, 0.2], dtype=torch.float64),
+    )
+
+    out = model.eval_pz_onejet(domain)
+
+    assert isinstance(out, PZOneJet)
+    assert out.Y.shape == (1,)
+    assert out.J.shape == (1, 2)
+
+
+@pytest.mark.parametrize("strategy", ["topk", "degree", "pca"])
+def test_polynomial_onejet_reductions_enclose_sampled_jacobians(strategy) -> None:
+    from intervalnets import PolynomialZonotope, pz_onejet_forward
+
+    torch.manual_seed(2718)
+    model = nn.Sequential(
+        nn.Linear(3, 6), nn.Tanh(), nn.Linear(6, 5), nn.Tanh(), nn.Linear(5, 1)
+    ).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.25, -0.15, -0.1], dtype=torch.float64),
+        torch.tensor([0.2, 0.3, 0.25], dtype=torch.float64),
+    )
+    jet = pz_onejet_forward(
+        model,
+        domain,
+        reduction_strategy=strategy,
+        max_terms=8,
+        max_degree=2,
+        pca_rank=2,
+        pca_candidates=8,
+    )
+    enclosure = jet.J.interval_enclosure()
+
+    assert any(
+        any(power and jet.J.noise_kinds[index] == "domain" for index, power in enumerate(exponent))
+        for exponent in jet.J.terms
+    ), "the retained Jacobian must still be a domain-dependent polynomial"
+    for _ in range(32):
+        point = torch.tensor(
+            [
+                torch.empty((), dtype=torch.float64).uniform_(lo, hi).item()
+                for lo, hi in zip(domain.interval_enclosure().lower, domain.interval_enclosure().upper)
+            ],
+            dtype=torch.float64,
+            requires_grad=True,
+        )
+        gradient = torch.autograd.grad(model(point).sum(), point)[0]
+        for column in range(3):
+            assert enclosure.lower[0][column] <= float(gradient[column])
+            assert float(gradient[column]) <= enclosure.upper[0][column]
+
+
+def test_unreduced_onejet_preserves_polynomial_chain_rule_terms() -> None:
+    from intervalnets import PolynomialZonotope, pz_onejet_forward
+
+    model = nn.Sequential(nn.Linear(2, 3), nn.Tanh(), nn.Linear(3, 1)).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.2, -0.1], dtype=torch.float64),
+        torch.tensor([0.2, 0.1], dtype=torch.float64),
+    )
+    jet = pz_onejet_forward(model, domain, reduce=False)
+    assert jet.J.terms
+    assert any(sum(exponent) >= 1 for exponent in jet.J.terms)
+
+
 def test_eval_pz_twojet_rejects_non_polynomial_zonotope_input() -> None:
     enable_interval_eval()
     layer = nn.Identity()

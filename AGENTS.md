@@ -7,7 +7,7 @@
 - interval and derivative enclosures with adaptive norm integration;
 - polynomial-zonotope (PZ) propagation of neural-network values, Jacobians, and Hessians.
 
-The PZ core, `PZTwoJet`, affine and activation propagation, `model.eval_pz_twojet(...)`, PZ integration, and PZ norm routines already exist. A separate `model.eval_pz_value(...)` path propagates only function values and is the default for PZ \(L^2\) computation; do not reintroduce Jacobian or Hessian construction into that path. Do not treat the original two-jet blueprint as an unimplemented feature checklist.
+The PZ core, `PZTwoJet`, affine and activation propagation, `model.eval_pz_twojet(...)`, PZ integration, and PZ norm routines already exist. A separate `model.eval_pz_value(...)` path propagates only function values and is the default for PZ \(L^2\) computation; do not reintroduce Jacobian or Hessian construction into that path. The scalable `model.eval_pz_onejet(...)` path is the default for PZ \(W^{1,2}\): it propagates a dependent Jacobian polynomial core plus a certified remainder for explicitly reduced terms, without constructing Hessians. Do not route order-one norms through `eval_pz_twojet(...)`. Do not treat the original two-jet blueprint as an unimplemented feature checklist.
 
 ## Read the relevant specification first
 
@@ -51,6 +51,16 @@ For value-only \(L^2\) performance work, use
 value support degree one, with one domain symbol per input coordinate and one
 pointwise approximation-residual symbol per hidden neuron. Preserve this
 independence when batching activation enclosures.
+
+For one-jet \(W^{1,2}\) performance work, use
+`notebooks/pz_w12_polynomial_reduction_benchmarks.ipynb`. The scalable one-jet
+retains a dependent Jacobian polynomial core and propagates a separate,
+certified pointwise box only for terms explicitly removed by a reduction
+policy. Do not replace the whole Jacobian by intervals. Available experimental
+policies are top-k generator retention, degree-capped top-k retention, and a
+sound coefficient-space PCA reduction with an explicitly bounded projection
+remainder. Treat runtime, retained support, polynomial degree, reduction
+remainder, and final enclosure width as joint diagnostics.
 
 ## Development workflow
 
