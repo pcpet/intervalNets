@@ -43,7 +43,7 @@ from .pz_norms import (
     pz_twojet_w22_norm,
 )
 
-from .pinn import sequential_value_jacobian_laplacian
+from .pinn import load_tanh_mlp_checkpoint, sequential_value_jacobian_laplacian
 
 __all__ = [
     "Interval",
@@ -80,6 +80,7 @@ __all__ = [
     "pz_twojet_w22_integrand",
     "pz_twojet_w22_norm",
     "sequential_value_jacobian_laplacian",
+    "load_tanh_mlp_checkpoint",
 ]
 
 try:

@@ -2,7 +2,39 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from intervalnets import sequential_value_jacobian_laplacian
+from intervalnets import load_tanh_mlp_checkpoint, sequential_value_jacobian_laplacian
+
+
+def test_load_tanh_mlp_checkpoint_reconstructs_saved_network(tmp_path):
+    torch.manual_seed(13)
+    expected = torch.nn.Sequential(
+        torch.nn.Linear(4, 6),
+        torch.nn.Tanh(),
+        torch.nn.Linear(6, 3),
+        torch.nn.Tanh(),
+        torch.nn.Linear(3, 1),
+    ).double()
+    checkpoint = tmp_path / "pinn.pt"
+    torch.save({"state_dict": expected.state_dict(), "seed": 13}, checkpoint)
+
+    loaded = load_tanh_mlp_checkpoint(checkpoint)
+    x = torch.randn(7, 4, dtype=torch.float64)
+
+    assert isinstance(loaded, torch.nn.Sequential)
+    assert [type(layer) for layer in loaded] == [
+        torch.nn.Linear,
+        torch.nn.Tanh,
+        torch.nn.Linear,
+        torch.nn.Tanh,
+        torch.nn.Linear,
+    ]
+    assert not loaded.training
+    assert torch.equal(loaded(x), expected(x))
+
+
+def test_load_tanh_mlp_checkpoint_requires_explicit_regeneration(tmp_path):
+    with pytest.raises(FileNotFoundError, match="RETRAIN = True"):
+        load_tanh_mlp_checkpoint(tmp_path / "missing.pt")
 
 
 def test_sequential_value_jacobian_laplacian_matches_autograd():
