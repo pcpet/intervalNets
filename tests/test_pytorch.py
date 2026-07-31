@@ -1027,6 +1027,62 @@ def test_pz_twojet_forward_sequential_linear_tanh_identity_returns_twojet() -> N
     assert out.H.shape == (1, 2, 2)
 
 
+def test_pz_value_forward_matches_twojet_value_enclosure() -> None:
+    from intervalnets import PolynomialZonotope, pz_twojet_forward, pz_value_forward
+
+    torch.manual_seed(0)
+    model = nn.Sequential(
+        nn.Identity(),
+        nn.Linear(2, 3),
+        nn.Tanh(),
+        nn.Linear(3, 1),
+    ).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.2, 0.1], dtype=torch.float64),
+        torch.tensor([0.3, 0.4], dtype=torch.float64),
+    )
+
+    value = pz_value_forward(model, domain)
+    twojet_value = pz_twojet_forward(model, domain).Y
+    value_interval = value.interval_enclosure()
+    twojet_interval = twojet_value.interval_enclosure()
+
+    assert value.shape == (1,)
+    assert len(value.terms) == len(twojet_value.terms)
+    assert value.num_noise == 2 + 3
+    assert torch.allclose(
+        torch.tensor(value_interval.lower),
+        torch.tensor(twojet_interval.lower),
+    )
+    assert torch.allclose(
+        torch.tensor(value_interval.upper),
+        torch.tensor(twojet_interval.upper),
+    )
+    assert value.num_noise < twojet_value.num_noise
+
+
+def test_pz_value_forward_trace_reports_each_layer() -> None:
+    from intervalnets import PZValueTraceResult, PolynomialZonotope, pz_value_forward
+
+    model = nn.Sequential(nn.Linear(2, 3), nn.Tanh(), nn.Linear(3, 1)).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-1.0, -0.5], dtype=torch.float64),
+        torch.tensor([1.0, 0.5], dtype=torch.float64),
+    )
+
+    traced = pz_value_forward(model, domain, return_trace=True)
+
+    assert isinstance(traced, PZValueTraceResult)
+    assert traced.final.shape == (1,)
+    assert [record.layer_type for record in traced.records] == [
+        "Input",
+        "Linear",
+        "Tanh",
+        "Linear",
+    ]
+    assert traced.records[-1].summary["term_count"] == len(traced.final.terms)
+
+
 def test_enable_interval_eval_adds_eval_pz_twojet_method() -> None:
     from intervalnets import PZTwoJet, PolynomialZonotope
 
@@ -1043,6 +1099,22 @@ def test_enable_interval_eval_adds_eval_pz_twojet_method() -> None:
     assert out.Y.shape == (1,)
     assert out.J.shape == (1, 2)
     assert out.H.shape == (1, 2, 2)
+
+
+def test_enable_interval_eval_adds_eval_pz_value_method() -> None:
+    from intervalnets import PolynomialZonotope
+
+    enable_interval_eval()
+    layer = nn.Linear(2, 1).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-1.0, -0.5], dtype=torch.float64),
+        torch.tensor([1.0, 0.5], dtype=torch.float64),
+    )
+
+    out = layer.eval_pz_value(domain)
+
+    assert out.shape == (1,)
+    assert out.num_noise == 2
 
 
 def test_eval_pz_twojet_rejects_non_polynomial_zonotope_input() -> None:

@@ -560,6 +560,67 @@ class PolynomialZonotope:
         terms[(0,) * self.num_noise + (1,)] = coeff
         return PolynomialZonotope(self.center, terms, num_noise=new_noise, noise_kinds=self.noise_kinds + (str(metadata) if metadata is not None else str(kind),))
 
+    def add_independent_errors(
+        self,
+        radii: Any,
+        *,
+        kind: str = "approximation",
+        metadata: str | None = None,
+    ) -> "PolynomialZonotope":
+        """Add one fresh independent error symbol per nonzero tensor entry.
+
+        This is the batched counterpart of :meth:`add_independent_error`.
+        ``radii`` must be scalar for a scalar zonotope or broadcastable to the
+        coefficient shape.  Each nonzero flattened entry receives its own
+        basis-shaped coefficient, so no dependency is introduced between
+        different output coordinates.
+        """
+
+        if torch is None or not isinstance(self.center, torch.Tensor):
+            if self.shape == ():
+                return self.add_independent_error(
+                    radii,
+                    kind=kind,
+                    metadata=metadata,
+                )
+            raise NotImplementedError(
+                "Batched independent errors currently require tensor-backed coefficients."
+            )
+
+        radius_tensor = torch.as_tensor(
+            radii,
+            dtype=self.center.dtype,
+            device=self.center.device,
+        )
+        if tuple(radius_tensor.shape) == () and self.shape != ():
+            radius_tensor = torch.full_like(self.center, float(radius_tensor.item()))
+        elif tuple(radius_tensor.shape) != self.shape:
+            radius_tensor = torch.broadcast_to(radius_tensor, self.shape).clone()
+
+        nonzero = torch.nonzero(radius_tensor.reshape(-1) != 0, as_tuple=False).reshape(-1)
+        error_count = int(nonzero.numel())
+        if error_count == 0:
+            return self
+
+        terms = {
+            exponent + (0,) * error_count: coefficient
+            for exponent, coefficient in self.terms.items()
+        }
+        for local_index, flat_index in enumerate(nonzero.tolist()):
+            coefficient = torch.zeros_like(self.center)
+            coefficient.reshape(-1)[flat_index] = radius_tensor.reshape(-1)[flat_index]
+            exponent = [0] * (self.num_noise + error_count)
+            exponent[self.num_noise + local_index] = 1
+            terms[tuple(exponent)] = coefficient
+
+        label = str(metadata) if metadata is not None else str(kind)
+        return PolynomialZonotope(
+            self.center,
+            terms,
+            num_noise=self.num_noise + error_count,
+            noise_kinds=self.noise_kinds + (label,) * error_count,
+        )
+
 
     def integrate_noise(self, noise_indices: Sequence[int]) -> "PolynomialZonotope":
         """Integrate selected noise variables coefficient-by-coefficient.

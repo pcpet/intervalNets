@@ -24,6 +24,7 @@ from .pz_integration import (
     PZIntegrationCell,
     integrate_over_cell,
     integrate_pz_over_domain,
+    integrate_pz_value_squared,
     pz_l2norm_bounds,
     pz_sobolev_norm_bounds,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "PZIntegrationCell",
     "integrate_over_cell",
     "integrate_pz_over_domain",
+    "integrate_pz_value_squared",
     "pz_l2norm_bounds",
     "pz_sobolev_norm_bounds",
     "build_pz_twojet_norm_diagnostics",
@@ -83,7 +85,10 @@ try:
         interval_forward_refine,
         pz_l2norm,
         pz_sobolev_norm,
+        pz_value_forward,
         pz_twojet_forward,
+        PZValueTraceRecord,
+        PZValueTraceResult,
         PZTwoJetTraceRecord,
         PZTwoJetTraceResult,
     )
@@ -100,7 +105,10 @@ else:
             "interval_forward_refine",
             "pz_l2norm",
             "pz_sobolev_norm",
+            "pz_value_forward",
             "pz_twojet_forward",
+            "PZValueTraceRecord",
+            "PZValueTraceResult",
             "PZTwoJetTraceRecord",
             "PZTwoJetTraceResult",
         ]

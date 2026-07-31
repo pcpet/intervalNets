@@ -7,7 +7,7 @@
 - interval and derivative enclosures with adaptive norm integration;
 - polynomial-zonotope (PZ) propagation of neural-network values, Jacobians, and Hessians.
 
-The PZ core, `PZTwoJet`, affine and activation propagation, `model.eval_pz_twojet(...)`, PZ integration, and PZ norm routines already exist. Do not treat the original two-jet blueprint as an unimplemented feature checklist.
+The PZ core, `PZTwoJet`, affine and activation propagation, `model.eval_pz_twojet(...)`, PZ integration, and PZ norm routines already exist. A separate `model.eval_pz_value(...)` path propagates only function values and is the default for PZ \(L^2\) computation; do not reintroduce Jacobian or Hessian construction into that path. Do not treat the original two-jet blueprint as an unimplemented feature checklist.
 
 ## Read the relevant specification first
 
@@ -45,6 +45,12 @@ For changes to certified PZ `L^2`, `W^{1,2}`, or `W^{2,2}` integration, read `do
 The direct-integration optimization must reproduce the current certified enclosure while avoiding materialization of the squared PZ integrand. Exploit unordered monomial-pair symmetry and Hessian symmetry, but still merge all contributions with the same retained pointwise-noise exponent before taking absolute values. Keep the existing explicit-square path available at least internally for regression comparisons until equivalence is well tested.
 
 Benchmark enclosure construction, norm-integrand construction, and integration separately. Final monomial count alone is not an adequate performance measure because sparse polynomial multiplication processes intermediate term pairs before canonicalization.
+
+For value-only \(L^2\) performance work, use
+`notebooks/pz_l2_value_benchmarks.ipynb`. The affine tanh enclosure keeps the
+value support degree one, with one domain symbol per input coordinate and one
+pointwise approximation-residual symbol per hidden neuron. Preserve this
+independence when batching activation enclosures.
 
 ## Development workflow
 

@@ -256,6 +256,29 @@ def test_pz_l2norm_contains_monte_carlo_estimate():
     assert bounds.lower <= estimate <= bounds.upper
 
 
+def test_pz_l2norm_uses_value_only_forward(monkeypatch):
+    enable_interval_eval()
+    model = _small_tanh_model(input_dim=2, hidden_dim=3, output_dim=1)
+    domain = IntervalTensor.from_bounds([-1.0, -0.5], [1.0, 0.5])
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("L2 computation must not construct a two-jet")
+
+    monkeypatch.setattr(
+        "intervalnets.pz_integration._eval_pz_twojet",
+        fail_if_called,
+    )
+
+    bounds = model.pz_l2norm(
+        domain,
+        iterations=1,
+        chebyshev_degree=3,
+        residual_subdivisions=16,
+    )
+
+    assert bounds.lower <= bounds.upper
+
+
 def test_pz_w12_order_one_sobolev_behavior():
     enable_interval_eval()
     model = _small_tanh_model()

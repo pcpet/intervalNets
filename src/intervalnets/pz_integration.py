@@ -363,6 +363,82 @@ def _integrate_numpy_twojet_square(
 
     support_size = len(support)
     support_array = np.asarray(support, dtype=np.int64).reshape(support_size, num_noise)
+
+    # The affine activation-enclosure pipeline keeps the value PZ affine:
+    # every support exponent is one distinct unit vector.  In this important
+    # case, all canonical squared terms are known a priori and their box
+    # moments can be contracted directly.  Avoid constructing and sorting the
+    # O(m^2 * num_noise) pair-exponent table, which is especially expensive for
+    # 100-dimensional inputs with many approximation symbols.
+    affine_support = bool(
+        support_size
+        and num_noise
+        and np.all((support_array == 0) | (support_array == 1))
+        and np.all(support_array.sum(axis=1) == 1)
+    )
+    if affine_support:
+        support_noise_indices = np.argmax(support_array, axis=1)
+        if len(np.unique(support_noise_indices)) == support_size:
+            domain_lookup = np.zeros(num_noise, dtype=bool)
+            domain_lookup[np.asarray(domain_indices, dtype=np.int64)] = True
+            pointwise_lookup = np.zeros(num_noise, dtype=bool)
+            pointwise_lookup[np.asarray(pointwise_indices, dtype=np.int64)] = True
+
+            support_domain = domain_lookup[support_noise_indices]
+            support_pointwise = pointwise_lookup[support_noise_indices]
+            support_symbolic = ~(support_domain | support_pointwise)
+
+            diagonal = np.diag(gram)
+            integrated_center = float(
+                scale
+                * measure
+                * (
+                    center_square
+                    + diagonal[support_domain].sum() / 3.0
+                )
+            )
+
+            pointwise_radius_unscaled = float(
+                np.abs(2.0 * np.asarray(center_cross)[support_pointwise]).sum()
+                + np.abs(diagonal[support_pointwise]).sum()
+            )
+            symbolic_radius_unscaled = float(
+                np.abs(2.0 * np.asarray(center_cross)[support_symbolic]).sum()
+                + np.abs(diagonal[support_symbolic]).sum()
+            )
+
+            row_indices, column_indices = np.triu_indices(support_size, k=1)
+            off_diagonal = 2.0 * gram[row_indices, column_indices]
+            pair_pointwise = (
+                support_pointwise[row_indices]
+                | support_pointwise[column_indices]
+            )
+            pair_symbolic = (
+                support_symbolic[row_indices]
+                & support_symbolic[column_indices]
+            )
+            pointwise_radius_unscaled += float(
+                np.abs(off_diagonal[pair_pointwise]).sum()
+            )
+            symbolic_radius_unscaled += float(
+                np.abs(off_diagonal[pair_symbolic]).sum()
+            )
+
+            pointwise_radius = float(
+                scale * measure * pointwise_radius_unscaled
+            )
+            symbolic_radius = float(
+                scale * measure * symbolic_radius_unscaled
+            )
+            base = Interval.from_bounds(
+                nextafter(integrated_center - symbolic_radius, -inf),
+                nextafter(integrated_center + symbolic_radius, inf),
+            )
+            return base + Interval.from_bounds(
+                -pointwise_radius,
+                pointwise_radius,
+            )
+
     row_indices, column_indices = np.triu_indices(support_size)
     pair_coefficients = gram[row_indices, column_indices].copy()
     pair_coefficients[row_indices != column_indices] *= 2.0
@@ -556,6 +632,23 @@ def integrate_pz_twojet_squared(
         center_cross = weighted_matrix @ centers
         gram = weighted_matrix @ matrix.T
         center_square = torch.dot(centers * weight_vector, centers)
+        if (
+            np is not None
+            and not centers.is_complex()
+            and not matrix.is_complex()
+        ):
+            return _integrate_numpy_twojet_square(
+                support=support,
+                num_noise=num_noise,
+                center_square=float(center_square.detach().cpu().item()),
+                center_cross=center_cross.detach().cpu().numpy(),
+                gram=gram.detach().cpu().numpy(),
+                scale=scale,
+                measure=measure,
+                domain_indices=domain_indices,
+                retained_indices=retained_indices,
+                pointwise_indices=pointwise_indices,
+            )
     elif np is not None and _all_real_scalar_coefficients(centers, matrix):
         # Affine PZ propagation may produce a mixture of lightweight floats and
         # zero-dimensional torch tensors. Normalize them once, then use one
@@ -637,6 +730,29 @@ def integrate_pz_twojet_squared(
         metadata={"mode": "pointwise_interval", "direct_twojet_squared": True, "integrand_kind": integrand_kind},
     )
     return result.interval_enclosure()
+
+
+def integrate_pz_value_squared(
+    value: PolynomialZonotope,
+    cell: PZIntegrationCell,
+):
+    """Directly integrate the squared Euclidean norm of a value-only PZ.
+
+    The lightweight zero components adapt the existing weighted-coordinate
+    contraction without allocating input-dimensional Jacobian or Hessian
+    tensors.
+    """
+
+    zero = PolynomialZonotope.constant(
+        0.0,
+        num_noise=value.num_noise,
+        noise_kinds=value.noise_kinds,
+    )
+    return integrate_pz_twojet_squared(
+        PZTwoJet(Y=value, J=zero, H=zero),
+        cell,
+        "l2",
+    )
 
 
 def _require_interval_tensor_domain(domain: Any):
@@ -748,6 +864,29 @@ def _eval_pz_twojet(model, domain: PolynomialZonotope, *, chebyshev_degree: int 
     return pz_twojet_forward(model, domain, chebyshev_degree=chebyshev_degree, residual_subdivisions=residual_subdivisions)
 
 
+def _eval_pz_value(
+    model,
+    domain: PolynomialZonotope,
+    *,
+    chebyshev_degree: int = 5,
+    residual_subdivisions: int = 128,
+):
+    if hasattr(model, "eval_pz_value"):
+        return model.eval_pz_value(
+            domain,
+            chebyshev_degree=chebyshev_degree,
+            residual_subdivisions=residual_subdivisions,
+        )
+    from .pytorch import pz_value_forward
+
+    return pz_value_forward(
+        model,
+        domain,
+        chebyshev_degree=chebyshev_degree,
+        residual_subdivisions=residual_subdivisions,
+    )
+
+
 @dataclass(frozen=True)
 class _CachedSquaredContribution:
     """Cached adaptive-quadrature data for one active PZ integration cell."""
@@ -789,14 +928,24 @@ def _evaluate_squared_contribution_cache(
     """
 
     cell = PZIntegrationCell.from_affine_box(box)
-    jet = _eval_pz_twojet(
-        model,
-        cell.domain,
-        chebyshev_degree=chebyshev_degree,
-        residual_subdivisions=residual_subdivisions,
-    )
-    contribution = integrate_pz_twojet_squared(jet, cell, integrand_kind)
-    jacobian = jet.J.interval_enclosure()
+    if integrand_kind == "l2":
+        value = _eval_pz_value(
+            model,
+            cell.domain,
+            chebyshev_degree=chebyshev_degree,
+            residual_subdivisions=residual_subdivisions,
+        )
+        contribution = integrate_pz_value_squared(value, cell)
+        jacobian = None
+    else:
+        jet = _eval_pz_twojet(
+            model,
+            cell.domain,
+            chebyshev_degree=chebyshev_degree,
+            residual_subdivisions=residual_subdivisions,
+        )
+        contribution = integrate_pz_twojet_squared(jet, cell, integrand_kind)
+        jacobian = jet.J.interval_enclosure()
     return _CachedSquaredContribution(
         box=box,
         contribution=contribution,
@@ -877,7 +1026,7 @@ def pz_l2norm_bounds(
     residual_subdivisions: int = 128,
     output: IntegrationOutput = "interval",
 ) -> Interval:
-    """Adaptive PZ two-jet enclosure of the L2 norm over an interval domain."""
+    """Adaptive value-only PZ enclosure of the L2 norm over an interval domain."""
 
     _require_interval_tensor_domain(domain)
     _require_l2_output(output)

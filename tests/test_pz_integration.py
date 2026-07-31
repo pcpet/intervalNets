@@ -121,6 +121,35 @@ def test_direct_twojet_square_vectorizes_float_coefficients(monkeypatch):
 
 
 @pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_direct_value_squared_affine_fast_path_matches_explicit_reference():
+    from intervalnets.pz_integration import integrate_pz_value_squared
+    from intervalnets.pz_norms import pz_sum_squares
+
+    cell = PZIntegrationCell.from_bounds([-1.0, -0.5], [1.0, 0.5])
+    value = PolynomialZonotope(
+        torch.tensor([0.2, -0.1], dtype=torch.float64),
+        {
+            (1, 0, 0, 0): torch.tensor([0.4, -0.2], dtype=torch.float64),
+            (0, 1, 0, 0): torch.tensor([0.3, 0.1], dtype=torch.float64),
+            (0, 0, 1, 0): torch.tensor([0.05, -0.07], dtype=torch.float64),
+            (0, 0, 0, 1): torch.tensor([-0.02, 0.08], dtype=torch.float64),
+        },
+        num_noise=4,
+        noise_kinds=(
+            "domain",
+            "domain",
+            "approximation_pointwise",
+            "approximation_symbolic",
+        ),
+    )
+
+    direct = integrate_pz_value_squared(value, cell)
+    explicit = integrate_over_cell(pz_sum_squares(value), cell, output="interval")
+
+    _assert_interval_close(direct, explicit)
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
 def test_adaptive_squared_contribution_avoids_explicit_integrand(monkeypatch):
     import intervalnets.pz_integration as pz_integration
     from intervalnets import IntervalTensor, enable_interval_eval

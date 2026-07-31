@@ -243,6 +243,35 @@ def test_add_independent_error_extends_existing_exponents():
 
 
 @pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_add_independent_errors_uses_one_symbol_per_tensor_entry():
+    value = PolynomialZonotope.constant(
+        torch.zeros(2, dtype=torch.float64),
+        num_noise=1,
+        noise_kinds=("domain",),
+    )
+
+    out = value.add_independent_errors(
+        torch.tensor([0.1, 0.2], dtype=torch.float64),
+        kind="approximation_pointwise",
+    )
+
+    assert out.num_noise == 3
+    assert out.noise_kinds == (
+        "domain",
+        "approximation_pointwise",
+        "approximation_pointwise",
+    )
+    assert torch.equal(
+        out.terms[(0, 1, 0)],
+        torch.tensor([0.1, 0.0], dtype=torch.float64),
+    )
+    assert torch.equal(
+        out.terms[(0, 0, 1)],
+        torch.tensor([0.0, 0.2], dtype=torch.float64),
+    )
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
 def test_stack_aligns_sliced_scalars_and_merges_exponents():
     z1 = PolynomialZonotope(torch.tensor([1.0, 2.0], dtype=torch.float64), {(1,): torch.tensor([0.5, 1.5], dtype=torch.float64)}, num_noise=1)
     z2 = PolynomialZonotope(torch.tensor(3.0, dtype=torch.float64), {(0, 1): torch.tensor(2.0, dtype=torch.float64)}, num_noise=2)

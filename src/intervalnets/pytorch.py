@@ -35,6 +35,25 @@ class PZTwoJetTraceResult:
     records: list[PZTwoJetTraceRecord]
 
 
+@dataclass(frozen=True)
+class PZValueTraceRecord:
+    """One opt-in trace snapshot from value-only PZ propagation."""
+
+    layer_index: int
+    layer_name: str
+    layer_type: str
+    value: PolynomialZonotope
+    summary: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PZValueTraceResult:
+    """Final value enclosure plus per-layer trace snapshots."""
+
+    final: PolynomialZonotope
+    records: list[PZValueTraceRecord]
+
+
 def _pz_summary(zonotope: PolynomialZonotope) -> dict[str, Any]:
     return {
         "shape": zonotope.shape,
@@ -52,6 +71,21 @@ def _pz_twojet_trace_record(layer_index: int, layer_name: str, layer_type: str, 
         layer_type=layer_type,
         jet=jet,
         summary={"Y": _pz_summary(jet.Y), "J": _pz_summary(jet.J), "H": _pz_summary(jet.H)},
+    )
+
+
+def _pz_value_trace_record(
+    layer_index: int,
+    layer_name: str,
+    layer_type: str,
+    value: PolynomialZonotope,
+) -> PZValueTraceRecord:
+    return PZValueTraceRecord(
+        layer_index=layer_index,
+        layer_name=layer_name,
+        layer_type=layer_type,
+        value=value,
+        summary=_pz_summary(value),
     )
 
 try:
@@ -348,6 +382,25 @@ def _pz_twojet_linear_forward(layer: nn.Linear, jet: PZTwoJet) -> PZTwoJet:
     )
 
 
+def _pz_value_linear_forward(
+    layer: nn.Linear,
+    value: PolynomialZonotope,
+) -> PolynomialZonotope:
+    """Propagate a value-only polynomial zonotope through ``nn.Linear``."""
+
+    _require_torch()
+    weight = layer.weight.detach()
+    bias = layer.bias.detach() if layer.bias is not None else None
+    if isinstance(value.center, torch.Tensor):
+        weight = weight.to(dtype=value.center.dtype, device=value.center.device)
+        if bias is not None:
+            bias = bias.to(dtype=value.center.dtype, device=value.center.device)
+    else:
+        weight = weight.cpu().tolist()
+        bias = bias.cpu().tolist() if bias is not None else None
+    return value.linear_map(weight, bias)
+
+
 def _pz_scalar_interval(zonotope: PolynomialZonotope) -> Interval:
     """Return the scalar interval enclosure of a scalar polynomial zonotope."""
 
@@ -452,6 +505,164 @@ def _pz_twojet_tanh_forward(jet: PZTwoJet, chebyshev_degree: int, residual_subdi
     )
 
 
+def _pz_value_tanh_forward(
+    value: PolynomialZonotope,
+    chebyshev_degree: int,
+    residual_subdivisions: int,
+) -> PolynomialZonotope:
+    """Propagate only function values through componentwise ``tanh``.
+
+    The current activation enclosure is affine.  All neuron slopes,
+    intercepts, and certified residual radii are therefore applied in one
+    tensor operation, followed by one independent residual symbol per neuron.
+    ``chebyshev_degree`` and ``residual_subdivisions`` remain accepted for API
+    compatibility with the two-jet path.
+    """
+
+    del chebyshev_degree, residual_subdivisions
+    _require_torch()
+    if value.shape == ():
+        components = 1
+    elif len(value.shape) == 1:
+        components = value.shape[0]
+    else:
+        raise ValueError("_pz_value_tanh_forward expects a scalar or 1-D value zonotope.")
+
+    enclosure = value.interval_enclosure()
+    lower = enclosure.lower
+    upper = enclosure.upper
+    if isinstance(lower, torch.Tensor):
+        lower_values = lower.reshape(-1).detach().cpu().tolist()
+        upper_values = upper.reshape(-1).detach().cpu().tolist()
+    else:
+        lower_values = [lower] if value.shape == () else list(lower)
+        upper_values = [upper] if value.shape == () else list(upper)
+
+    approximations = [
+        affine_tanh_enclosure(Interval(float(lo), float(hi)))
+        for lo, hi in zip(lower_values, upper_values)
+    ]
+    if len(approximations) != components:
+        raise RuntimeError("Tanh enclosure component count does not match the PZ shape.")
+
+    if isinstance(value.center, torch.Tensor):
+        target_shape = value.center.shape
+        slopes = torch.tensor(
+            [item.p for item in approximations],
+            dtype=value.center.dtype,
+            device=value.center.device,
+        ).reshape(target_shape)
+        intercepts = torch.tensor(
+            [item.q for item in approximations],
+            dtype=value.center.dtype,
+            device=value.center.device,
+        ).reshape(target_shape)
+        radii = torch.tensor(
+            [item.delta for item in approximations],
+            dtype=value.center.dtype,
+            device=value.center.device,
+        ).reshape(target_shape)
+        affine = PolynomialZonotope(
+            slopes * value.center + intercepts,
+            {
+                exponent: slopes * coefficient
+                for exponent, coefficient in value.terms.items()
+            },
+            num_noise=value.num_noise,
+            noise_kinds=value.noise_kinds,
+        )
+        return affine.add_independent_errors(
+            radii,
+            kind="approximation_pointwise",
+        )
+
+    items = []
+    for index, approximation in enumerate(approximations):
+        component = value if value.shape == () else value[index]
+        items.append(
+            _affine_enclosure_pz(
+                component,
+                slope=approximation.p,
+                intercept=approximation.q,
+                radius=approximation.delta,
+            )
+        )
+    return items[0] if value.shape == () else PolynomialZonotope.stack(items, dim=0)
+
+
+def _pz_value_forward_from_value(
+    module,
+    value: PolynomialZonotope,
+    *,
+    chebyshev_degree: int = 5,
+    residual_subdivisions: int = 128,
+    reduce: bool = False,
+    return_trace: bool = False,
+) -> PolynomialZonotope | PZValueTraceResult:
+    """Propagate a function-value PZ without allocating derivative tensors."""
+
+    _require_torch()
+    if reduce:
+        raise NotImplementedError("PZ value reduction is not implemented yet.")
+    if isinstance(module, nn.Sequential):
+        result = value
+        records = (
+            [_pz_value_trace_record(-1, "input", "Input", result)]
+            if return_trace
+            else []
+        )
+        for index, (name, child) in enumerate(module.named_children()):
+            result = _pz_value_forward_from_value(
+                child,
+                result,
+                chebyshev_degree=chebyshev_degree,
+                residual_subdivisions=residual_subdivisions,
+                reduce=reduce,
+                return_trace=False,
+            )
+            if return_trace:
+                records.append(
+                    _pz_value_trace_record(
+                        index,
+                        name,
+                        type(child).__name__,
+                        result,
+                    )
+                )
+        return PZValueTraceResult(final=result, records=records) if return_trace else result
+    if isinstance(module, nn.Linear):
+        result = _pz_value_linear_forward(module, value)
+    elif isinstance(module, nn.Tanh):
+        result = _pz_value_tanh_forward(
+            value,
+            chebyshev_degree=chebyshev_degree,
+            residual_subdivisions=residual_subdivisions,
+        )
+    elif isinstance(module, nn.Identity):
+        result = value
+    elif isinstance(module, nn.Flatten):
+        if len(value.shape) > 1:
+            raise NotImplementedError(
+                "PZ value Flatten currently supports already-flat vectors only."
+            )
+        result = value
+    else:
+        raise NotImplementedError(
+            "PZ value forward currently supports nn.Sequential, nn.Linear, "
+            "nn.Tanh, nn.Identity, and flat-vector nn.Flatten only; got "
+            f"{type(module).__name__}."
+        )
+    if return_trace:
+        return PZValueTraceResult(
+            final=result,
+            records=[
+                _pz_value_trace_record(-1, "input", "Input", value),
+                _pz_value_trace_record(0, "0", type(module).__name__, result),
+            ],
+        )
+    return result
+
+
 def _pz_twojet_forward_from_jet(
     module,
     jet: PZTwoJet,
@@ -545,6 +756,60 @@ def pz_twojet_forward(
     )
 
 
+def pz_value_forward(
+    module,
+    x: PolynomialZonotope,
+    *,
+    chebyshev_degree: int = 5,
+    residual_subdivisions: int = 128,
+    reduce: bool = False,
+    return_trace: bool = False,
+) -> PolynomialZonotope | PZValueTraceResult:
+    """Evaluate only a network's function-value PZ enclosure.
+
+    Unlike :func:`pz_twojet_forward`, this path never initializes or
+    propagates Jacobian and Hessian coefficient tensors.  It is the intended
+    forward routine for certified PZ ``L^2`` computation.
+    """
+
+    _require_torch()
+    if not isinstance(x, PolynomialZonotope):
+        raise TypeError("pz_value_forward(module, x) requires x to be a PolynomialZonotope.")
+    if len(x.shape) > 1:
+        raise NotImplementedError(
+            "PZ value forward currently supports scalar or flat-vector inputs only."
+        )
+    if not isinstance(x.center, torch.Tensor):
+        parameter = next(module.parameters(), None)
+        dtype = (
+            parameter.dtype
+            if parameter is not None and parameter.is_floating_point()
+            else torch.float64
+        )
+        device = parameter.device if parameter is not None else None
+        x = PolynomialZonotope(
+            torch.as_tensor(x.center, dtype=dtype, device=device),
+            {
+                exponent: torch.as_tensor(
+                    coefficient,
+                    dtype=dtype,
+                    device=device,
+                )
+                for exponent, coefficient in x.terms.items()
+            },
+            num_noise=x.num_noise,
+            noise_kinds=x.noise_kinds,
+        )
+    return _pz_value_forward_from_value(
+        module,
+        x,
+        chebyshev_degree=chebyshev_degree,
+        residual_subdivisions=residual_subdivisions,
+        reduce=reduce,
+        return_trace=return_trace,
+    )
+
+
 def pz_l2norm(
     module,
     domain: IntervalTensor,
@@ -556,7 +821,7 @@ def pz_l2norm(
     residual_subdivisions: int = 128,
     output: str = "interval",
 ) -> Interval:
-    """Return a PZ two-jet enclosure of a module's L2 norm over ``domain``."""
+    """Return a value-only PZ enclosure of a module's L2 norm over ``domain``."""
 
     _require_torch()
     if not isfinite(float(p)) or float(p) != 2.0:
@@ -1658,6 +1923,29 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
             return_trace=return_trace,
         )
 
+    def eval_pz_value_with_interval(
+        self,
+        domain: PolynomialZonotope,
+        *,
+        chebyshev_degree: int = 5,
+        residual_subdivisions: int = 128,
+        reduce: bool = False,
+        return_trace: bool = False,
+    ):
+        _ORIGINAL_EVAL(self)
+        if not isinstance(domain, PolynomialZonotope):
+            raise TypeError(
+                "model.eval_pz_value(domain) requires a PolynomialZonotope input."
+            )
+        return pz_value_forward(
+            self,
+            domain,
+            chebyshev_degree=chebyshev_degree,
+            residual_subdivisions=residual_subdivisions,
+            reduce=reduce,
+            return_trace=return_trace,
+        )
+
     def pz_l2norm_with_interval(
         self,
         domain: IntervalTensor,
@@ -1751,6 +2039,7 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
     nn.Module.lpnorm = lpnorm_with_interval
     nn.Module.eval_jacobian = eval_jacobian_with_interval
     nn.Module.eval_hessian = eval_hessian_with_interval
+    nn.Module.eval_pz_value = eval_pz_value_with_interval
     nn.Module.eval_pz_twojet = eval_pz_twojet_with_interval
     nn.Module.pz_l2norm = pz_l2norm_with_interval
     nn.Module.pz_sobolev_norm = pz_sobolev_norm_with_interval
