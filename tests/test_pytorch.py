@@ -1177,6 +1177,27 @@ def test_pz_onejet_trace_is_lightweight_and_reports_layer_timings() -> None:
     assert all(record.elapsed_s >= 0.0 for record in traced.records)
     assert traced.records[-1].summary["J"]["shape"] == (1, 2)
     activation = traced.records[2].summary
+    value_radii = activation["tanh_approximation_radii"]
+    assert tuple(value_radii.shape) == (3,)
+    assert bool(torch.all(value_radii >= 0.0))
+    assert activation["tanh_approximation_radius_min"] == pytest.approx(
+        float(value_radii.min())
+    )
+    assert activation["tanh_approximation_radius_mean"] == pytest.approx(
+        float(value_radii.mean())
+    )
+    assert activation["tanh_approximation_radius_max"] == pytest.approx(
+        float(value_radii.max())
+    )
+    activation_value = traced.records[2].value
+    for neuron, radius in enumerate(value_radii):
+        exponent = tuple(
+            1 if index == domain.num_noise + neuron else 0
+            for index in range(activation_value.num_noise)
+        )
+        coefficient = activation_value.terms[exponent]
+        assert coefficient[neuron] == pytest.approx(float(radius))
+        assert torch.count_nonzero(coefficient).item() == 1
     radii = activation["tanh_prime_approximation_radii"]
     assert tuple(radii.shape) == (3,)
     assert bool(torch.all(radii >= 0.0))
@@ -1189,6 +1210,7 @@ def test_pz_onejet_trace_is_lightweight_and_reports_layer_timings() -> None:
     assert activation["tanh_prime_approximation_radius_max"] == pytest.approx(
         float(radii.max())
     )
+    assert "tanh_approximation_radii" not in traced.records[1].summary
     assert "tanh_prime_approximation_radii" not in traced.records[1].summary
 
 

@@ -85,6 +85,7 @@ class _PZOneJetPolynomialState:
     Y: PolynomialZonotope
     J: PolynomialZonotope
     jacobian_remainder_radius: Any
+    tanh_approximation_radii: Any | None = None
     tanh_prime_approximation_radii: Any | None = None
 
 
@@ -165,12 +166,27 @@ def _pz_onejet_trace_record(
     state: _PZOneJetPolynomialState,
     elapsed_s: float,
     *,
+    tanh_approximation_radii: Any | None = None,
     tanh_prime_approximation_radii: Any | None = None,
 ) -> PZOneJetTraceRecord:
     activation_summary: dict[str, Any] = {}
+    if tanh_approximation_radii is not None:
+        radii = tanh_approximation_radii.detach().clone().reshape(-1)
+        activation_summary.update({
+            "tanh_approximation_radii": radii,
+            "tanh_approximation_radius_min": float(radii.min().item())
+            if radii.numel()
+            else 0.0,
+            "tanh_approximation_radius_mean": float(radii.mean().item())
+            if radii.numel()
+            else 0.0,
+            "tanh_approximation_radius_max": float(radii.max().item())
+            if radii.numel()
+            else 0.0,
+        })
     if tanh_prime_approximation_radii is not None:
         radii = tanh_prime_approximation_radii.detach().clone().reshape(-1)
-        activation_summary = {
+        activation_summary.update({
             "tanh_prime_approximation_radii": radii,
             "tanh_prime_approximation_radius_min": float(radii.min().item())
             if radii.numel()
@@ -181,7 +197,7 @@ def _pz_onejet_trace_record(
             "tanh_prime_approximation_radius_max": float(radii.max().item())
             if radii.numel()
             else 0.0,
-        }
+        })
     return PZOneJetTraceRecord(
         layer_index=layer_index,
         layer_name=layer_name,
@@ -624,12 +640,16 @@ def _pz_value_tanh_forward(
     value: PolynomialZonotope,
     chebyshev_degree: int,
     residual_subdivisions: int,
-) -> PolynomialZonotope:
+    *,
+    return_approximation_radii: bool = False,
+) -> PolynomialZonotope | tuple[PolynomialZonotope, Any]:
     """Propagate only function values through componentwise ``tanh``.
 
     The current activation enclosure is affine.  All neuron slopes,
     intercepts, and certified residual radii are therefore applied in one
     tensor operation, followed by one independent residual symbol per neuron.
+    Traced one-jet propagation may request the exact residual-radius tensor
+    used for those new symbols alongside the propagated value.
     ``chebyshev_degree`` and ``residual_subdivisions`` remain accepted for API
     compatibility with the two-jet path.
     """
@@ -686,10 +706,13 @@ def _pz_value_tanh_forward(
             num_noise=value.num_noise,
             noise_kinds=value.noise_kinds,
         )
-        return affine.add_independent_errors(
+        result = affine.add_independent_errors(
             radii,
             kind="approximation_pointwise",
         )
+        if return_approximation_radii:
+            return result, radii
+        return result
 
     items = []
     for index, approximation in enumerate(approximations):
@@ -702,7 +725,11 @@ def _pz_value_tanh_forward(
                 radius=approximation.delta,
             )
         )
-    return items[0] if value.shape == () else PolynomialZonotope.stack(items, dim=0)
+    result = items[0] if value.shape == () else PolynomialZonotope.stack(items, dim=0)
+    if return_approximation_radii:
+        radii = [approximation.delta for approximation in approximations]
+        return result, radii[0] if value.shape == () else tuple(radii)
+    return result
 
 
 def _pz_value_forward_from_value(
@@ -938,10 +965,11 @@ def _pz_onejet_tanh_forward_reduced(
     config: PZReductionConfig,
 ) -> _PZOneJetPolynomialState:
     derivative, derivative_radius = _batched_tanh_derivative_core(state.Y)
-    value = _pz_value_tanh_forward(
+    value, value_radius = _pz_value_tanh_forward(
         state.Y,
         chebyshev_degree=chebyshev_degree,
         residual_subdivisions=residual_subdivisions,
+        return_approximation_radii=True,
     )
     value, jacobian_input = value._align(state.J)
     derivative, jacobian_input = derivative._align(jacobian_input)
@@ -968,6 +996,7 @@ def _pz_onejet_tanh_forward_reduced(
         value.with_num_noise(final_noise).with_noise_kinds(kinds),
         polynomial.with_num_noise(final_noise).with_noise_kinds(kinds),
         total_radius,
+        value_radius,
         derivative_radius,
     )
 
@@ -1119,6 +1148,11 @@ def pz_onejet_forward(
                     type(child).__name__,
                     result,
                     perf_counter() - start,
+                    tanh_approximation_radii=(
+                        result.tanh_approximation_radii
+                        if isinstance(child, nn.Tanh)
+                        else None
+                    ),
                     tanh_prime_approximation_radii=(
                         result.tanh_prime_approximation_radii
                         if isinstance(child, nn.Tanh)
