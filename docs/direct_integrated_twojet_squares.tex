@@ -44,7 +44,7 @@ monomials are processed.  More importantly, all selected two-jet coordinates
 are contracted simultaneously through a weighted Gram matrix.  The complete
 squared polynomial zonotope is never constructed.
 
-The proposed method is algebraically exact: with the same pointwise-residual
+The proposed method is algebraically exact: with the same approximation-noise
 semantics and the same final interval-enclosure rule, it returns the same
 mathematical enclosure as the existing pipeline.  It is therefore distinct
 from a remainder-norm relaxation such as an \(L^2\) triangle inequality; no
@@ -78,7 +78,7 @@ where \(H_{oab}=H_{oba}\).  Consequently,
     \sum_{o=1}^{r}
     \left(
         \sum_{a=1}^{n}H_{oaa}^2
-        2\sum_{1\leq a<b\leq n}H_{oab}^2
+        +2\sum_{1\leq a<b\leq n}H_{oab}^2
     \right).
     \label{eq:hessian-symmetric-square}
 \end{equation}
@@ -89,17 +89,18 @@ polynomial-zonotope norm routines.  The cell map is
     X(\alpha)=c+G\alpha,\qquad
     \alpha\in[-1,1]^d,
 \]
-and its non-negative Jacobian density
+and its nonnegative geometric Jacobian density
 \[
-    \lambda:=\abs{\det G}
+    J_X:=\abs{\det\left.\partial X\right|_\alpha}
+        =\abs{\det G}
 \]
-is constant.  For an axis-aligned box, \(\lambda\) is the product of the
+is constant.  For an axis-aligned box, \(J_X\) is the product of the
 coordinate radii.  The physical integral is therefore
 \begin{equation}
     \int_{X([-1,1]^d)}
     \mathcal{S}_{k}(Y,J,H)(x)\,dx
     =
-    \lambda
+    J_X
     \int_{[-1,1]^d}
     \mathcal{S}_{k}(Y,J,H)(\alpha)\,d\alpha.
     \label{eq:physical-integral}
@@ -125,7 +126,7 @@ Conceptually, the existing \(W^{2,2}\) path performs
     +\norm{H(\eps)}_F^2
     \\
     &\quad\longrightarrow
-    \lambda Q(\eps)
+    J_X Q(\eps)
     \\
     &\quad\longrightarrow
     \text{integrate domain noises and enclose the remaining uncertainty}.
@@ -171,23 +172,34 @@ seconds.
 
 Let
 \[
-    \eps=(\alpha,\zeta,\eta)
+    \eps=(\alpha,\eta)
 \]
-collect three conceptual classes of noise variables:
+collect the two classes of noise symbols used throughout these notes:
 \begin{enumerate}[label=\arabic*.]
-    \item \(\alpha\): domain variables, integrated over \([-1,1]^d\);
-    \item \(\zeta\): retained symbolic approximation variables;
-    \item \(\eta\): pointwise approximation-residual variables.
+    \item \(\alpha\): domain noise symbols, integrated over \([-1,1]^d\);
+    \item \(\eta\): approximation noise symbols introduced by certified
+    activation enclosures.
 \end{enumerate}
 The actual implementation identifies these roles from two pieces of metadata:
 \texttt{noise\_kinds} and the cell's domain-noise index tuple.  The variables
 need not occur in contiguous blocks.
 
-The distinction between \(\zeta\) and \(\eta\) is essential.  A pointwise
-residual symbol does not represent one fixed number over the entire domain.
-Rather, it encodes an unknown function whose value may vary adversarially at
-each point.  Consequently, a monomial containing a pointwise residual is not
-integrated by the ordinary monomial-moment formula.
+A generic monomial is written as
+\[
+    \eps^\lambda
+    =\alpha^{\lambda^\alpha}\eta^{\lambda^\eta},
+    \qquad
+    \lambda=(\lambda^\alpha,\lambda^\eta).
+\]
+Letters such as \(\beta,\delta,\gamma\) below denote additional
+multi-indices when several exponent keys occur in the same formula.
+
+There is no additional class of residual or pointwise-error symbols: the
+approximation noise symbols \(\eta\) carry precisely the certified activation
+approximation uncertainty.  Under the integration semantics used here, their
+values may represent the residual function at each physical point.
+Consequently, a monomial containing approximation noise is not integrated by
+the ordinary signed monomial-moment formula.
 
 Let
 \[
@@ -198,13 +210,14 @@ density nor the reference measure.  Write
 \[
     D:=\{\text{domain indices}\},
     \qquad
-    P:=\{\text{pointwise-residual indices}\},
+    P:=\{\text{approximation-noise indices}\},
 \]
-and let \(R:=\{1,\ldots,p\}\setminus D\) be the retained indices.
+and let \(R:=\{1,\ldots,p\}\setminus D=P\).  Thus there are no
+non-domain symbolic variables beyond the approximation noise symbols.
 For an exponent \(\gamma\), denote by \(\gamma_D\) and \(\gamma_R\) the
 corresponding restrictions.
 
-For terms containing no pointwise residual, define the box moment
+For terms containing no approximation noise, define the box moment
 \begin{equation}
     \mu_{\gamma_D}
     :=
@@ -225,34 +238,34 @@ The reference measure is
 
 The present \texttt{pointwise\_interval} integration semantics produce
 \begin{align}
-    b_\rho
+    b_\nu
     &:=
-    \lambda
-    \sum_{\substack{\gamma:\,\gamma_R=\rho\\
+    J_X
+    \sum_{\substack{\gamma:\,\gamma_R=\nu\\
                     \gamma_i=0\ \forall i\in P}}
     q_\gamma\mu_{\gamma_D},
     \label{eq:retained-coefficients}\\
-    R_{\mathrm{pw}}
+    R_{\mathrm{app}}
     &:=
-    \lambda M
+    J_X M
     \sum_{\substack{\gamma:\\
                     \exists i\in P:\ \gamma_i>0}}
     \abs{q_\gamma}.
-    \label{eq:pointwise-radius}
+    \label{eq:approximation-radius}
 \end{align}
 Here \(q_0\) may be viewed as the coefficient with zero exponent, so its
-contribution is included in \(b_0\).  The retained polynomial is
-\[
-    B(\eps_R)=b_0+\sum_{\rho\neq0}b_\rho\eps_R^\rho.
-\]
+contribution is included in \(b_0\).  Under the two-class convention,
+\(\gamma_i=0\) for every \(i\in P\) implies \(\gamma_R=0\); hence the
+retained object is the scalar \(B=b_0\).  The more general coefficient-map
+notation is kept below because it matches the implementation.
 It is finally interval-enclosed as
 \begin{equation}
     \boxed{
     \mathcal{I}_{\mathrm{current}}(Q)
     =
     \left[
-        b_0-\sum_{\rho\neq0}\abs{b_\rho}-R_{\mathrm{pw}},
-        b_0+\sum_{\rho\neq0}\abs{b_\rho}+R_{\mathrm{pw}}
+        b_0-\sum_{\nu\neq0}\abs{b_\nu}-R_{\mathrm{app}},
+        b_0+\sum_{\nu\neq0}\abs{b_\nu}+R_{\mathrm{app}}
     \right],
     }
     \label{eq:current-functional}
@@ -260,10 +273,10 @@ It is finally interval-enclosed as
 with outward rounding in an implementation.
 
 \begin{warning}
-For a pointwise-residual term, the current rule uses the full reference
+For an approximation-noise term, the current rule uses the full reference
 measure \(M\), not the possibly vanishing signed moment
-\(\mu_{\gamma_D}\).  Thus an odd domain factor multiplying a pointwise
-residual must not be discarded by parity.
+\(\mu_{\gamma_D}\).  Thus an odd domain factor multiplying approximation
+noise must not be discarded by parity.
 \end{warning}
 
 \section{First symmetry: weighted upper-triangular Hessian coordinates}
@@ -437,11 +450,11 @@ the current integration routine take absolute values.
 
 The direct routine therefore maintains two coefficient maps:
 \begin{enumerate}[label=\arabic*.]
-    \item \texttt{pointwise\_coeff[\(\gamma\)]}: the canonical coefficient of
-    every full exponent containing a pointwise residual;
-    \item \texttt{retained\_coeff[\(\rho\)]}: the already integrated
-    coefficient of every retained exponent \(\rho=\gamma_R\) for terms
-    containing no pointwise residual.
+    \item \texttt{approximation\_coeff[\(\gamma\)]}: the canonical coefficient of
+    every full exponent containing approximation noise;
+    \item \texttt{retained\_coeff[\(\nu\)]}: the already integrated
+    coefficient of every retained exponent \(\nu=\gamma_R\) for terms
+    containing no approximation noise.
 \end{enumerate}
 It also maintains a scalar \texttt{integrated\_center}.
 
@@ -451,13 +464,13 @@ For every generated pair \((\gamma,s)\), meaning the contribution
 \operatorname{route}(\gamma,s)
 =
 \begin{cases}
-    \texttt{pointwise\_coeff[\(\gamma\)]}
-        \mathrel{+}= \lambda s,
+    \texttt{approximation\_coeff[\(\gamma\)]}
+        \mathrel{+}= J_X s,
         &\exists i\in P:\gamma_i>0,\\[1mm]
     \text{discard},
         &\mu_{\gamma_D}=0,\\[1mm]
     \texttt{retained\_coeff[\(\gamma_R\)]}
-        \mathrel{+}= \lambda\mu_{\gamma_D}s,
+        \mathrel{+}= J_X\mu_{\gamma_D}s,
         &\text{otherwise}.
 \end{cases}
 \label{eq:routing}
@@ -466,32 +479,32 @@ The constant \(c^\top W_kc\) is handled directly as
 \[
     \texttt{integrated\_center}
     \mathrel{+}=
-    \lambda M\,c^\top W_kc.
+    J_X M\,c^\top W_kc.
 \]
 Equivalently, it can be passed through
 \(\operatorname{route}(0,c^\top W_kc)\).
 
 After all contributions have been routed, set
 \begin{align}
-    R_{\mathrm{pw}}
+    R_{\mathrm{app}}
     &:=
     M\sum_{\gamma}
-        \abs{\texttt{pointwise\_coeff[\(\gamma\)]}},
-    \label{eq:direct-pointwise-radius}\\
+        \abs{\texttt{approximation\_coeff[\(\gamma\)]}},
+    \label{eq:direct-approximation-radius}\\
     b_0
     &:=
     \texttt{retained\_coeff[0]},\\
     R_{\mathrm{sym}}
     &:=
-    \sum_{\rho\neq0}
-        \abs{\texttt{retained\_coeff[\(\rho\)]}}.
+    \sum_{\nu\neq0}
+        \abs{\texttt{retained\_coeff[\(\nu\)]}}.
     \label{eq:direct-symbolic-radius}
 \end{align}
 The final interval is
 \begin{equation}
     \boxed{
-    [b_0-R_{\mathrm{sym}}-R_{\mathrm{pw}},
-     b_0+R_{\mathrm{sym}}+R_{\mathrm{pw}}].
+    [b_0-R_{\mathrm{sym}}-R_{\mathrm{app}},
+     b_0+R_{\mathrm{sym}}+R_{\mathrm{app}}].
     }
     \label{eq:direct-final}
 \end{equation}
@@ -506,13 +519,13 @@ In exact arithmetic, the direct algorithm
 
 \begin{proof}
 Proposition~\ref{prop:integrand-equality} gives equality of the formal squared
-integrands.  For non-pointwise terms, moment integration is linear, so applying
+integrands.  For domain-only terms, moment integration is linear, so applying
 \(\mu_{\gamma_D}\) before collecting equal retained exponents produces the same
-\(b_\rho\) as collecting the full squared polynomial first and integrating
-afterward.  For pointwise terms, the direct algorithm retains the full exponent
+\(b_\nu\) as collecting the full squared polynomial first and integrating
+afterward.  For approximation-noise terms, the direct algorithm retains the full exponent
 key and collects every contribution before taking its absolute value.
-Consequently \eqref{eq:direct-pointwise-radius} equals
-\eqref{eq:pointwise-radius}.  The final interval-enclosure step is identical to
+Consequently \eqref{eq:direct-approximation-radius} equals
+\eqref{eq:approximation-radius}.  The final interval-enclosure step is identical to
 \eqref{eq:current-functional}.
 \end{proof}
 
@@ -521,12 +534,12 @@ The following changes do not necessarily reproduce the current enclosure:
 \begin{enumerate}[label=\arabic*.]
     \item Taking \(\abs{s}\) for every generated pair before equal exponent
     keys have been merged loses cancellations and generally enlarges the
-    pointwise radius.
+    approximation-noise radius.
     \item Integrating the \(W^{1,2}\) and Hessian contributions into two
     separate intervals and then adding the intervals loses cancellations
     between their coefficients.
-    \item Using the domain moment of a pointwise-residual term is inconsistent
-    with the present pointwise-residual semantics and can be unsound.
+    \item Using the domain moment of an approximation-noise term is inconsistent
+    with the present approximation-noise semantics and can be unsound.
     \item Replacing the approximation part by an \(L^2\) radius and applying a
     triangle inequality is a valid alternative enclosure, but it is not the
     same enclosure.
@@ -539,7 +552,7 @@ The following changes do not necessarily reproduce the current enclosure:
 \label{alg:direct}
 The inputs are two-jet polynomial zonotopes \(Y,J,H\) with aligned noise
 metadata, a Sobolev order \(k\in\{0,1,2\}\), an affine cell density
-\(\lambda\geq0\), domain indices \(D\), and pointwise-residual indices \(P\).
+\(J_X\geq0\), domain indices \(D\), and approximation-noise indices \(P\).
 Proceed as follows.
 \begin{enumerate}[label=\arabic*.,leftmargin=1.8em]
     \item Select the coordinates \(v=\Phi_k(Y,J,H)\) and their weights \(w\).
@@ -552,9 +565,9 @@ Proceed as follows.
     \]
     \item Initialize
     \[
-        \texttt{pointwise\_coeff}\gets\{\},\qquad
+        \texttt{approximation\_coeff}\gets\{\},\qquad
         \texttt{retained\_coeff}
-        \gets\{0:\lambda 2^{\abs D}c^\top\diag(w)c\}.
+        \gets\{0:J_X 2^{\abs D}c^\top\diag(w)c\}.
     \]
     \item For every \(\beta\in\mathcal{B}\), call
     \(\operatorname{route}(\beta,2g_\beta)\).
@@ -566,22 +579,22 @@ Proceed as follows.
     \]
     \item Compute
     \[
-        R_{\mathrm{pw}}
+        R_{\mathrm{app}}
         \gets2^{\abs D}\sum_\gamma
-        \abs{\texttt{pointwise\_coeff[\(\gamma\)]}},
+        \abs{\texttt{approximation\_coeff[\(\gamma\)]}},
         \quad
         b_0\gets\texttt{retained\_coeff[0]},
     \]
     and
     \[
         R_{\mathrm{sym}}
-        \gets\sum_{\rho\neq0}
-        \abs{\texttt{retained\_coeff[\(\rho\)]}}.
+        \gets\sum_{\nu\neq0}
+        \abs{\texttt{retained\_coeff[\(\nu\)]}}.
     \]
     \item Return the outward-rounded interval
     \[
-        [b_0-R_{\mathrm{sym}}-R_{\mathrm{pw}},
-         b_0+R_{\mathrm{sym}}+R_{\mathrm{pw}}].
+        [b_0-R_{\mathrm{sym}}-R_{\mathrm{app}},
+         b_0+R_{\mathrm{sym}}+R_{\mathrm{app}}].
     \]
 \end{enumerate}
 \end{algorithmblock}
@@ -594,16 +607,16 @@ For a contribution \(s\eps^\gamma\), define
     \item If \(s=0\), return.
     \item If \(\gamma_i>0\) for some \(i\in P\), perform
     \[
-        \texttt{pointwise\_coeff[\(\gamma\)]}
-        \mathrel{+}=\lambda s
+        \texttt{approximation\_coeff[\(\gamma\)]}
+        \mathrel{+}=J_X s
     \]
     and return.
     \item Compute \(\mu=\operatorname{BoxMoment}(\gamma_D)\).  If
     \(\mu=0\), return.
-    \item Set \(\rho=\gamma_R\) and perform
+    \item Set \(\nu=\gamma_R\) and perform
     \[
-        \texttt{retained\_coeff[\(\rho\)]}
-        \mathrel{+}=\lambda\mu s.
+        \texttt{retained\_coeff[\(\nu\)]}
+        \mathrel{+}=J_X\mu s.
     \]
 \end{enumerate}
 \end{algorithmblock}
@@ -682,12 +695,13 @@ To minimize semantic drift, the direct routine may construct an
 \begin{enumerate}[label=\arabic*.]
     \item create a scalar retained polynomial zonotope from
     \texttt{retained\_coeff};
-    \item store \(R_{\mathrm{pw}}\) as its \texttt{interval\_radius};
+    \item store \(R_{\mathrm{app}}\) as its \texttt{interval\_radius};
     \item call the existing \texttt{interval\_enclosure()} method.
 \end{enumerate}
-This small post-integration PZ contains only retained non-domain exponents.  It
-is not the 55,992-term squared integrand over all noises.  Reusing the existing
-method also preserves the established outward-padding behavior.
+Under the two-class convention this post-integration object has only its
+constant coefficient; it is not the 55,992-term squared integrand over all
+noise symbols.  Reusing the existing method also preserves the established
+outward-padding behavior.
 
 \subsection{Noise metadata and alignment}
 
@@ -697,9 +711,9 @@ Before any contraction:
     \item merge or validate their \texttt{noise\_kinds} exactly as the existing
     PZ addition path would;
     \item obtain \(D\) from \texttt{cell.domain\_noise\_indices};
-    \item obtain \(P\) using the same predicate and the same
+    \item obtain \(P\), the approximation-noise index set, using the same predicate and the same
     \texttt{POINTWISE\_RESIDUAL\_KINDS} constant as the current integrator;
-    \item retain every index outside \(D\), including pointwise indices in the
+    \item retain every index outside \(D\), including approximation-noise indices in the
     metadata, even though terms involving them are converted to a radius.
 \end{enumerate}
 No new classification logic should be duplicated in the norm module.
@@ -764,8 +778,8 @@ square of a sparse polynomial is a convolution.  The speedup comes from:
     \item replacing separate scalar-entry products by one coefficient-vector
     contraction;
     \item moving small tensor multiplications out of Python loops;
-    \item discarding odd non-pointwise domain moments immediately;
-    \item collapsing non-pointwise terms directly to retained exponents;
+    \item discarding odd domain-only moments immediately;
+    \item collapsing domain-only terms directly to retained exponents;
     \item avoiding construction and a later traversal of the squared PZ.
 \end{enumerate}
 
@@ -827,7 +841,7 @@ padding.
 
 \subsection{Cancellation before absolute value}
 
-Use the pointwise variable \(\eta\) and two coordinates
+Use the approximation noise symbol \(\eta\) and two coordinates
 \[
     z_1=1+\eta,
     \qquad
@@ -837,18 +851,18 @@ Then
 \[
     z_1^2+z_2^2=2+2\eta^2.
 \]
-The two linear \(\eta\)-coefficients cancel before the pointwise radius is
+The two linear \(\eta\)-coefficients cancel before the approximation-noise radius is
 formed.  A faulty pairwise-absolute-value implementation would lose this
 cancellation.
 
-\subsection{Pointwise residual multiplied by an odd domain monomial}
+\subsection{Approximation noise multiplied by an odd domain monomial}
 
 Use
 \[
     z(\alpha,\eta)=\alpha+\eta.
 \]
 Its square contains \(2\alpha\eta\).  The ordinary domain moment of this term
-is zero, but the current pointwise semantics assign it a nonzero interval
+is zero, but the current approximation-noise semantics assign it a nonzero interval
 radius.  The direct implementation must match the old result.
 
 \subsection{Hessian symmetry}
@@ -911,7 +925,7 @@ The requested drop-in optimization is
     \text{one symmetric Gram contraction}
     \\
     &\longrightarrow
-    \text{canonicalize directly into pointwise and integrated accumulators}
+    \text{canonicalize directly into approximation-noise and integrated accumulators}
     \\
     &\longrightarrow
     \text{the existing final interval-enclosure rule}.
@@ -927,7 +941,7 @@ All selected two-jet coordinates are processed together, so cancellations are
 preserved across \(Y\), \(J\), and \(H\).
 
 One limitation is unavoidable: to reproduce the current enclosure exactly,
-coefficients of equal pointwise-residual monomials must still be accumulated
+coefficients of equal approximation-noise monomials must still be accumulated
 before their absolute values are taken.  Thus the algorithm avoids the squared
 \emph{polynomial-zonotope object}, but it cannot discard all canonical
 coefficient aggregation.  This is precisely what distinguishes the method
