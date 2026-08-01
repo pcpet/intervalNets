@@ -5,10 +5,9 @@
 \usepackage{enumitem}
 \usepackage{microtype}
 \usepackage[hidelinks]{hyperref}
-\usepackage{algorithm}
-\usepackage{algpseudocode}
 
 \newtheorem{remark}{Remark}
+\newtheorem{algorithmblock}{Algorithm}
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\N}{\mathbb{N}}
 \newcommand{\abs}[1]{\left\lvert #1\right\rvert}
@@ -36,18 +35,18 @@ be a polynomial map of the form
 \begin{equation}
     X(\alpha)
     =
-    c+\sum_{\beta\in\mathcal{B}} g_\beta \alpha^\beta,
+    x_0+\sum_{\lambda\in\Lambda_X} x_\lambda \alpha^\lambda,
     \qquad
     \alpha=(\alpha_1,\ldots,\alpha_s)\in\Xi,
     \label{eq:pz-parametrization}
 \end{equation}
 where
 \[
-    c,g_\beta\in\R^n,
+    x_0,x_\lambda\in\R^n,
     \qquad
-    \alpha^\beta
+    \alpha^\lambda
     :=
-    \prod_{j=1}^s \alpha_j^{\beta_j}.
+    \prod_{j=1}^s \alpha_j^{\lambda_j}.
 \]
 The corresponding polynomial zonotope is
 \[
@@ -56,24 +55,28 @@ The corresponding polynomial zonotope is
 
 Let \(f:\mathcal{X}\to\R\) be a scalar-valued function. Assume that a certified polynomial enclosure of \(f\) on \(\mathcal{X}\) has been computed:
 \begin{equation}
-    f(x)=p(x)+r(x),
+    f(x)=\widehat f(x)+r(x),
     \qquad
-    \abs{r(x)}\leq E
+    \abs{r(x)}\leq \rho
     \quad\text{for all }x\in\mathcal{X},
     \label{eq:polynomial-remainder-enclosure}
 \end{equation}
-where \(p:\R^n\to\R\) is a polynomial and \(E\geq 0\).
+where \(\widehat f:\R^n\to\R\) is a polynomial approximation and
+\(\rho\geq0\) is its certified approximation-error radius.
 
 Equivalently, one may write the pointwise enclosure as
 \begin{equation}
-    f(x)\in p(x)+E[-1,1].
+    f(x)\in \widehat f(x)+\rho[-1,1].
     \label{eq:pointwise-noise}
 \end{equation}
-The interval in \eqref{eq:pointwise-noise} is a pointwise remainder enclosure. In general, it does not mean that there exists one constant noise value \(\eta\in[-1,1]\) such that
+Equivalently, one may use an approximation noise symbol \(\eta_x\in[-1,1]\)
+at each point and write
 \[
-    f(x)=p(x)+E\eta
+    f(x)=\widehat f(x)+\rho\eta_x.
 \]
-simultaneously for all \(x\in\mathcal{X}\). Rather, the remainder is an unknown function \(r(x)\) satisfying \(\abs{r(x)}\leq E\).
+The residual function \(r(x)=f(x)-\widehat f(x)\) satisfies
+\(\abs{r(x)}\leq\rho\).  The notation does not assert that one fixed scalar
+value of \(\eta_x\) represents the residual simultaneously at every point.
 
 There are two different integrals associated with the parametrization \eqref{eq:pz-parametrization}:
 \begin{enumerate}[label=\arabic*.]
@@ -93,22 +96,22 @@ These integrals agree only in special cases. The geometric integral requires an 
 
 Let
 \[
-    q(\alpha)=\sum_{\gamma\in\mathcal{G}} q_\gamma\alpha^\gamma
+    q(\alpha)=\sum_{\lambda\in\Lambda} q_\lambda\alpha^\lambda
 \]
 be a polynomial on \(\Xi=[-1,1]^s\). Then
 \begin{equation}
     \int_\Xi q(\alpha)\,d\alpha
     =
-    \sum_{\gamma\in\mathcal{G}} q_\gamma\,\mu_\gamma,
+    \sum_{\lambda\in\Lambda} q_\lambda\,\mu_\lambda,
     \label{eq:box-polynomial-integration}
 \end{equation}
 where
 \begin{equation}
-    \mu_\gamma
+    \mu_\lambda
     :=
-    \int_\Xi \alpha^\gamma\,d\alpha
+    \int_\Xi \alpha^\lambda\,d\alpha
     =
-    \prod_{j=1}^s\int_{-1}^1 t^{\gamma_j}\,dt.
+    \prod_{j=1}^s\int_{-1}^1 t^{\lambda_j}\,dt.
     \label{eq:box-moment}
 \end{equation}
 For every \(k\in\N_0\),
@@ -123,11 +126,11 @@ For every \(k\in\N_0\),
 \end{equation}
 Consequently,
 \begin{equation}
-    \mu_\gamma
+    \mu_\lambda
     =
     \begin{cases}
-        \displaystyle\prod_{j=1}^s \frac{2}{\gamma_j+1},
-        & \gamma_j\text{ is even for every }j,\\[3mm]
+        \displaystyle\prod_{j=1}^s \frac{2}{\lambda_j+1},
+        & \lambda_j\text{ is even for every }j,\\[3mm]
         0, & \text{otherwise}.
     \end{cases}
     \label{eq:multivariate-moment}
@@ -138,16 +141,16 @@ Thus polynomial integration over the reference box is a linear coefficient opera
 
 Define the polynomial pullback
 \begin{equation}
-    q(\alpha):=(p\circ X)(\alpha).
+    q(\alpha):=(\widehat f\circ X)(\alpha).
     \label{eq:pullback-polynomial}
 \end{equation}
-Since both \(p\) and \(X\) are polynomial, \(q\) is polynomial.
+Since both \(\widehat f\) and \(X\) are polynomial, \(q\) is polynomial.
 
 From \eqref{eq:polynomial-remainder-enclosure},
 \[
     f(X(\alpha))=q(\alpha)+r(X(\alpha)),
     \qquad
-    \abs{r(X(\alpha))}\leq E.
+    \abs{r(X(\alpha))}\leq \rho.
 \]
 Therefore,
 \begin{align}
@@ -159,7 +162,7 @@ Therefore,
     &\in
     \int_\Xi q(\alpha)\,d\alpha
     +
-    E\,\abs{\Xi}[-1,1].
+    \rho\,\abs{\Xi}[-1,1].
 \end{align}
 Since \(\abs{\Xi}=2^s\),
 \begin{equation}
@@ -174,7 +177,8 @@ where
 \[
     I_{\mathrm{poly}}:=\int_\Xi q(\alpha)\,d\alpha.
 \]
-Equivalently, introducing one fresh noise symbol,
+Equivalently, introducing one fresh approximation noise symbol for the final
+scalar integral,
 \begin{equation}
     \int_\Xi f(X(\alpha))\,d\alpha
     \in
@@ -188,7 +192,7 @@ Equivalently, introducing one fresh noise symbol,
 
 Assume now that \(s=n\), and that \(X:\Xi\to\mathcal{X}\subset\R^n\) is injective and continuously differentiable, with
 \[
-    \det DX(\alpha)\neq 0
+    \det\left.\partial X\right|_\alpha\neq 0
     \qquad
     \text{for all }\alpha\in\Xi.
 \]
@@ -201,14 +205,15 @@ Then the change-of-variables formula gives
 \end{equation}
 where
 \begin{equation}
-    J_X(\alpha):=\abs{\det DX(\alpha)}.
+    J_X(\alpha):=
+    \abs{\det\left.\partial X\right|_\alpha}.
     \label{eq:jacobian-density}
 \end{equation}
 Using \eqref{eq:polynomial-remainder-enclosure},
 \begin{align}
     \int_{\mathcal{X}} f(x)\,dx
     &=
-    \int_\Xi p(X(\alpha))J_X(\alpha)\,d\alpha
+    \int_\Xi \widehat f(X(\alpha))J_X(\alpha)\,d\alpha
     +
     \int_\Xi r(X(\alpha))J_X(\alpha)\,d\alpha.
 \end{align}
@@ -216,7 +221,7 @@ Since \(J_X(\alpha)\geq 0\),
 \[
     \abs{\int_\Xi r(X(\alpha))J_X(\alpha)\,d\alpha}
     \leq
-    E\int_\Xi J_X(\alpha)\,d\alpha.
+    \rho\int_\Xi J_X(\alpha)\,d\alpha.
 \]
 Moreover,
 \begin{equation}
@@ -228,7 +233,7 @@ Hence
     \boxed{
     \int_{\mathcal{X}} f(x)\,dx
     \in
-    I_{\mathrm{poly}}+E\abs{\mathcal{X}}[-1,1],
+    I_{\mathrm{poly}}+\rho\abs{\mathcal{X}}[-1,1],
     }
     \label{eq:geometric-integral-general}
 \end{equation}
@@ -236,7 +241,7 @@ where
 \begin{equation}
     I_{\mathrm{poly}}
     :=
-    \int_\Xi p(X(\alpha))J_X(\alpha)\,d\alpha.
+    \int_\Xi \widehat f(X(\alpha))J_X(\alpha)\,d\alpha.
     \label{eq:geometric-polynomial-part}
 \end{equation}
 
@@ -244,7 +249,7 @@ where
 
 Suppose that the sign of the Jacobian determinant is known:
 \begin{equation}
-    \sigma\det DX(\alpha)>0
+    \sigma\det\left.\partial X\right|_\alpha>0
     \qquad
     \text{for all }\alpha\in\Xi,
     \qquad
@@ -253,20 +258,20 @@ Suppose that the sign of the Jacobian determinant is known:
 \end{equation}
 Then
 \[
-    J_X(\alpha)=\sigma\det DX(\alpha).
+    J_X(\alpha)=\sigma\det\left.\partial X\right|_\alpha.
 \]
-Because \(X\) is polynomial, both \(\det DX(\alpha)\) and \(p(X(\alpha))\det DX(\alpha)\) are polynomials in \(\alpha\). Therefore,
+Because \(X\) is polynomial, both \(\det\left.\partial X\right|_\alpha\) and \(\widehat f(X(\alpha))\det\left.\partial X\right|_\alpha\) are polynomials in \(\alpha\). Therefore,
 \begin{equation}
     I_{\mathrm{poly}}
     =
-    \sigma\int_\Xi p(X(\alpha))\det DX(\alpha)\,d\alpha,
+    \sigma\int_\Xi \widehat f(X(\alpha))\det\left.\partial X\right|_\alpha\,d\alpha,
     \label{eq:fixed-orientation-poly-integral}
 \end{equation}
 and
 \begin{equation}
     \abs{\mathcal{X}}
     =
-    \sigma\int_\Xi \det DX(\alpha)\,d\alpha
+    \sigma\int_\Xi \det\left.\partial X\right|_\alpha\,d\alpha
     \label{eq:fixed-orientation-volume}
 \end{equation}
 can both be computed by exact polynomial moment integration.
@@ -282,13 +287,13 @@ Suppose
     \det G\neq 0.
     \label{eq:affine-zonotope-map}
 \end{equation}
-Then \(DX(\alpha)=G\) and \(J_X(\alpha)=\abs{\det G}\) is constant. Hence
+Then \(\left.\partial X\right|_\alpha=G\) and \(J_X(\alpha)=\abs{\det G}\) is constant. Hence
 \begin{equation}
     \int_{\mathcal{X}} f(x)\,dx
     \in
-    \abs{\det G}\int_\Xi p(c+G\alpha)\,d\alpha
+    \abs{\det G}\int_\Xi \widehat f(c+G\alpha)\,d\alpha
     +
-    E\abs{\det G}\,2^n[-1,1].
+    \rho\abs{\det G}\,2^n[-1,1].
     \label{eq:affine-zonotope-integral}
 \end{equation}
 Since \(\abs{\mathcal{X}}=2^n\abs{\det G}\), this becomes
@@ -296,22 +301,22 @@ Since \(\abs{\mathcal{X}}=2^n\abs{\det G}\), this becomes
     \boxed{
     \int_{\mathcal{X}} f(x)\,dx
     \in
-    \abs{\det G}\int_\Xi p(c+G\alpha)\,d\alpha
+    \abs{\det G}\int_\Xi \widehat f(c+G\alpha)\,d\alpha
     +
-    E\abs{\mathcal{X}}[-1,1].
+    \rho\abs{\mathcal{X}}[-1,1].
     }
     \label{eq:affine-zonotope-boxed}
 \end{equation}
 
 \section{Jacobian sign changes and injectivity}
 
-If \(\det DX\) changes sign on \(\Xi\), then \(\abs{\det DX}\) is generally only piecewise polynomial. A practical certified procedure is to subdivide
+If \(\det\partial X\) changes sign on \(\Xi\), then \(\abs{\det\partial X}\) is generally only piecewise polynomial. A practical certified procedure is to subdivide
 \[
     \Xi=\bigcup_{\ell=1}^N \Xi_\ell
 \]
-into boxes with pairwise disjoint interiors until the sign of \(\det DX\) can be certified on every \(\Xi_\ell\). On each subbox, choose \(\sigma_\ell\in\{-1,1\}\) such that
+into boxes with pairwise disjoint interiors until the sign of \(\det\partial X\) can be certified on every \(\Xi_\ell\). On each subbox, choose \(\sigma_\ell\in\{-1,1\}\) such that
 \[
-    \sigma_\ell\det DX(\alpha)>0
+    \sigma_\ell\det\left.\partial X\right|_\alpha>0
     \qquad
     \text{for all }\alpha\in\Xi_\ell.
 \]
@@ -319,15 +324,15 @@ Then each local contribution is again the integral of a polynomial after affine 
 
 If injectivity of \(X\) is not known, the parameter-space integral
 \[
-    \int_\Xi f(X(\alpha))\abs{\det DX(\alpha)}\,d\alpha
+    \int_\Xi f(X(\alpha))\abs{\det\left.\partial X\right|_\alpha}\,d\alpha
 \]
 may count points of the image with multiplicity. Therefore certified geometric integration over \(\mathcal{X}\) requires either a proof that \(X\) is injective on \(\Xi\), or a subdivision into pieces on which \(X\) is injective and whose images overlap only on sets of measure zero.
 
-\section{Spatially varying interval remainder}
+\section{Spatially varying approximation-error radius}
 
 Assume more generally that
 \begin{equation}
-    f(x)=p(x)+r(x),
+    f(x)=\widehat f(x)+r(x),
     \qquad
     \abs{r(x)}\leq \rho(x)
     \quad
@@ -338,7 +343,7 @@ where \(\rho:\mathcal{X}\to[0,\infty)\). Then
 \begin{equation}
     \int_{\mathcal{X}} f(x)\,dx
     \in
-    \int_{\mathcal{X}}p(x)\,dx
+    \int_{\mathcal{X}}\widehat f(x)\,dx
     +
     \left[
         -\int_{\mathcal{X}}\rho(x)\,dx,
@@ -346,7 +351,9 @@ where \(\rho:\mathcal{X}\to[0,\infty)\). Then
     \right].
     \label{eq:variable-remainder-integral}
 \end{equation}
-If \(\rho\circ X\) is polynomial and the Jacobian sign is fixed, then the remainder radius can itself be computed exactly by polynomial moment integration.
+If \(\rho\circ X\) is polynomial and the Jacobian sign is fixed, then the
+integrated approximation-error radius can itself be computed exactly by
+polynomial moment integration.
 
 \section{Several cells}
 
@@ -358,7 +365,7 @@ with pairwise disjoint interiors, and assume
 \[
     f(x)=p_k(x)+r_k(x),
     \qquad
-    \abs{r_k(x)}\leq E_k
+    \abs{r_k(x)}\leq \rho_k
     \quad
     \text{for }x\in\mathcal{X}_k.
 \]
@@ -379,7 +386,8 @@ Then
     }
     \label{eq:multi-cell-integral}
 \end{equation}
-For a scalar final integral, a single fresh final noise symbol is sufficient:
+For a scalar final integral, a single fresh final approximation noise symbol
+is sufficient:
 \begin{equation}
     \int_\Omega f(x)\,dx
     \in
@@ -394,61 +402,57 @@ For a scalar final integral, a single fresh final noise symbol is sufficient:
 
 Let
 \[
-    h(\alpha)=\sum_{\gamma\in\mathcal{G}} h_\gamma\alpha^\gamma.
+    h(\alpha)=\sum_{\lambda\in\Lambda} h_\lambda\alpha^\lambda.
 \]
 Define the integration operator
 \begin{equation}
     \mathcal{I}(h)
     :=
-    \sum_{\gamma\in\mathcal{G}} h_\gamma\mu_\gamma,
+    \sum_{\lambda\in\Lambda} h_\lambda\mu_\lambda,
     \label{eq:integration-operator}
 \end{equation}
-where \(\mu_\gamma\) is given by \eqref{eq:multivariate-moment}. The operator \(\mathcal{I}\) is linear, so it should be applied directly to sparse polynomial coefficients without first range-enclosing the polynomial.
+where \(\mu_\lambda\) is given by \eqref{eq:multivariate-moment}. The operator \(\mathcal{I}\) is linear, so it should be applied directly to sparse polynomial coefficients without first range-enclosing the polynomial.
 
-\begin{algorithm}[ht]
-\caption{Exact polynomial integration on \([-1,1]^s\)}
+\begin{algorithmblock}[Exact polynomial integration on the reference box]
 \label{alg:polynomial-box-integration}
-\begin{algorithmic}[1]
-\Require Sparse polynomial \(h(\alpha)=\sum_{\gamma\in\mathcal{G}}h_\gamma\alpha^\gamma\)
-\Ensure \(I=\int_{[-1,1]^s}h(\alpha)\,d\alpha\)
-\State \(I\gets 0\)
-\ForAll{\(\gamma\in\mathcal{G}\)}
-    \If{some component \(\gamma_j\) is odd}
-        \State \(\mu_\gamma\gets 0\)
-    \Else
-        \State \(\mu_\gamma\gets\prod_{j=1}^s\frac{2}{\gamma_j+1}\)
-    \EndIf
-    \State \(I\gets I+h_\gamma\mu_\gamma\)
-\EndFor
-\State \Return \(I\)
-\end{algorithmic}
-\end{algorithm}
+Given \(h(\alpha)=\sum_{\lambda\in\Lambda}h_\lambda\alpha^\lambda\),
+initialize \(I\gets0\).  For every \(\lambda\in\Lambda\), set
+\[
+ \mu_\lambda\gets
+ \begin{cases}
+ 0,&\text{if some component \(\lambda_j\) is odd},\\[1mm]
+ \displaystyle\prod_{j=1}^s\frac{2}{\lambda_j+1},&\text{otherwise},
+ \end{cases}
+\]
+and update \(I\gets I+h_\lambda\mu_\lambda\).  Return \(I\).
+\end{algorithmblock}
 
-\begin{algorithm}[ht]
-\caption{Certified integration over a polynomial-zonotope image}
+\begin{algorithmblock}[Certified integration over a polynomial-zonotope image]
 \label{alg:certified-pz-integration}
-\begin{algorithmic}[1]
-\Require Polynomial parametrization \(X:\Xi=[-1,1]^n\to\R^n\)
-\Require Polynomial \(p:\R^n\to\R\)
-\Require Certified bound \(\abs{f(x)-p(x)}\leq E\) on \(\mathcal{X}=X(\Xi)\)
-\Require Certificate that \(X\) is injective on \(\Xi\)
-\Require Certificate \(\sigma\det DX(\alpha)>0\) on \(\Xi\)
-\State \(d(\alpha)\gets\sigma\det DX(\alpha)\)
-\State \(q(\alpha)\gets p(X(\alpha))\)
-\State \(h(\alpha)\gets q(\alpha)d(\alpha)\)
-\State \(I_{\mathrm{poly}}\gets\int_\Xi h(\alpha)\,d\alpha\)
-\State \(V\gets\int_\Xi d(\alpha)\,d\alpha\)
-\State \(R\gets EV\)
-\State \Return \([I_{\mathrm{poly}}-R,\,I_{\mathrm{poly}}+R]\)
-\end{algorithmic}
-\end{algorithm}
+Given the parametrization \(X:\Xi=[-1,1]^n\to\R^n\), the polynomial
+approximation \(\widehat f\), the bound
+\(\abs{f(x)-\widehat f(x)}\leq\rho\), and certificates of injectivity and
+fixed orientation, compute
+\[
+ d(\alpha)=\sigma\det\left.\partial X\right|_\alpha,
+ \quad q(\alpha)=\widehat f(X(\alpha)),
+ \quad h(\alpha)=q(\alpha)d(\alpha).
+\]
+Then set
+\[
+ I_{\mathrm{poly}}=\int_\Xi h(\alpha)\,d\alpha,
+ \qquad V=\int_\Xi d(\alpha)\,d\alpha,
+ \qquad R=\rho V,
+\]
+and return \([I_{\mathrm{poly}}-R,I_{\mathrm{poly}}+R]\).
+\end{algorithmblock}
 
 \section{Floating-point rigor}
 
 The mathematical formulas above are exact. A computer implementation must additionally enclose floating-point roundoff. Two common approaches are:
 \begin{enumerate}[label=\arabic*.]
     \item store the polynomial coefficients as intervals and perform all coefficient operations with outward rounding;
-    \item store floating-point coefficients and compute an additional certified roundoff remainder.
+    \item store floating-point coefficients and compute an additional certified roundoff-error radius.
 \end{enumerate}
 If
 \[
@@ -468,8 +472,8 @@ then a rigorous final enclosure is
 \begin{equation}
     \int_{\mathcal{X}}f(x)\,dx
     \in
-    [\underline{I}_{\mathrm{poly}}-E\overline{V},
-     \overline{I}_{\mathrm{poly}}+E\overline{V}].
+    [\underline{I}_{\mathrm{poly}}-\rho\overline{V},
+     \overline{I}_{\mathrm{poly}}+\rho\overline{V}].
     \label{eq:roundoff-safe-final}
 \end{equation}
 
@@ -487,7 +491,7 @@ The recommended procedure is
 \\
 &\quad\longrightarrow\text{exact coefficient-level moment integration}
 \\
-&\quad\longrightarrow\text{add the integrated interval remainder}.
+&\quad\longrightarrow\text{add the integrated approximation-error interval}.
 \end{aligned}
 }
 \]
@@ -503,12 +507,12 @@ The final enclosure has the form
 \]
 with
 \[
-    R_{\mathrm{int}}=E\abs{\mathcal{X}}
+    R_{\mathrm{int}}=\rho\abs{\mathcal{X}}
 \]
-for a constant pointwise remainder radius, or more generally
+for a constant approximation-error radius, or more generally
 \[
     R_{\mathrm{int}}=\int_{\mathcal{X}}\rho(x)\,dx
 \]
-for a spatially varying certified remainder radius.
+for a spatially varying certified approximation-error radius.
 
 \end{document}
