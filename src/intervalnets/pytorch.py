@@ -85,6 +85,7 @@ class _PZOneJetPolynomialState:
     Y: PolynomialZonotope
     J: PolynomialZonotope
     jacobian_remainder_radius: Any
+    tanh_prime_approximation_radii: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -163,7 +164,24 @@ def _pz_onejet_trace_record(
     layer_type: str,
     state: _PZOneJetPolynomialState,
     elapsed_s: float,
+    *,
+    tanh_prime_approximation_radii: Any | None = None,
 ) -> PZOneJetTraceRecord:
+    activation_summary: dict[str, Any] = {}
+    if tanh_prime_approximation_radii is not None:
+        radii = tanh_prime_approximation_radii.detach().clone().reshape(-1)
+        activation_summary = {
+            "tanh_prime_approximation_radii": radii,
+            "tanh_prime_approximation_radius_min": float(radii.min().item())
+            if radii.numel()
+            else 0.0,
+            "tanh_prime_approximation_radius_mean": float(radii.mean().item())
+            if radii.numel()
+            else 0.0,
+            "tanh_prime_approximation_radius_max": float(radii.max().item())
+            if radii.numel()
+            else 0.0,
+        }
     return PZOneJetTraceRecord(
         layer_index=layer_index,
         layer_name=layer_name,
@@ -181,6 +199,7 @@ def _pz_onejet_trace_record(
                 "remainder_mean_radius": float(state.jacobian_remainder_radius.mean().item())
                 if state.jacobian_remainder_radius.numel() else 0.0,
             },
+            **activation_summary,
         },
     )
 
@@ -949,6 +968,7 @@ def _pz_onejet_tanh_forward_reduced(
         value.with_num_noise(final_noise).with_noise_kinds(kinds),
         polynomial.with_num_noise(final_noise).with_noise_kinds(kinds),
         total_radius,
+        derivative_radius,
     )
 
 
@@ -1099,6 +1119,11 @@ def pz_onejet_forward(
                     type(child).__name__,
                     result,
                     perf_counter() - start,
+                    tanh_prime_approximation_radii=(
+                        result.tanh_prime_approximation_radii
+                        if isinstance(child, nn.Tanh)
+                        else None
+                    ),
                 )
             )
     else:

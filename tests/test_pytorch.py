@@ -1176,6 +1176,20 @@ def test_pz_onejet_trace_is_lightweight_and_reports_layer_timings() -> None:
     ]
     assert all(record.elapsed_s >= 0.0 for record in traced.records)
     assert traced.records[-1].summary["J"]["shape"] == (1, 2)
+    activation = traced.records[2].summary
+    radii = activation["tanh_prime_approximation_radii"]
+    assert tuple(radii.shape) == (3,)
+    assert bool(torch.all(radii >= 0.0))
+    assert activation["tanh_prime_approximation_radius_min"] == pytest.approx(
+        float(radii.min())
+    )
+    assert activation["tanh_prime_approximation_radius_mean"] == pytest.approx(
+        float(radii.mean())
+    )
+    assert activation["tanh_prime_approximation_radius_max"] == pytest.approx(
+        float(radii.max())
+    )
+    assert "tanh_prime_approximation_radii" not in traced.records[1].summary
 
 
 def test_enable_interval_eval_adds_eval_pz_onejet_method() -> None:

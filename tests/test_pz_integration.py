@@ -51,6 +51,85 @@ def test_direct_onejet_square_uses_exact_pointwise_jacobian_box_range():
     assert result.upper == pytest.approx(14.5)
 
 
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
+def test_direct_onejet_square_can_remain_a_pz_until_final_intervalization():
+    cell = PZIntegrationCell.from_bounds([-1.0], [1.0])
+    value = PolynomialZonotope(
+        torch.tensor([1.0], dtype=torch.float64),
+        {(1, 0): torch.tensor([0.25], dtype=torch.float64)},
+        num_noise=2,
+        noise_kinds=("domain", "approximation_pointwise"),
+    )
+    jacobian = PolynomialZonotope.constant(
+        torch.tensor([[2.0]], dtype=torch.float64),
+        num_noise=2,
+        noise_kinds=value.noise_kinds,
+    ).add_independent_errors(
+        torch.tensor([[0.5]], dtype=torch.float64),
+        kind="approximation_pointwise",
+    )
+    value = value.with_num_noise(jacobian.num_noise).with_noise_kinds(
+        jacobian.noise_kinds
+    )
+    jet = PZOneJet(value, jacobian)
+
+    integrated = integrate_pz_onejet_squared(jet, cell, output="pz")
+    direct_interval = integrate_pz_onejet_squared(jet, cell, output="interval")
+    final_interval = integrated.interval_enclosure()
+
+    assert isinstance(integrated, PolynomialZonotope)
+    assert "domain" not in integrated.noise_kinds
+    assert integrated.noise_kinds[-1] == "global_symbolic_residual"
+    _assert_interval_close(final_interval, direct_interval)
+
+
+def test_integrated_result_can_be_reencoded_as_a_polynomial_zonotope():
+    polynomial = PolynomialZonotope(
+        2.0,
+        {(1,): 0.25},
+        num_noise=1,
+        noise_kinds=("approximation_symbolic",),
+    )
+    result = IntegratedPZResult(
+        polynomial=polynomial,
+        interval_radius=0.5,
+        measure=2.0,
+        metadata={},
+    )
+
+    integrated = result.as_polynomial_zonotope()
+
+    assert integrated.noise_kinds == (
+        "approximation_symbolic",
+        "global_symbolic_residual",
+    )
+    _assert_interval_close(integrated.interval_enclosure(), result.interval_enclosure())
+
+
+def test_adaptive_cell_pz_sum_keeps_local_noise_symbols_independent():
+    from intervalnets.pz_integration import _independent_pz_sum
+
+    positive = PolynomialZonotope(
+        0.0,
+        {(1,): 1.0},
+        num_noise=1,
+        noise_kinds=("global_symbolic_residual",),
+    )
+    negative = PolynomialZonotope(
+        0.0,
+        {(1,): -1.0},
+        num_noise=1,
+        noise_kinds=("global_symbolic_residual",),
+    )
+
+    total = _independent_pz_sum((positive, negative))
+    enclosure = total.interval_enclosure()
+
+    assert total.num_noise == 2
+    assert enclosure.lower == pytest.approx(-2.0)
+    assert enclosure.upper == pytest.approx(2.0)
+
+
 def _assert_interval_close(left, right):
     assert float(left.lower) == pytest.approx(float(right.lower), rel=1e-12, abs=1e-12)
     assert float(left.upper) == pytest.approx(float(right.upper), rel=1e-12, abs=1e-12)

@@ -151,6 +151,20 @@ class IntegratedPZResult:
             return base + IntervalTensor.from_bounds(lower_radius, self.interval_radius)
         return base + Interval.from_bounds(lower_radius, self.interval_radius)
 
+    def as_polynomial_zonotope(self) -> PolynomialZonotope:
+        """Return the integral as one scalar/tensor polynomial zonotope.
+
+        Pointwise residuals cannot be integrated as fixed symbolic values.
+        Their already integrated radius is therefore represented by one fresh
+        global residual symbol per output entry.  This keeps the result in PZ
+        form until the caller explicitly requests an interval enclosure.
+        """
+
+        return self.polynomial.add_independent_errors(
+            self.interval_radius,
+            kind="global_symbolic_residual",
+        )
+
 
 def _flatten_scalars(value: Any):
     data = _to_fallback(value)
@@ -359,6 +373,8 @@ def _integrate_numpy_twojet_square(
     domain_indices: tuple[int, ...],
     retained_indices: tuple[int, ...],
     pointwise_indices: tuple[int, ...],
+    retained_kinds: tuple[str, ...],
+    output: IntegrationOutput,
 ):
     """Canonicalize and integrate the dense-real contraction in vectorized batches."""
 
@@ -431,14 +447,36 @@ def _integrate_numpy_twojet_square(
             symbolic_radius = float(
                 scale * measure * symbolic_radius_unscaled
             )
-            base = Interval.from_bounds(
-                nextafter(integrated_center - symbolic_radius, -inf),
-                nextafter(integrated_center + symbolic_radius, inf),
-            )
-            return base + Interval.from_bounds(
-                -pointwise_radius,
-                pointwise_radius,
-            )
+            if output == "pz" and not np.any(support_symbolic):
+                result = IntegratedPZResult(
+                    polynomial=PolynomialZonotope(
+                        integrated_center,
+                        {},
+                        num_noise=len(retained_indices),
+                        noise_kinds=retained_kinds,
+                    ),
+                    interval_radius=pointwise_radius,
+                    measure=measure,
+                    metadata={
+                        "mode": "pointwise_interval",
+                        "direct_twojet_squared": True,
+                        "affine_support": True,
+                    },
+                )
+                return result.as_polynomial_zonotope()
+            if output == "pz":
+                # Retained symbolic affine generators require their exact
+                # exponents, so use the generic canonicalizing path below.
+                pass
+            else:
+                base = Interval.from_bounds(
+                    nextafter(integrated_center - symbolic_radius, -inf),
+                    nextafter(integrated_center + symbolic_radius, inf),
+                )
+                return base + Interval.from_bounds(
+                    -pointwise_radius,
+                    pointwise_radius,
+                )
 
     row_indices, column_indices = np.triu_indices(support_size)
     pair_coefficients = gram[row_indices, column_indices].copy()
@@ -526,6 +564,7 @@ def _integrate_numpy_twojet_square(
         moments = np.ones(len(exact_coefficients), dtype=float)
     integrated_coefficients = scale * moments * exact_coefficients
 
+    canonical_retained = np.empty((0, len(retained_indices)), dtype=np.int64)
     if retained_indices:
         retained_exponents = exact_exponents[:, retained_indices]
         retained_bases = bases[np.asarray(retained_indices)]
@@ -543,6 +582,10 @@ def _integrate_numpy_twojet_square(
                 return_inverse=True,
             )
             retained_group_count = len(canonical_retained_codes)
+            canonical_retained = (
+                (canonical_retained_codes[:, np.newaxis] // retained_strides[np.newaxis, :])
+                % retained_bases[np.newaxis, :]
+            )
         else:
             canonical_retained, retained_inverse = np.unique(
                 retained_exponents,
@@ -565,6 +608,27 @@ def _integrate_numpy_twojet_square(
     else:
         center = float(integrated_coefficients.sum())
         symbolic_radius = 0.0
+        canonical_retained = np.zeros((1, 0), dtype=np.int64)
+        canonical_integrated = np.asarray((center,), dtype=float)
+
+    if output == "pz":
+        terms = {
+            tuple(int(power) for power in exponent): float(coefficient)
+            for exponent, coefficient in zip(canonical_retained, canonical_integrated)
+            if np.any(exponent != 0) and coefficient != 0.0
+        }
+        result = IntegratedPZResult(
+            polynomial=PolynomialZonotope(
+                center,
+                terms,
+                num_noise=len(retained_indices),
+                noise_kinds=retained_kinds,
+            ),
+            interval_radius=radius,
+            measure=measure,
+            metadata={"mode": "pointwise_interval", "direct_twojet_squared": True},
+        )
+        return result.as_polynomial_zonotope()
 
     # Match ``IntegratedPZResult.interval_enclosure`` without materializing a
     # retained PolynomialZonotope containing tens of thousands of terms.
@@ -576,13 +640,20 @@ def _integrate_numpy_twojet_square(
 
 
 def integrate_pz_twojet_squared(
-    jet: PZTwoJet, cell: PZIntegrationCell, integrand_kind: TwoJetIntegrandKind
+    jet: PZTwoJet,
+    cell: PZIntegrationCell,
+    integrand_kind: TwoJetIntegrandKind,
+    *,
+    output: IntegrationOutput = "interval",
 ):
     """Directly integrate a squared two-jet over a supported affine cell.
 
     Unsupported densities and Hessian layouts deliberately use the explicit
     squared-integrand reference pipeline.
     """
+
+    if output not in ("interval", "pz"):
+        raise ValueError("output must be 'interval' or 'pz'.")
 
     def explicit_fallback():
         from .pz_norms import (
@@ -598,7 +669,13 @@ def integrate_pz_twojet_squared(
         }.get(integrand_kind)
         if constructor is None:
             raise ValueError("integrand_kind must be 'l2', 'w12', or 'w22'.")
-        return integrate_over_cell(constructor(jet), cell, output="interval")
+        weighted = constructor(jet) * cell.jacobian_density
+        result = integrate_pz_over_domain(
+            weighted,
+            cell.domain_noise_indices,
+            mode="pointwise_interval",
+        )
+        return result.as_polynomial_zonotope() if output == "pz" else result.interval_enclosure()
 
     density = cell.jacobian_density
     if not isinstance(density, Real) or not isfinite(float(density)) or float(density) < 0.0:
@@ -649,6 +726,8 @@ def integrate_pz_twojet_squared(
                 domain_indices=domain_indices,
                 retained_indices=retained_indices,
                 pointwise_indices=pointwise_indices,
+                retained_kinds=retained_kinds,
+                output=output,
             )
     elif np is not None and _all_real_scalar_coefficients(centers, matrix):
         # Affine PZ propagation may produce a mixture of lightweight floats and
@@ -680,6 +759,8 @@ def integrate_pz_twojet_squared(
             domain_indices=domain_indices,
             retained_indices=retained_indices,
             pointwise_indices=pointwise_indices,
+            retained_kinds=retained_kinds,
+            output=output,
         )
     else:
         center_cross = [_weighted_dot(row, centers, weights) for row in matrix]
@@ -730,12 +811,14 @@ def integrate_pz_twojet_squared(
         measure=measure,
         metadata={"mode": "pointwise_interval", "direct_twojet_squared": True, "integrand_kind": integrand_kind},
     )
-    return result.interval_enclosure()
+    return result.as_polynomial_zonotope() if output == "pz" else result.interval_enclosure()
 
 
 def integrate_pz_value_squared(
     value: PolynomialZonotope,
     cell: PZIntegrationCell,
+    *,
+    output: IntegrationOutput = "interval",
 ):
     """Directly integrate the squared Euclidean norm of a value-only PZ.
 
@@ -753,12 +836,15 @@ def integrate_pz_value_squared(
         PZTwoJet(Y=value, J=zero, H=zero),
         cell,
         "l2",
+        output=output,
     )
 
 
 def integrate_pz_onejet_squared(
     jet: PZOneJet,
     cell: PZIntegrationCell,
+    *,
+    output: IntegrationOutput = "interval",
 ):
     """Directly integrate ``|Y|^2 + |J|_F^2`` for a PZ one-jet.
 
@@ -783,6 +869,8 @@ def integrate_pz_onejet_squared(
         and jet.J.noise_kinds[exponent.index(1)] in POINTWISE_RESIDUAL_KINDS
         for exponent in jet.J.terms
     )
+    if output not in ("interval", "pz"):
+        raise ValueError("output must be 'interval' or 'pz'.")
     if (
         isinstance(density, Real)
         and isinstance(volume, Real)
@@ -790,7 +878,7 @@ def integrate_pz_onejet_squared(
         and float(volume) >= 0.0
         and jacobian_is_fresh_pointwise_box
     ):
-        value_integral = integrate_pz_value_squared(jet.Y, cell)
+        value_integral = integrate_pz_value_squared(jet.Y, cell, output=output)
         enclosure = jet.J.interval_enclosure()
         lower_square_sum = 0.0
         upper_square_sum = 0.0
@@ -806,6 +894,19 @@ def integrate_pz_onejet_squared(
             nextafter(float(volume) * lower_square_sum, -inf),
             nextafter(float(volume) * upper_square_sum, inf),
         )
+        if output == "pz":
+            jacobian_pz = PolynomialZonotope.constant(
+                jacobian_integral.midpoint,
+                num_noise=value_integral.num_noise,
+                noise_kinds=value_integral.noise_kinds,
+            ).add_independent_error(
+                jacobian_integral.radius,
+                kind="global_symbolic_residual",
+            )
+            value_integral = value_integral.with_num_noise(
+                jacobian_pz.num_noise
+            ).with_noise_kinds(jacobian_pz.noise_kinds)
+            return value_integral + jacobian_pz
         return value_integral + jacobian_integral
 
     zero = PolynomialZonotope.constant(
@@ -817,6 +918,7 @@ def integrate_pz_onejet_squared(
         PZTwoJet(Y=jet.Y, J=jet.J, H=zero),
         cell,
         "w12",
+        output=output,
     )
 
 
@@ -980,9 +1082,15 @@ class _CachedSquaredContribution:
     """Cached adaptive-quadrature data for one active PZ integration cell."""
 
     box: "IntervalTensor"
-    contribution: Interval
+    integrated_pz: PolynomialZonotope
     jacobian: Any
     split_dim: int
+
+    @property
+    def contribution(self) -> Interval:
+        """Compatibility view used only for adaptive error indicators."""
+
+        return self.integrated_pz.interval_enclosure()
 
 
 def _squared_twojet_integrand(jet: Any, integrand_kind: Literal["l2", "w12", "w22"]) -> PolynomialZonotope:
@@ -1023,7 +1131,7 @@ def _evaluate_squared_contribution_cache(
             chebyshev_degree=chebyshev_degree,
             residual_subdivisions=residual_subdivisions,
         )
-        contribution = integrate_pz_value_squared(value, cell)
+        contribution = integrate_pz_value_squared(value, cell, output="pz")
         jacobian = None
     elif integrand_kind == "w12":
         jet = _eval_pz_onejet(
@@ -1032,7 +1140,7 @@ def _evaluate_squared_contribution_cache(
             chebyshev_degree=chebyshev_degree,
             residual_subdivisions=residual_subdivisions,
         )
-        contribution = integrate_pz_onejet_squared(jet, cell)
+        contribution = integrate_pz_onejet_squared(jet, cell, output="pz")
         jacobian = jet.J.interval_enclosure()
     else:
         jet = _eval_pz_twojet(
@@ -1041,11 +1149,16 @@ def _evaluate_squared_contribution_cache(
             chebyshev_degree=chebyshev_degree,
             residual_subdivisions=residual_subdivisions,
         )
-        contribution = integrate_pz_twojet_squared(jet, cell, integrand_kind)
+        contribution = integrate_pz_twojet_squared(
+            jet,
+            cell,
+            integrand_kind,
+            output="pz",
+        )
         jacobian = jet.J.interval_enclosure()
     return _CachedSquaredContribution(
         box=box,
-        contribution=contribution,
+        integrated_pz=contribution,
         jacobian=jacobian,
         split_dim=_choose_split_dim_from_jacobian(box, jacobian),
     )
@@ -1069,6 +1182,57 @@ def _integrated_squared_contribution(
     return cached.contribution, cached.jacobian
 
 
+def _independent_pz_sum(
+    contributions: Sequence[PolynomialZonotope],
+) -> PolynomialZonotope:
+    """Sum cell contributions while keeping their noise symbols independent.
+
+    Noise variables from different adaptive cells describe unrelated local
+    approximation residuals.  Positional PZ addition would accidentally
+    identify them.  This helper first removes unused noise coordinates, then
+    embeds every cell in a disjoint block of variables before adding terms.
+    """
+
+    if not contributions:
+        return PolynomialZonotope.constant(0.0)
+    center = _zero_like(contributions[0].center)
+    used_per_cell: list[tuple[int, ...]] = []
+    kinds: list[str] = []
+    for contribution in contributions:
+        if contribution.shape != contributions[0].shape:
+            raise ValueError("Integrated PZ cell contributions must have equal shapes.")
+        center = _add_coeff(center, contribution.center)
+        used = tuple(
+            index
+            for index in range(contribution.num_noise)
+            if any(exponent[index] for exponent in contribution.terms)
+        )
+        used_per_cell.append(used)
+        kinds.extend(contribution.noise_kinds[index] for index in used)
+
+    total_noise = len(kinds)
+    terms: dict[Exponent, Any] = {}
+    offset = 0
+    for contribution, used in zip(contributions, used_per_cell):
+        for exponent, coefficient in contribution.terms.items():
+            compact = tuple(exponent[index] for index in used)
+            embedded = (0,) * offset + compact + (0,) * (
+                total_noise - offset - len(used)
+            )
+            terms[embedded] = (
+                _add_coeff(terms[embedded], coefficient)
+                if embedded in terms
+                else coefficient
+            )
+        offset += len(used)
+    return PolynomialZonotope(
+        center,
+        terms,
+        num_noise=total_noise,
+        noise_kinds=tuple(kinds),
+    )
+
+
 def _pz_adaptive_squared_integral(
     model,
     domain: "IntervalTensor",
@@ -1078,7 +1242,7 @@ def _pz_adaptive_squared_integral(
     theta: float,
     chebyshev_degree: int,
     residual_subdivisions: int,
-) -> Interval:
+) -> PolynomialZonotope:
     active_cells = [
         _evaluate_squared_contribution_cache(
             model,
@@ -1089,7 +1253,10 @@ def _pz_adaptive_squared_integral(
         )
     ]
     for _ in range(iterations):
-        indicators = [_interval_width(cell.contribution) for cell in active_cells]
+        indicators = [
+            _interval_width(cell.contribution)
+            for cell in active_cells
+        ]
         marked_indices = set(_dorfler_marking(indicators, theta))
         refined_cells: list[_CachedSquaredContribution] = []
         for idx, cell in enumerate(active_cells):
@@ -1108,10 +1275,7 @@ def _pz_adaptive_squared_integral(
                 )
         active_cells = refined_cells
 
-    integral = Interval.point(0.0)
-    for cell in active_cells:
-        integral = _interval_add(integral, cell.contribution)
-    return integral
+    return _independent_pz_sum([cell.integrated_pz for cell in active_cells])
 
 
 def pz_l2norm_bounds(
@@ -1137,7 +1301,7 @@ def pz_l2norm_bounds(
         chebyshev_degree=chebyshev_degree,
         residual_subdivisions=residual_subdivisions,
     )
-    return _sqrt_interval_nonnegative(squared)
+    return _sqrt_interval_nonnegative(squared.interval_enclosure())
 
 
 def pz_sobolev_norm_bounds(
@@ -1170,4 +1334,4 @@ def pz_sobolev_norm_bounds(
         chebyshev_degree=chebyshev_degree,
         residual_subdivisions=residual_subdivisions,
     )
-    return _sqrt_interval_nonnegative(squared)
+    return _sqrt_interval_nonnegative(squared.interval_enclosure())
