@@ -54,10 +54,10 @@
 \maketitle
 
 \begin{abstract}
-This note gives a noniterative routine for enclosing the hyperbolic tangent activation and its first two derivatives on a real interval by an affine function plus one symmetric error term. On an interval where the function is convex or concave, the construction reduces to the affine Chebyshev representation of Rump and Kashiwagi. If the interval crosses one or more curvature breakpoints, the same secant slope is retained and the exact residual range for that slope is obtained by evaluating a fixed finite set of explicitly computable stationary candidates. No optimization, root iteration, or branch-and-bound step is required. The resulting enclosure is directly suitable for polynomial-zonotope propagation:
+This note gives a noniterative routine for enclosing the hyperbolic tangent activation and its first two derivatives on a real interval by an affine function plus one symmetric approximation noise term. On an interval where the function is convex or concave, the construction reduces to the affine Chebyshev representation of Rump and Kashiwagi. If the interval crosses one or more curvature breakpoints, the same secant slope is retained and the exact residual range for that slope is obtained by evaluating a fixed finite set of explicitly computable stationary candidates. No optimization, root iteration, or branch-and-bound step is required. The resulting enclosure is directly suitable for polynomial-zonotope propagation:
 \[
-  f(Z)\subseteq pZ+q+\Delta\varepsilon,
-  \qquad \varepsilon\in[-1,1].
+  f(Z)\subseteq pZ+q+\rho\eta,
+  \qquad \eta\in[-1,1].
 \]
 \end{abstract}
 
@@ -67,26 +67,29 @@ This note gives a noniterative routine for enclosing the hyperbolic tangent acti
 
 Let \(X=[a,b]\subset\R\), with \(a<b\), and let \(f:X\to\R\). An affine representation of \(f\) on \(X\) is a triple
 \[
-  [[p,q,\Delta]],\qquad p,q\in\R,\quad \Delta\ge 0,
+  [[p,q,\rho]],\qquad p,q\in\R,\quad \rho\ge 0,
 \]
 such that
 \begin{equation}\label{eq:affrep}
-  |px+q-f(x)|\le \Delta
+  |px+q-f(x)|\le \rho
   \qquad\text{for all }x\in X.
 \end{equation}
 Equivalently,
 \[
-  f(x)\in px+q+\Delta[-1,1]
+  f(x)\in px+q+\rho[-1,1]
   \qquad (x\in X).
 \]
 This is the form used in affine arithmetic by Rump and Kashiwagi \cite{RumpKashiwagi2015}.
 
 If a scalar polynomial zonotope \(Z\) satisfies \(Z\subseteq X\), then \eqref{eq:affrep} immediately yields
 \begin{equation}\label{eq:pzprop}
-  f(Z)\subseteq pZ+q+\Delta\varepsilon_f,
-  \qquad \varepsilon_f\in[-1,1],
+  f(Z)\subseteq pZ+q+\rho\eta_f,
+  \qquad \eta_f\in[-1,1],
 \end{equation}
-where \(\varepsilon_f\) is a fresh independent noise symbol. The affine part preserves all existing polynomial dependencies and introduces no new products of noise symbols.
+where \(\eta_f\) is a fresh approximation noise symbol.  Its coefficient
+\(\rho\) is the certified approximation-error radius.  The affine part
+preserves all existing polynomial dependencies and introduces no new products
+of noise symbols.
 
 \section{Rump--Kashiwagi formula on convex or concave intervals}
 
@@ -104,10 +107,10 @@ Under strict convexity or strict concavity, this point is unique. Rump and Kashi
 \end{equation}
 and
 \begin{equation}\label{eq:rkdelta}
-  \Delta=
+  \rho=
   \frac{|f(\xi)-f(a)-p(\xi-a)|}{2}.
 \end{equation}
-Then \([[p,q,\Delta]]\) represents \(f\) on \(X\). Geometrically, the secant line and the parallel tangent line at \(\xi\) are the two extreme parallel supporting lines, and \(px+q\) is their midpoint.
+Then \([[p,q,\rho]]\) represents \(f\) on \(X\). Geometrically, the secant line and the parallel tangent line at \(\xi\) are the two extreme parallel supporting lines, and \(px+q\) is their midpoint.
 
 The strength of this construction is its cost: once \(\xi\) is available in closed form, only a fixed number of elementary operations and function evaluations is needed.
 
@@ -142,16 +145,16 @@ and then
 \begin{equation}\label{eq:qdelta-general}
   q=\frac{r_{\max}+r_{\min}}{2},
   \qquad
-  \Delta=\frac{r_{\max}-r_{\min}}{2}.
+  \rho=\frac{r_{\max}-r_{\min}}{2}.
 \end{equation}
 
 \begin{proposition}[Soundness and optimal vertical shift for the chosen slope]\label{prop:sound}
 For any continuously differentiable \(f:[a,b]\to\R\), the quantities defined by \eqref{eq:secantslope}--\eqref{eq:qdelta-general} satisfy
 \[
-  |f(x)-(px+q)|\le \Delta
+  |f(x)-(px+q)|\le \rho
   \qquad\text{for all }x\in[a,b].
 \]
-For the fixed slope \(p\), the chosen \(q\) minimizes the uniform error, and \(\Delta\) is the exact smallest error radius for that slope.
+For the fixed slope \(p\), the chosen \(q\) minimizes the uniform error, and \(\rho\) is the exact smallest error radius for that slope.
 \end{proposition}
 
 \begin{proof}
@@ -176,7 +179,7 @@ The first derivatives are
 
 Define the positive curvature breakpoints
 \begin{equation}\label{eq:alphabeta}
-  \alpha=\artanh\!\left(\frac{1}{\sqrt{3}}\right)
+  \tau=\artanh\!\left(\frac{1}{\sqrt{3}}\right)
   \approx 0.6584789485,
   \qquad
   \beta=\artanh\!\left(\sqrt{\frac{2}{3}}\right)
@@ -193,7 +196,7 @@ Define the positive curvature breakpoints
 Function & Convex regions & Concave regions \\
 \midrule
 \(\tanh x\) & \(( -\infty,0]\) & \([0,\infty)\) \\
-\(\tanh' x\) & \(( -\infty,-\alpha]\cup[\alpha,\infty)\) & \([ -\alpha,\alpha]\) \\
+\(\tanh' x\) & \(( -\infty,-\tau]\cup[\tau,\infty)\) & \([ -\tau,\tau]\) \\
 \(\tanh''x\) & \(( -\infty,-\beta]\cup[0,\beta]\) & \([ -\beta,0]\cup[\beta,\infty)\) \\
 \bottomrule
 \end{tabular}
@@ -202,7 +205,7 @@ Function & Convex regions & Concave regions \\
 Thus the breakpoint sets relevant to a two-jet implementation are
 \[
   B_0=\{0\},\qquad
-  B_1=\{-\alpha,\alpha\},\qquad
+  B_1=\{-\tau,\tau\},\qquad
   B_2=\{-\beta,0,\beta\}.
 \]
 These sets are useful for a fast dispatch test: if \([a,b]\) does not cross a breakpoint for the requested function, the ordinary convex/concave formula applies. The finite-candidate construction below is nevertheless valid in all cases and can be used as a unified implementation.
@@ -364,9 +367,9 @@ Given a function selector \(j\in\{0,1,2\}\), representing \(f_0=\tanh\), \(f_1=\
   \[
     q=\frac{\max r+\min r}{2},
     \qquad
-    \Delta=\frac{\max r-\min r}{2}.
+    \rho=\frac{\max r-\min r}{2}.
   \]
-  \item Return \([[p,q,\Delta]]\), with outward rounding or a final floating-point safety inflation if a mathematically rigorous machine enclosure is required.
+  \item Return \([[p,q,\rho]]\), with outward rounding or a final floating-point safety inflation if a mathematically rigorous machine enclosure is required.
 \end{enumerate}
 \end{algorithm}
 
@@ -378,7 +381,7 @@ function affine_tanh_jet_enclosure(j, a, b):
     assert a <= b
 
     if a == b:
-        return p = 0, q = f_j(a), Delta = 0
+        return p = 0, q = f_j(a), rho = 0
 
     ta = tanh(a)
     tb = tanh(b)
@@ -422,9 +425,9 @@ function affine_tanh_jet_enclosure(j, a, b):
     rmin = min(R)
     rmax = max(R)
     q = (rmax + rmin) / 2
-    Delta = (rmax - rmin) / 2
+    rho = (rmax - rmin) / 2
 
-    return p, q, Delta
+    return p, q, rho
 
 function value_from_t(j, t):
     if j == 0: return t
@@ -437,7 +440,7 @@ function value_from_t(j, t):
 The mathematics above assumes exact real arithmetic. A certified implementation must also account for roundoff. The following points are recommended.
 
 \begin{enumerate}[leftmargin=2em]
-  \item \textbf{Outward rounding.} Compute \(p\), all candidate values, residual values, and the final \(q,\Delta\) using directed rounding or interval elementary functions. Alternatively, compute in ordinary floating point and inflate \(\Delta\) by a rigorously derived rounding-error bound.
+  \item \textbf{Outward rounding.} Compute \(p\), all candidate values, residual values, and the final \(q,\rho\) using directed rounding or interval elementary functions. Alternatively, compute in ordinary floating point and inflate \(\rho\) by a rigorously derived rounding-error bound.
 
   \item \textbf{Candidate filtering.} Near a stationary point or curvature breakpoint, use tolerant or interval membership tests. It is safe to retain an extra candidate; omitting a genuine candidate is not safe.
 
@@ -447,7 +450,7 @@ The mathematics above assumes exact real arithmetic. A certified implementation 
 
   \item \textbf{Endpoint equality.} Analytically, \(r_p(a)=r_p(b)\). In floating point, evaluate both and include both in the minimum and maximum.
 
-  \item \textbf{Degenerate input.} If \(a=b\), one may return \(p=0\), \(q=f(a)\), and \(\Delta=0\). If preserving the local linear part is desirable, another valid choice is \(p=f'(a)\), \(q=f(a)-pa\), \(\Delta=0\).
+  \item \textbf{Degenerate input.} If \(a=b\), one may return \(p=0\), \(q=f(a)\), and \(\rho=0\). If preserving the local linear part is desirable, another valid choice is \(p=f'(a)\), \(q=f(a)-pa\), \(\rho=0\).
 
   \item \textbf{Vectorization.} The formulas are branch-light and can be evaluated in batches across neurons. A curvature-region dispatch may avoid computing unnecessary candidates, but a unified finite-candidate routine is simpler and still constant-cost.
 \end{enumerate}
@@ -458,13 +461,13 @@ Suppose a scalar preactivation polynomial zonotope \(Z\) is enclosed by \([a,b]\
 \[
   f_0=\tanh,\qquad f_1=\tanh',\qquad f_2=\tanh'',
 \]
-compute a triple \([[p_j,q_j,\Delta_j]]\). Then
+compute a triple \([[p_j,q_j,\rho_j]]\). Then
 \begin{align}
-  \tanh(Z)&\subseteq p_0Z+q_0+\Delta_0\varepsilon_0,\\
-  \tanh'(Z)&\subseteq p_1Z+q_1+\Delta_1\varepsilon_1,\\
-  \tanh''(Z)&\subseteq p_2Z+q_2+\Delta_2\varepsilon_2,
+  \tanh(Z)&\subseteq p_0Z+q_0+\rho_0\eta_0,\\
+  \tanh'(Z)&\subseteq p_1Z+q_1+\rho_1\eta_1,\\
+  \tanh''(Z)&\subseteq p_2Z+q_2+\rho_2\eta_2,
 \end{align}
-with fresh \(\varepsilon_j\in[-1,1]\).
+with fresh \(\eta_j\in[-1,1]\).
 
 These componentwise enclosures are sound and cheap. However, independent error symbols do not encode the fact that the three quantities arise from one common argument and satisfy algebraic relations such as
 \[
@@ -482,8 +485,8 @@ For each neuron and each partition cell:
   \item Check whether \([a,b]\) lies inside a single curvature region from Table~\ref{tab:curvature}.
   \item If it does, use the Rump--Kashiwagi formula with the unique closed-form stationary point.
   \item If it crosses a curvature breakpoint, retain the same secant slope and evaluate the full fixed candidate set described above.
-  \item Propagate the affine part exactly through the polynomial-zonotope representation and add one fresh error generator of radius \(\Delta\).
-  \item Optionally use \(\Delta\), or its contribution after subsequent linear layers, as a refinement score for adaptive partitioning.
+  \item Propagate the affine part exactly through the polynomial-zonotope representation and add one fresh approximation noise term \(\rho\eta\).
+  \item Optionally use \(\rho\), or its contribution after subsequent linear layers, as a refinement score for adaptive partitioning.
 \end{enumerate}
 
 The key design property is that both branches have bounded, explicit cost. No iterative approximation routine is called per neuron or per cell.
