@@ -13,9 +13,11 @@ The PZ core, `PZTwoJet`, affine and activation propagation, `model.eval_pz_twoje
 
 Inspect the existing implementation and tests before editing it. Use the document matching the task:
 
+- `docs/polynomial_zonotope_notation_and_terminology.tex`: canonical notation and vocabulary for domain noise, approximation noise, sparse polynomial supports, network layers, and two-jets; consult this before introducing new mathematical notation or terminology;
+- `docs/polynomial_zonotope_twojet_recurrence.tex`: ground-truth initialization and affine/activation recurrences for direct propagation of value, Jacobian, and Hessian enclosures through an input polynomial zonotope;
 - `docs/blueprints/pz_twojet_blueprint.tex`: mathematical design and historical implementation blueprint for PZ two-jets;
-- `docs/affine_tanh_enclosures.tex`: certified affine tanh activation enclosures;
-- `docs/certified_polynomial_zonotope_integration.tex`: geometric PZ integration and pointwise approximation-noise semantics;
+- `docs/affine_tanh_enclosures.tex`: certified affine enclosures for `tanh`, `tanh'`, and `tanh''`;
+- `docs/certified_polynomial_zonotope_integration.tex`: geometric PZ integration and approximation-noise semantics;
 - `docs/direct_integrated_twojet_squares.tex`: direct certified integration of squared PZ two-jets without constructing the squared integrand.
 
 The current source code and tests define the implemented public behavior. When a design document and the implementation differ, identify the discrepancy explicitly instead of silently changing semantics.
@@ -24,8 +26,9 @@ The current source code and tests define the implemented public behavior. When a
 
 - Preserve rigorous enclosure guarantees and outward-rounding behavior.
 - Preserve shared polynomial dependencies; do not silently replace them by intervals unless the relevant specification explicitly permits re-enclosure.
-- Keep domain noise distinct from approximation noise.
-- A pointwise approximation-residual symbol is not a single global symbolic value over the integration domain. Follow the semantics in `pz_integration.py`.
+- Keep domain noise symbols \(\alpha\) distinct from approximation noise symbols \(\eta\), and use \(\varepsilon=(\alpha,\eta)\) for their combined vector.
+- Use **approximation noise symbol** as the canonical term. Reserve **residual function** for the actual difference between a function and its approximation, and **approximation-error radius** for its certified coefficient \(\rho\).
+- Under pointwise integration semantics, an approximation noise symbol may represent the residual function separately at each physical point; it is not one global symbolic value over the integration domain. Follow the semantics in `pz_integration.py`.
 - Canonicalize equal exponent vectors and combine their coefficients before applying absolute values or interval collapse. This is required to preserve cancellations and reproduce the existing enclosure.
 - Maintain tensor-valued coefficient support and the established shapes of `Y`, `J`, and `H`.
 - Exploit Hessian symmetry only where the stored Hessian convention guarantees it. For a full symmetric Hessian, off-diagonal Frobenius contributions have weight two.
@@ -48,8 +51,7 @@ Benchmark enclosure construction, norm-integrand construction, and integration s
 
 For value-only \(L^2\) performance work, use
 `notebooks/pz_l2_value_benchmarks.ipynb`. The affine tanh enclosure keeps the
-value support degree one, with one domain symbol per input coordinate and one
-pointwise approximation-residual symbol per hidden neuron. Preserve this
+value support degree one, with one domain symbol per input coordinate and one approximation noise symbol per hidden neuron. Preserve this
 independence when batching activation enclosures.
 
 For one-jet \(W^{1,2}\) performance work, use
