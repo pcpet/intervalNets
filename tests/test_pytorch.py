@@ -14,10 +14,57 @@ from intervalnets import (
     interval_forward_refine,
 )
 from intervalnets.pytorch import (
+    PZReductionConfig,
+    _CertifiedTermReducer,
     _eval_hessian_bounds,
     _eval_jacobian_bounds,
     _interval_pow_scalar,
+    _lookahead_sobolev_split_dimension,
 )
+
+
+def _finish_reference_reducer(variant: str, generator_budget: int = 0):
+    center = torch.zeros(2, dtype=torch.float64)
+    reducer = _CertifiedTermReducer(
+        PZReductionConfig(
+            strategy="topk",
+            max_terms=1,
+            reduction_variant=variant,
+            generator_budget=generator_budget,
+        ),
+        tuple(center.shape),
+        center,
+    )
+    reducer.offer((1,), torch.tensor([10.0, 0.0], dtype=torch.float64))
+    reducer.offer((2,), torch.tensor([2.0, -4.0], dtype=torch.float64))
+    return reducer.finish(center, num_noise=1, noise_kinds=("domain",))
+
+
+def test_reference_reduction_variants_use_even_monomial_range() -> None:
+    reduced_a, radius_a = _finish_reference_reducer("A")
+    reduced_b, radius_b = _finish_reference_reducer("B")
+    reduced_c0, radius_c0 = _finish_reference_reducer("C", generator_budget=0)
+
+    assert torch.equal(reduced_a.center, torch.tensor([0.0, 0.0], dtype=torch.float64))
+    assert torch.allclose(radius_a, torch.tensor([2.0, 4.0], dtype=torch.float64))
+    assert torch.equal(reduced_b.center, torch.tensor([1.0, -2.0], dtype=torch.float64))
+    assert torch.allclose(radius_b, torch.tensor([1.0, 2.0], dtype=torch.float64))
+    assert torch.equal(reduced_c0.center, reduced_b.center)
+    assert torch.equal(radius_c0, radius_b)
+
+
+def test_reference_variant_c_retains_fresh_correlated_generator() -> None:
+    reduced, radius = _finish_reference_reducer("C", generator_budget=1)
+
+    assert torch.equal(reduced.center, torch.tensor([1.0, -2.0], dtype=torch.float64))
+    assert torch.equal(radius, torch.zeros(2, dtype=torch.float64))
+    assert reduced.num_noise == 2
+    assert reduced.noise_kinds == ("domain", "approximation_pointwise")
+    assert any(
+        exponent == (0, 1)
+        and torch.equal(coefficient, torch.tensor([1.0, -2.0], dtype=torch.float64))
+        for exponent, coefficient in reduced.terms.items()
+    )
 
 
 def test_relu_negative_interval_rounds_outward_to_zero() -> None:
@@ -101,6 +148,24 @@ def test_slope_enclosure_tightens_relu_dependency_example() -> None:
     assert slope_bounds.lower[0] >= box_bounds.lower[0]
     assert slope_bounds.upper[0] <= box_bounds.upper[0]
     assert slope_bounds.upper[0] <= 1.0 + 1e-6
+
+
+def test_lookahead_sobolev_split_selects_the_influential_coordinate() -> None:
+    enable_interval_eval()
+    model = nn.Linear(2, 1, bias=False).to(dtype=torch.float64)
+    with torch.no_grad():
+        model.weight.copy_(torch.tensor([[1.0, 0.0]], dtype=torch.float64))
+    box = IntervalTensor.from_bounds([0.0, -1.0], [2.0, 1.0])
+
+    split_dim, children, contributions, candidates = (
+        _lookahead_sobolev_split_dimension(model, box)
+    )
+
+    assert split_dim == 0
+    assert len(children) == len(contributions) == 2
+    assert [row["split_dim"] for row in candidates] == [0, 1]
+    assert candidates[0]["children_width_sum"] < candidates[1]["children_width_sum"]
+    assert candidates[0]["predicted_width_reduction"] > 0.0
 
 
 def test_slope_enclosure_remains_valid_on_sampled_points() -> None:
@@ -1177,6 +1242,18 @@ def test_pz_onejet_trace_is_lightweight_and_reports_layer_timings() -> None:
     assert all(record.elapsed_s >= 0.0 for record in traced.records)
     assert traced.records[-1].summary["J"]["shape"] == (1, 2)
     activation = traced.records[2].summary
+    preactivation_lower = activation["preactivation_lower"]
+    preactivation_upper = activation["preactivation_upper"]
+    expected_preactivation = traced.records[1].value.interval_enclosure()
+    assert torch.equal(
+        preactivation_lower,
+        torch.as_tensor(expected_preactivation.lower, dtype=preactivation_lower.dtype),
+    )
+    assert torch.equal(
+        preactivation_upper,
+        torch.as_tensor(expected_preactivation.upper, dtype=preactivation_upper.dtype),
+    )
+    assert bool(torch.all(preactivation_lower <= preactivation_upper))
     value_radii = activation["tanh_approximation_radii"]
     assert tuple(value_radii.shape) == (3,)
     assert bool(torch.all(value_radii >= 0.0))
@@ -1212,6 +1289,8 @@ def test_pz_onejet_trace_is_lightweight_and_reports_layer_timings() -> None:
     )
     assert "tanh_approximation_radii" not in traced.records[1].summary
     assert "tanh_prime_approximation_radii" not in traced.records[1].summary
+    assert "preactivation_lower" not in traced.records[1].summary
+    assert "preactivation_upper" not in traced.records[1].summary
 
 
 def test_enable_interval_eval_adds_eval_pz_onejet_method() -> None:
@@ -1269,6 +1348,94 @@ def test_polynomial_onejet_reductions_enclose_sampled_jacobians(strategy) -> Non
         )
         gradient = torch.autograd.grad(model(point).sum(), point)[0]
         for column in range(3):
+            assert enclosure.lower[0][column] <= float(gradient[column])
+            assert float(gradient[column]) <= enclosure.upper[0][column]
+
+
+def test_quadratic_flat_onejet_switches_and_encloses_sampled_jacobians() -> None:
+    from intervalnets import PolynomialZonotope, pz_onejet_forward
+
+    torch.manual_seed(31415)
+    model = nn.Sequential(
+        nn.Linear(2, 4), nn.Tanh(), nn.Linear(4, 1)
+    ).double()
+    with torch.no_grad():
+        model[0].bias.zero_()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-1.0, -1.0], dtype=torch.float64),
+        torch.tensor([1.0, 1.0], dtype=torch.float64),
+    )
+    traced = pz_onejet_forward(
+        model,
+        domain,
+        reduction_strategy="topk",
+        max_terms=32,
+        derivative_enclosure="quadratic_flat",
+        derivative_flatness_threshold=1.0,
+        quadratic_compression_guard=False,
+        return_trace=True,
+    )
+    activation = traced.records[2].summary
+    degrees = activation["tanh_prime_approximation_degrees"]
+    assert bool(torch.all(degrees == 2))
+    assert activation["tanh_prime_quadratic_count"] == 4
+    assert bool(
+        torch.all(
+            activation["tanh_prime_approximation_radii"]
+            < activation["tanh_prime_affine_radii"]
+        )
+    )
+
+    enclosure = traced.final.J.interval_enclosure()
+    for _ in range(64):
+        point = torch.empty(2, dtype=torch.float64).uniform_(-1.0, 1.0)
+        point.requires_grad_(True)
+        gradient = torch.autograd.grad(model(point).sum(), point)[0]
+        for column in range(2):
+            assert enclosure.lower[0][column] <= float(gradient[column])
+            assert float(gradient[column]) <= enclosure.upper[0][column]
+
+
+@pytest.mark.parametrize(("variant", "generator_budget"), [("B", 0), ("C", 2)])
+def test_parity_aware_onejet_reductions_enclose_sampled_jacobians(
+    variant, generator_budget
+) -> None:
+    from intervalnets import PolynomialZonotope, pz_onejet_forward
+
+    torch.manual_seed(1618)
+    model = nn.Sequential(
+        nn.Linear(2, 4), nn.Tanh(), nn.Linear(4, 3), nn.Tanh(), nn.Linear(3, 1)
+    ).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.4, -0.3], dtype=torch.float64),
+        torch.tensor([0.4, 0.3], dtype=torch.float64),
+    )
+    jet = pz_onejet_forward(
+        model,
+        domain,
+        reduction_strategy="topk",
+        max_terms=6,
+        reduction_variant=variant,
+        generator_budget=generator_budget,
+        derivative_enclosure="quadratic_flat",
+        derivative_flatness_threshold=1.0,
+        quadratic_compression_guard=False,
+    )
+    enclosure = jet.J.interval_enclosure()
+    for _ in range(32):
+        point = torch.tensor(
+            [
+                torch.empty((), dtype=torch.float64).uniform_(lo, hi).item()
+                for lo, hi in zip(
+                    domain.interval_enclosure().lower,
+                    domain.interval_enclosure().upper,
+                )
+            ],
+            dtype=torch.float64,
+            requires_grad=True,
+        )
+        gradient = torch.autograd.grad(model(point).sum(), point)[0]
+        for column in range(2):
             assert enclosure.lower[0][column] <= float(gradient[column])
             assert float(gradient[column]) <= enclosure.upper[0][column]
 

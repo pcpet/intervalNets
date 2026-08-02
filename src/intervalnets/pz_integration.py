@@ -1060,12 +1060,22 @@ def _eval_pz_onejet(
     *,
     chebyshev_degree: int = 5,
     residual_subdivisions: int = 128,
+    reduction_strategy: str = "topk",
+    max_terms: int = 96,
+    max_degree: int = 4,
+    pca_rank: int = 4,
+    pca_candidates: int = 48,
 ):
     if hasattr(model, "eval_pz_onejet"):
         return model.eval_pz_onejet(
             domain,
             chebyshev_degree=chebyshev_degree,
             residual_subdivisions=residual_subdivisions,
+            reduction_strategy=reduction_strategy,
+            max_terms=max_terms,
+            max_degree=max_degree,
+            pca_rank=pca_rank,
+            pca_candidates=pca_candidates,
         )
     from .pytorch import pz_onejet_forward
 
@@ -1074,6 +1084,11 @@ def _eval_pz_onejet(
         domain,
         chebyshev_degree=chebyshev_degree,
         residual_subdivisions=residual_subdivisions,
+        reduction_strategy=reduction_strategy,
+        max_terms=max_terms,
+        max_degree=max_degree,
+        pca_rank=pca_rank,
+        pca_candidates=pca_candidates,
     )
 
 
@@ -1114,6 +1129,11 @@ def _evaluate_squared_contribution_cache(
     integrand_kind: Literal["l2", "w12", "w22"],
     chebyshev_degree: int = 5,
     residual_subdivisions: int = 128,
+    reduction_strategy: str = "topk",
+    max_terms: int = 96,
+    max_degree: int = 4,
+    pca_rank: int = 4,
+    pca_candidates: int = 48,
 ) -> _CachedSquaredContribution:
     """Evaluate and cache all expensive data needed for one active cell.
 
@@ -1139,6 +1159,11 @@ def _evaluate_squared_contribution_cache(
             cell.domain,
             chebyshev_degree=chebyshev_degree,
             residual_subdivisions=residual_subdivisions,
+            reduction_strategy=reduction_strategy,
+            max_terms=max_terms,
+            max_degree=max_degree,
+            pca_rank=pca_rank,
+            pca_candidates=pca_candidates,
         )
         contribution = integrate_pz_onejet_squared(jet, cell, output="pz")
         jacobian = jet.J.interval_enclosure()

@@ -13,6 +13,7 @@ from .pz_tanh import (
     affine_tanh_double_prime_enclosure,
     affine_tanh_enclosure,
     affine_tanh_prime_enclosure,
+    quadratic_tanh_prime_enclosure,
 )
 from .pz_integration import PZIntegrationCell, pz_l2norm_bounds, pz_sobolev_norm_bounds
 from .pz_norms import pz_twojet_l2_norm, pz_twojet_w12_norm, pz_twojet_w22_norm
@@ -87,6 +88,12 @@ class _PZOneJetPolynomialState:
     jacobian_remainder_radius: Any
     tanh_approximation_radii: Any | None = None
     tanh_prime_approximation_radii: Any | None = None
+    tanh_prime_affine_radii: Any | None = None
+    tanh_prime_polynomial_reduction_radii: Any | None = None
+    tanh_prime_approximation_degrees: Any | None = None
+    tanh_prime_relative_slopes: Any | None = None
+    preactivation_lower: Any | None = None
+    preactivation_upper: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +111,12 @@ class PZReductionConfig:
     max_degree: int = 4
     pca_rank: int = 4
     pca_candidates: int = 48
+    reduction_variant: str = "A"
+    generator_budget: int = 0
+    derivative_enclosure: str = "affine"
+    derivative_flatness_threshold: float = 0.01
+    quadratic_certificate_subdivisions: int = 64
+    quadratic_compression_guard: bool = True
 
     def __post_init__(self) -> None:
         if self.strategy not in {"none", "topk", "degree", "pca"}:
@@ -112,6 +125,18 @@ class PZReductionConfig:
             raise ValueError("max_terms must be positive.")
         if self.max_degree < 0 or self.pca_rank < 0 or self.pca_candidates < 0:
             raise ValueError("reduction degrees, ranks, and candidate counts must be non-negative.")
+        if self.reduction_variant.upper() not in {"A", "B", "C"}:
+            raise ValueError("reduction_variant must be one of: A, B, C.")
+        if self.generator_budget < 0:
+            raise ValueError("generator_budget must be non-negative.")
+        if self.derivative_enclosure not in {"affine", "quadratic_flat"}:
+            raise ValueError(
+                "derivative_enclosure must be either 'affine' or 'quadratic_flat'."
+            )
+        if self.derivative_flatness_threshold < 0.0:
+            raise ValueError("derivative_flatness_threshold must be non-negative.")
+        if self.quadratic_certificate_subdivisions < 1:
+            raise ValueError("quadratic_certificate_subdivisions must be positive.")
 
 
 def _pad_nonnegative_radius(radius: torch.Tensor) -> torch.Tensor:
@@ -197,6 +222,38 @@ def _pz_onejet_trace_record(
             "tanh_prime_approximation_radius_max": float(radii.max().item())
             if radii.numel()
             else 0.0,
+        })
+    if state.tanh_prime_affine_radii is not None:
+        activation_summary["tanh_prime_affine_radii"] = (
+            state.tanh_prime_affine_radii.detach().clone().reshape(-1)
+        )
+    if state.tanh_prime_polynomial_reduction_radii is not None:
+        reduction_radii = (
+            state.tanh_prime_polynomial_reduction_radii.detach().clone().reshape(-1)
+        )
+        activation_summary.update({
+            "tanh_prime_polynomial_reduction_radii": reduction_radii,
+            "tanh_prime_polynomial_reduction_radius_mean": float(
+                reduction_radii.mean().item()
+            ) if reduction_radii.numel() else 0.0,
+            "tanh_prime_polynomial_reduction_radius_max": float(
+                reduction_radii.max().item()
+            ) if reduction_radii.numel() else 0.0,
+        })
+    if state.tanh_prime_approximation_degrees is not None:
+        degrees = state.tanh_prime_approximation_degrees.detach().clone().reshape(-1)
+        activation_summary.update({
+            "tanh_prime_approximation_degrees": degrees,
+            "tanh_prime_quadratic_count": int(torch.count_nonzero(degrees == 2).item()),
+        })
+    if state.tanh_prime_relative_slopes is not None:
+        activation_summary["tanh_prime_relative_slopes"] = (
+            state.tanh_prime_relative_slopes.detach().clone().reshape(-1)
+        )
+    if state.preactivation_lower is not None and state.preactivation_upper is not None:
+        activation_summary.update({
+            "preactivation_lower": state.preactivation_lower.detach().clone().reshape(-1),
+            "preactivation_upper": state.preactivation_upper.detach().clone().reshape(-1),
         })
     return PZOneJetTraceRecord(
         layer_index=layer_index,
@@ -820,18 +877,54 @@ def _pz_onejet_linear_forward(
 
 
 class _CertifiedTermReducer:
-    """Streaming top-k generator reducer with a sound pointwise remainder."""
+    """Certified support reducer implementing reference variants A, B, and C.
+
+    Support selection is controlled separately by ``config.strategy``.  A
+    discarded coefficient is symmetrically boxed in variant A.  Variants B and
+    C first use the exact ``[0, 1]`` range of componentwise-even monomials;
+    variant C additionally retains up to ``generator_budget`` coefficient
+    directions as fresh pointwise approximation-noise generators.
+    """
 
     def __init__(self, config: PZReductionConfig, shape: tuple[int, ...], template: torch.Tensor):
         self.config = config
         self.shape = shape
         self.kept: list[tuple[float, int, tuple[int, ...], torch.Tensor]] = []
         self.pca: list[tuple[float, int, torch.Tensor]] = []
+        self.generators: list[tuple[float, int, torch.Tensor]] = []
         self.radius = torch.zeros(shape, dtype=template.dtype, device=template.device)
+        self.midpoint = torch.zeros(shape, dtype=template.dtype, device=template.device)
         self.counter = 0
 
     def _box(self, coefficient: torch.Tensor) -> None:
         self.radius = self.radius + torch.abs(coefficient)
+
+    def _discard(self, exponent: tuple[int, ...], coefficient: torch.Tensor) -> None:
+        variant = self.config.reduction_variant.upper()
+        even = variant in {"B", "C"} and all(power % 2 == 0 for power in exponent)
+        if even:
+            self.midpoint = self.midpoint + 0.5 * coefficient
+            generator = 0.5 * coefficient
+        else:
+            generator = coefficient
+
+        if variant == "C" and self.config.generator_budget:
+            score = float(torch.linalg.vector_norm(generator).item())
+            item = (score, -self.counter, generator)
+            self.counter += 1
+            if len(self.generators) < self.config.generator_budget:
+                heapq.heappush(self.generators, item)
+            elif item[:2] > self.generators[0][:2]:
+                _, _, evicted = heapq.heapreplace(self.generators, item)
+                self._box(evicted)
+            else:
+                self._box(generator)
+            return
+
+        if variant == "A" and self.config.strategy == "pca":
+            self._offer_pca(float(torch.linalg.vector_norm(generator).item()), generator)
+        else:
+            self._box(generator)
 
     def _offer_pca(self, score: float, coefficient: torch.Tensor) -> None:
         if self.config.strategy != "pca" or self.config.pca_candidates == 0:
@@ -851,7 +944,7 @@ class _CertifiedTermReducer:
         if not bool(torch.any(coefficient != 0).item()):
             return
         if self.config.strategy == "degree" and sum(exponent) > self.config.max_degree:
-            self._box(coefficient)
+            self._discard(exponent, coefficient)
             return
         score = float(torch.linalg.vector_norm(coefficient).item())
         item = (score, self.counter, exponent, coefficient)
@@ -859,10 +952,10 @@ class _CertifiedTermReducer:
         if len(self.kept) < self.config.max_terms:
             heapq.heappush(self.kept, item)
         elif score > self.kept[0][0]:
-            _, _, _, evicted = heapq.heapreplace(self.kept, item)
-            self._offer_pca(float(torch.linalg.vector_norm(evicted).item()), evicted)
+            _, _, evicted_exponent, evicted = heapq.heapreplace(self.kept, item)
+            self._discard(evicted_exponent, evicted)
         else:
-            self._offer_pca(score, coefficient)
+            self._discard(exponent, coefficient)
 
     def finish(
         self,
@@ -875,7 +968,24 @@ class _CertifiedTermReducer:
         for _, _, exponent, coefficient in self.kept:
             terms[exponent] = terms.get(exponent, torch.zeros_like(center)) + coefficient
 
+        center = center + self.midpoint
         kinds = noise_kinds
+        if self.generators:
+            retained_generators = sorted(self.generators, key=lambda item: (-item[0], -item[1]))
+            rank = len(retained_generators)
+            terms = {
+                old_exp + (0,) * rank: old_coeff for old_exp, old_coeff in terms.items()
+            }
+            base_num_noise = num_noise
+            for index, (_, _, coefficient) in enumerate(retained_generators):
+                exponent = (
+                    (0,) * (base_num_noise + index)
+                    + (1,)
+                    + (0,) * (rank - index - 1)
+                )
+                terms[exponent] = coefficient
+            num_noise += rank
+            kinds = kinds + ("approximation_pointwise",) * rank
         if self.pca and self.config.pca_rank:
             generators = torch.stack([item[2].reshape(-1) for item in self.pca], dim=0)
             rank = min(self.config.pca_rank, generators.shape[0], generators.shape[1])
@@ -925,37 +1035,243 @@ def _rowwise_pz_product(
                 add(tuple(a + b for a, b in zip(d_exp, j_exp)), d_coeff.unsqueeze(1) * j_coeff)
         return PolynomialZonotope(center, terms, num_noise=derivative.num_noise, noise_kinds=derivative.noise_kinds), torch.zeros_like(center)
 
-    reducer = _CertifiedTermReducer(config, tuple(center.shape), center)
+    canonical: dict[tuple[int, ...], torch.Tensor] = {}
+    def add(exponent, coefficient):
+        canonical[exponent] = canonical.get(exponent, torch.zeros_like(center)) + coefficient
     for exponent, coefficient in derivative.terms.items():
-        reducer.offer(exponent, coefficient.unsqueeze(1) * jacobian.center)
+        add(exponent, coefficient.unsqueeze(1) * jacobian.center)
     for exponent, coefficient in jacobian.terms.items():
-        reducer.offer(exponent, derivative.center.unsqueeze(1) * coefficient)
+        add(exponent, derivative.center.unsqueeze(1) * coefficient)
     for d_exp, d_coeff in derivative.terms.items():
         for j_exp, j_coeff in jacobian.terms.items():
-            reducer.offer(tuple(a + b for a, b in zip(d_exp, j_exp)), d_coeff.unsqueeze(1) * j_coeff)
+            add(tuple(a + b for a, b in zip(d_exp, j_exp)), d_coeff.unsqueeze(1) * j_coeff)
+    reducer = _CertifiedTermReducer(config, tuple(center.shape), center)
+    for exponent in sorted(canonical):
+        reducer.offer(exponent, canonical[exponent])
     return reducer.finish(center, num_noise=derivative.num_noise, noise_kinds=derivative.noise_kinds)
+
+
+def _reduced_quadratic_pz_core(
+    value: PolynomialZonotope,
+    constants: torch.Tensor,
+    linears: torch.Tensor,
+    quadratics: torch.Tensor,
+    config: PZReductionConfig,
+) -> tuple[PolynomialZonotope, torch.Tensor]:
+    """Evaluate a componentwise quadratic while streaming through reduction."""
+
+    if config.strategy == "none":
+        return linears * value + constants + quadratics * (value * value), torch.zeros_like(
+            value.center
+        )
+
+    center = constants + linears * value.center + quadratics * value.center**2
+    canonical: dict[tuple[int, ...], torch.Tensor] = {}
+    def add(exponent, coefficient):
+        canonical[exponent] = canonical.get(exponent, torch.zeros_like(center)) + coefficient
+    linear_factor = linears + 2.0 * quadratics * value.center
+    items = list(value.terms.items())
+    for exponent, coefficient in items:
+        add(exponent, linear_factor * coefficient)
+    for left_index, (left_exp, left_coeff) in enumerate(items):
+        for right_index in range(left_index, len(items)):
+            right_exp, right_coeff = items[right_index]
+            factor = 1.0 if left_index == right_index else 2.0
+            add(
+                tuple(a + b for a, b in zip(left_exp, right_exp)),
+                factor * quadratics * left_coeff * right_coeff,
+            )
+    reducer = _CertifiedTermReducer(config, tuple(center.shape), center)
+    for exponent in sorted(canonical):
+        reducer.offer(exponent, canonical[exponent])
+    return reducer.finish(
+        center,
+        num_noise=value.num_noise,
+        noise_kinds=value.noise_kinds,
+    )
+
+
+def _select_pz_components(
+    preferred: PolynomialZonotope,
+    fallback: PolynomialZonotope,
+    mask: torch.Tensor,
+) -> PolynomialZonotope:
+    """Select vector PZ coefficient components without losing dependencies."""
+
+    preferred, fallback = preferred._align(fallback)
+    terms: dict[tuple[int, ...], torch.Tensor] = {}
+    for exponent in preferred.terms.keys() | fallback.terms.keys():
+        preferred_coefficient = preferred.terms.get(
+            exponent, torch.zeros_like(preferred.center)
+        )
+        fallback_coefficient = fallback.terms.get(
+            exponent, torch.zeros_like(fallback.center)
+        )
+        terms[exponent] = torch.where(
+            mask, preferred_coefficient, fallback_coefficient
+        )
+    return PolynomialZonotope(
+        torch.where(mask, preferred.center, fallback.center),
+        terms,
+        num_noise=preferred.num_noise,
+        noise_kinds=preferred.noise_kinds,
+    )
 
 
 def _batched_tanh_derivative_core(
     value: PolynomialZonotope,
-) -> tuple[PolynomialZonotope, torch.Tensor]:
+    config: PZReductionConfig,
+) -> tuple[
+    PolynomialZonotope,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
     enclosure = value.interval_enclosure()
-    lower = torch.as_tensor(enclosure.lower, dtype=value.center.dtype, device=value.center.device).reshape(-1).detach().cpu().tolist()
-    upper = torch.as_tensor(enclosure.upper, dtype=value.center.dtype, device=value.center.device).reshape(-1).detach().cpu().tolist()
-    approximations = [
+    lower_tensor = torch.as_tensor(
+        enclosure.lower, dtype=value.center.dtype, device=value.center.device
+    ).reshape(value.center.shape)
+    upper_tensor = torch.as_tensor(
+        enclosure.upper, dtype=value.center.dtype, device=value.center.device
+    ).reshape(value.center.shape)
+    lower = lower_tensor.reshape(-1).detach().cpu().tolist()
+    upper = upper_tensor.reshape(-1).detach().cpu().tolist()
+    affine_approximations = [
         affine_tanh_prime_enclosure(Interval(float(lo), float(hi)))
         for lo, hi in zip(lower, upper)
     ]
-    slopes = torch.tensor([item.p for item in approximations], dtype=value.center.dtype, device=value.center.device).reshape(value.center.shape)
-    intercepts = torch.tensor([item.q for item in approximations], dtype=value.center.dtype, device=value.center.device).reshape(value.center.shape)
-    radii = torch.tensor([item.delta for item in approximations], dtype=value.center.dtype, device=value.center.device).reshape(value.center.shape)
-    core = PolynomialZonotope(
-        slopes * value.center + intercepts,
-        {exponent: slopes * coefficient for exponent, coefficient in value.terms.items()},
+    chosen_coeffs: list[tuple[float, float, float]] = []
+    chosen_radii: list[float] = []
+    chosen_degrees: list[int] = []
+    relative_slopes: list[float] = []
+    for lo, hi, affine in zip(lower, upper, affine_approximations):
+        half_width = (float(hi) - float(lo)) / 2.0
+        d_lo = 1.0 - tanh(float(lo)) ** 2
+        d_hi = 1.0 - tanh(float(hi)) ** 2
+        d_max = 1.0 if float(lo) <= 0.0 <= float(hi) else max(d_lo, d_hi)
+        interval_radius = (d_max - min(d_lo, d_hi)) / 2.0
+        relative_slope = (
+            abs(affine.p) * half_width / interval_radius
+            if interval_radius > 0.0
+            else 0.0
+        )
+        relative_slopes.append(relative_slope)
+        use_quadratic = (
+            config.derivative_enclosure == "quadratic_flat"
+            and float(lo) <= 0.0 <= float(hi)
+            and relative_slope <= config.derivative_flatness_threshold
+        )
+        quadratic = (
+            quadratic_tanh_prime_enclosure(
+                Interval(float(lo), float(hi)),
+                certificate_subdivisions=config.quadratic_certificate_subdivisions,
+            )
+            if use_quadratic
+            else None
+        )
+        if quadratic is not None and quadratic.delta < affine.delta:
+            chosen_coeffs.append(quadratic.coeffs)
+            chosen_radii.append(quadratic.delta)
+            chosen_degrees.append(2)
+        else:
+            chosen_coeffs.append((affine.q, affine.p, 0.0))
+            chosen_radii.append(affine.delta)
+            chosen_degrees.append(1)
+
+    target_shape = value.center.shape
+    constants = torch.tensor(
+        [coeffs[0] for coeffs in chosen_coeffs],
+        dtype=value.center.dtype,
+        device=value.center.device,
+    ).reshape(target_shape)
+    linears = torch.tensor(
+        [coeffs[1] for coeffs in chosen_coeffs],
+        dtype=value.center.dtype,
+        device=value.center.device,
+    ).reshape(target_shape)
+    quadratics = torch.tensor(
+        [coeffs[2] for coeffs in chosen_coeffs],
+        dtype=value.center.dtype,
+        device=value.center.device,
+    ).reshape(target_shape)
+    proposal_linear_core = PolynomialZonotope(
+        linears * value.center + constants,
+        {exponent: linears * coefficient for exponent, coefficient in value.terms.items()},
         num_noise=value.num_noise,
         noise_kinds=value.noise_kinds,
     )
-    return core, _pad_nonnegative_radius(radii)
+    if any(degree == 2 for degree in chosen_degrees):
+        core, quadratic_dropped_radius = _reduced_quadratic_pz_core(
+            value,
+            constants,
+            linears,
+            quadratics,
+            config,
+        )
+    else:
+        core = proposal_linear_core
+        quadratic_dropped_radius = torch.zeros_like(value.center)
+    radii = torch.tensor(
+        chosen_radii, dtype=value.center.dtype, device=value.center.device
+    ).reshape(target_shape)
+    affine_radii = torch.tensor(
+        [item.delta for item in affine_approximations],
+        dtype=value.center.dtype,
+        device=value.center.device,
+    ).reshape(target_shape)
+    affine_slopes = torch.tensor(
+        [item.p for item in affine_approximations],
+        dtype=value.center.dtype,
+        device=value.center.device,
+    ).reshape(target_shape)
+    affine_intercepts = torch.tensor(
+        [item.q for item in affine_approximations],
+        dtype=value.center.dtype,
+        device=value.center.device,
+    ).reshape(target_shape)
+    affine_core = PolynomialZonotope(
+        affine_slopes * value.center + affine_intercepts,
+        {
+            exponent: affine_slopes * coefficient
+            for exponent, coefficient in value.terms.items()
+        },
+        num_noise=value.num_noise,
+        noise_kinds=value.noise_kinds,
+    )
+    degrees = torch.tensor(
+        chosen_degrees, dtype=torch.int64, device=value.center.device
+    ).reshape(target_shape)
+    if config.quadratic_compression_guard:
+        keep_quadratic = (degrees == 2) & (
+            radii + quadratic_dropped_radius < affine_radii
+        )
+        core = _select_pz_components(core, affine_core, keep_quadratic)
+        radii = torch.where(keep_quadratic, radii, affine_radii)
+        quadratic_dropped_radius = torch.where(
+            keep_quadratic,
+            quadratic_dropped_radius,
+            torch.zeros_like(quadratic_dropped_radius),
+        )
+        degrees = torch.where(keep_quadratic, degrees, torch.ones_like(degrees))
+    relative_slope_tensor = torch.tensor(
+        relative_slopes, dtype=value.center.dtype, device=value.center.device
+    ).reshape(target_shape)
+    return (
+        core,
+        _pad_nonnegative_radius(radii + quadratic_dropped_radius),
+        _pad_nonnegative_radius(radii),
+        lower_tensor,
+        upper_tensor,
+        affine_radii,
+        _pad_nonnegative_radius(quadratic_dropped_radius),
+        degrees,
+        relative_slope_tensor,
+    )
 
 
 def _pz_onejet_tanh_forward_reduced(
@@ -964,7 +1280,19 @@ def _pz_onejet_tanh_forward_reduced(
     residual_subdivisions: int,
     config: PZReductionConfig,
 ) -> _PZOneJetPolynomialState:
-    derivative, derivative_radius = _batched_tanh_derivative_core(state.Y)
+    (
+        derivative,
+        derivative_radius,
+        derivative_approximation_radius,
+        preactivation_lower,
+        preactivation_upper,
+        affine_derivative_radius,
+        derivative_polynomial_reduction_radius,
+        derivative_degrees,
+        derivative_relative_slopes,
+    ) = (
+        _batched_tanh_derivative_core(state.Y, config)
+    )
     value, value_radius = _pz_value_tanh_forward(
         state.Y,
         chebyshev_degree=chebyshev_degree,
@@ -997,7 +1325,13 @@ def _pz_onejet_tanh_forward_reduced(
         polynomial.with_num_noise(final_noise).with_noise_kinds(kinds),
         total_radius,
         value_radius,
-        derivative_radius,
+        derivative_approximation_radius,
+        affine_derivative_radius,
+        derivative_polynomial_reduction_radius,
+        derivative_degrees,
+        derivative_relative_slopes,
+        preactivation_lower,
+        preactivation_upper,
     )
 
 
@@ -1069,6 +1403,12 @@ def pz_onejet_forward(
     max_degree: int = 4,
     pca_rank: int = 4,
     pca_candidates: int = 48,
+    reduction_variant: str = "A",
+    generator_budget: int = 0,
+    derivative_enclosure: str = "affine",
+    derivative_flatness_threshold: float = 0.01,
+    quadratic_certificate_subdivisions: int = 64,
+    quadratic_compression_guard: bool = True,
     input_dim: int | None = None,
     return_trace: bool = False,
 ) -> PZOneJet | PZOneJetTraceResult:
@@ -1118,6 +1458,12 @@ def pz_onejet_forward(
         max_degree=max_degree,
         pca_rank=pca_rank,
         pca_candidates=pca_candidates,
+        reduction_variant=reduction_variant,
+        generator_budget=generator_budget,
+        derivative_enclosure=derivative_enclosure,
+        derivative_flatness_threshold=derivative_flatness_threshold,
+        quadratic_certificate_subdivisions=quadratic_certificate_subdivisions,
+        quadratic_compression_guard=quadratic_compression_guard,
     )
     identity = torch.eye(dim, dtype=x.center.dtype, device=x.center.device)
     initial_jacobian = PolynomialZonotope.constant(
@@ -2177,6 +2523,106 @@ def _sobolev_pointwise_power_bounds_refined(
     return _hull_intervals([_sobolev_pointwise_power_bounds(model, cell, p, order=order) for cell in cells])
 
 
+def _weighted_sobolev_squared_contribution(
+    model,
+    box: IntervalTensor,
+    *,
+    order: int = 1,
+    forward_refine_splits: int = 1,
+    forward_refine_max_cells: int = 256,
+) -> Interval:
+    """Return the certified local integral enclosure used by interval AdaQuad.
+
+    This private helper intentionally fixes ``p=2``: it is used by the shared
+    interval/PZ refinement benchmark to score candidate bisections in the same
+    squared-energy scale in which Dörfler marking is performed.
+    """
+
+    pointwise = _sobolev_pointwise_power_bounds_refined(
+        model,
+        box,
+        2.0,
+        order,
+        forward_refine_splits=forward_refine_splits,
+        forward_refine_max_cells=forward_refine_max_cells,
+    )
+    volume = _box_volume(box)
+    return Interval.from_bounds(
+        float(pointwise.lower) * volume,
+        float(pointwise.upper) * volume,
+    )
+
+
+def _lookahead_sobolev_split_dimension(
+    model,
+    box: IntervalTensor,
+    *,
+    order: int = 1,
+    forward_refine_splits: int = 1,
+    forward_refine_max_cells: int = 256,
+) -> tuple[int, tuple[IntervalTensor, IntervalTensor], tuple[Interval, Interval], list[dict[str, float | int]]]:
+    """Choose a box edge by exhaustive certified one-step look-ahead.
+
+    For every coordinate, bisect the box and compute the sum of the two child
+    contribution widths.  The coordinate minimizing that sum is selected.
+    The candidate table also reports the reduction relative to the parent
+    width.  These scores guide refinement only; every returned enclosure
+    remains certified independently of which coordinate wins.
+    """
+
+    if len(box.shape) != 1 or len(box.lower) == 0:
+        raise ValueError("Look-ahead edge selection requires a non-empty flat box.")
+    parent = _weighted_sobolev_squared_contribution(
+        model,
+        box,
+        order=order,
+        forward_refine_splits=forward_refine_splits,
+        forward_refine_max_cells=forward_refine_max_cells,
+    )
+    parent_width = float(parent.upper) - float(parent.lower)
+    candidates: list[
+        tuple[
+            float,
+            int,
+            tuple[IntervalTensor, IntervalTensor],
+            tuple[Interval, Interval],
+            dict[str, float | int],
+        ]
+    ] = []
+    for split_dim in range(len(box.lower)):
+        children = _split_box(box, split_dim=split_dim)
+        contributions = tuple(
+            _weighted_sobolev_squared_contribution(
+                model,
+                child,
+                order=order,
+                forward_refine_splits=forward_refine_splits,
+                forward_refine_max_cells=forward_refine_max_cells,
+            )
+            for child in children
+        )
+        child_width = sum(
+            float(contribution.upper) - float(contribution.lower)
+            for contribution in contributions
+        )
+        row: dict[str, float | int] = {
+            "split_dim": split_dim,
+            "parent_width": parent_width,
+            "children_width_sum": child_width,
+            "predicted_width_reduction": parent_width - child_width,
+            "predicted_relative_reduction": (
+                (parent_width - child_width) / parent_width
+                if parent_width > 0.0
+                else 0.0
+            ),
+        }
+        candidates.append((child_width, split_dim, children, contributions, row))
+
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    _, split_dim, children, contributions, _ = candidates[0]
+    return split_dim, children, contributions, [item[4] for item in candidates]
+
+
 def _sobolev_norm_bounds(
     model,
     domain: IntervalTensor,
@@ -2483,6 +2929,12 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
         max_degree: int = 4,
         pca_rank: int = 4,
         pca_candidates: int = 48,
+        reduction_variant: str = "A",
+        generator_budget: int = 0,
+        derivative_enclosure: str = "affine",
+        derivative_flatness_threshold: float = 0.01,
+        quadratic_certificate_subdivisions: int = 64,
+        quadratic_compression_guard: bool = True,
         return_trace: bool = False,
     ):
         _ORIGINAL_EVAL(self)
@@ -2501,6 +2953,12 @@ def enable_interval_eval(enclosure_mode: str = "slope") -> None:
             max_degree=max_degree,
             pca_rank=pca_rank,
             pca_candidates=pca_candidates,
+            reduction_variant=reduction_variant,
+            generator_budget=generator_budget,
+            derivative_enclosure=derivative_enclosure,
+            derivative_flatness_threshold=derivative_flatness_threshold,
+            quadratic_certificate_subdivisions=quadratic_certificate_subdivisions,
+            quadratic_compression_guard=quadratic_compression_guard,
             return_trace=return_trace,
         )
 

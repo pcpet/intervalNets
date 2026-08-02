@@ -60,6 +60,25 @@ class AffineTanhEnclosure:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class QuadraticTanhEnclosure:
+    """Certified quadratic-plus-error enclosure for a tanh jet.
+
+    ``coeffs`` are power-basis coefficients ``(c, b, a)`` satisfying
+    ``function(x) in c + b*x + a*x**2 + delta*[-1, 1]`` throughout the
+    scalar interval.  The normalized coefficients are also recorded in
+    ``metadata`` so callers can evaluate the parabola stably around the
+    interval midpoint.
+    """
+
+    coeffs: tuple[float, float, float]
+    delta: float
+    lower: float
+    upper: float
+    function: str
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
 def _tanh_value_from_t(j: int, t: float) -> float:
     if j == 0:
         return t
@@ -218,6 +237,206 @@ def affine_tanh_double_prime_enclosure(
     """Return a certified scalar affine enclosure for ``tanh''`` on ``interval``."""
 
     return _affine_tanh_jet_enclosure(interval, 2, "tanh_double_prime")
+
+
+def _tanh_prime_third_derivative_from_t(t: float) -> float:
+    """Return the third derivative of ``tanh'`` as a polynomial in tanh(x)."""
+
+    return 16.0 * t - 40.0 * t**3 + 24.0 * t**5
+
+
+def _tanh_prime_first_derivative_from_t(t: float) -> float:
+    return -2.0 * t + 2.0 * t**3
+
+
+def _tanh_prime_second_derivative_from_t(t: float) -> float:
+    return -2.0 + 8.0 * t**2 - 6.0 * t**4
+
+
+def _quadratic_residual_taylor_certificate(
+    lower: float,
+    upper: float,
+    coeffs: tuple[float, float, float],
+    subdivisions: int,
+) -> tuple[float, float, tuple[Mapping[str, float], ...]]:
+    """Bound the residual range by a fixed, non-adaptive Taylor-form pass."""
+
+    if subdivisions < 1:
+        raise ValueError("subdivisions must be positive.")
+    c, b, a = coeffs
+    step = (upper - lower) / subdivisions
+    residual_lower = inf
+    residual_upper = -inf
+    records: list[Mapping[str, float]] = []
+    critical_t = (0.0, sqrt(2.0 / 3.0), -sqrt(2.0 / 3.0))
+    for index in range(subdivisions):
+        bin_lower = lower + index * step
+        bin_upper = upper if index + 1 == subdivisions else lower + (index + 1) * step
+        center = (bin_lower + bin_upper) / 2.0
+        radius = (bin_upper - bin_lower) / 2.0
+        t_center = tanh(center)
+        function_value = 1.0 - t_center * t_center
+        polynomial_value = c + b * center + a * center * center
+        residual_center = function_value - polynomial_value
+        residual_slope = _tanh_prime_first_derivative_from_t(t_center) - (
+            b + 2.0 * a * center
+        )
+
+        ta, tb = tanh(bin_lower), tanh(bin_upper)
+        second_candidates = [
+            _tanh_prime_second_derivative_from_t(ta) - 2.0 * a,
+            _tanh_prime_second_derivative_from_t(tb) - 2.0 * a,
+        ]
+        for t in critical_t:
+            if ta <= t <= tb:
+                second_candidates.append(
+                    _tanh_prime_second_derivative_from_t(t) - 2.0 * a
+                )
+        second_lower = min(second_candidates)
+        second_upper = max(second_candidates)
+        linear_radius = abs(residual_slope) * radius
+        quadratic_scale = 0.5 * radius * radius
+        local_lower = (
+            residual_center
+            - linear_radius
+            + min(0.0, quadratic_scale * second_lower)
+        )
+        local_upper = (
+            residual_center
+            + linear_radius
+            + max(0.0, quadratic_scale * second_upper)
+        )
+        residual_lower = min(residual_lower, local_lower)
+        residual_upper = max(residual_upper, local_upper)
+        records.append({
+            "lower": bin_lower,
+            "upper": bin_upper,
+            "residual_lower": local_lower,
+            "residual_upper": local_upper,
+        })
+    return residual_lower, residual_upper, tuple(records)
+
+
+def quadratic_tanh_prime_enclosure(
+    interval: Interval | Sequence[float],
+    *,
+    certificate_subdivisions: int = 64,
+) -> QuadraticTanhEnclosure:
+    """Return a cheap certified three-point quadratic enclosure for ``tanh'``.
+
+    The proposal interpolates ``tanh'`` at the lower endpoint, midpoint, and
+    upper endpoint.  Its certificate is the classical interpolation remainder
+
+    ``|f(x)-q(x)| <= sup_I |f'''| |(x-l)(x-m)(x-u)| / 3!``.
+
+    For equally spaced nodes, the second factor has the exact maximum
+    ``2*h**3/(3*sqrt(3))``, where ``h=(u-l)/2``.  Moreover
+    ``f'''(x)=16*t-40*t**3+24*t**5`` with ``t=tanh(x)``; its extrema are found
+    from the endpoints and the four closed-form roots of
+    ``15*t**4-15*t**2+2=0``.  A fixed, non-adaptive Taylor-form pass then
+    certifies and recenters the residual of the floating-point parabola.  No
+    fitting iteration, optimization, root search, or adaptive refinement is
+    used.
+    """
+
+    lower, upper = _scalar_interval_bounds(interval)
+    midpoint = (lower + upper) / 2.0
+    if lower == upper:
+        value = 1.0 - tanh(lower) ** 2
+        return QuadraticTanhEnclosure(
+            coeffs=(value, 0.0, 0.0),
+            delta=0.0,
+            lower=lower,
+            upper=upper,
+            function="tanh_prime",
+            metadata={
+                "method": "point-interval",
+                "midpoint": midpoint,
+                "half_width": 0.0,
+                "normalized_coeffs": (value, 0.0, 0.0),
+                "third_derivative_candidates": (tanh(lower),),
+                "third_derivative_sup": abs(
+                    _tanh_prime_third_derivative_from_t(tanh(lower))
+                ),
+                "rounding_inflation": 0.0,
+            },
+        )
+
+    half_width = (upper - lower) / 2.0
+    values = tuple(1.0 - tanh(x) ** 2 for x in (lower, midpoint, upper))
+    f_lower, f_midpoint, f_upper = values
+
+    # q(x) = alpha*s**2 + beta*s + gamma, s=(x-midpoint)/half_width.
+    alpha = (f_lower - 2.0 * f_midpoint + f_upper) / 2.0
+    beta = (f_upper - f_lower) / 2.0
+    gamma = f_midpoint
+    a = alpha / (half_width * half_width)
+    b = beta / half_width - 2.0 * a * midpoint
+    c = gamma - beta * midpoint / half_width + a * midpoint * midpoint
+
+    ta, tb = tanh(lower), tanh(upper)
+    t_candidates = [ta, tb]
+    root_disc = sqrt(105.0)
+    for squared in ((15.0 - root_disc) / 30.0, (15.0 + root_disc) / 30.0):
+        root = sqrt(squared)
+        _append_if_in_t_interval(t_candidates, root, ta, tb)
+        _append_if_in_t_interval(t_candidates, -root, ta, tb)
+    third_derivative_sup = max(
+        abs(_tanh_prime_third_derivative_from_t(t)) for t in t_candidates
+    )
+    global_interpolation_radius = (
+        third_derivative_sup * half_width**3 / (9.0 * sqrt(3.0))
+    )
+
+    residual_lower, residual_upper, certificate_records = (
+        _quadratic_residual_taylor_certificate(
+            lower,
+            upper,
+            (c, b, a),
+            certificate_subdivisions,
+        )
+    )
+    residual_shift = (residual_upper + residual_lower) / 2.0
+    c += residual_shift
+    certificate_radius = (residual_upper - residual_lower) / 2.0
+
+    # Account for ordinary floating-point construction/evaluation of the
+    # normalized interpolant, consistently with the affine enclosure backend.
+    scale = max(
+        1.0,
+        abs(alpha) + abs(beta) + abs(gamma),
+        abs(global_interpolation_radius),
+        abs(certificate_radius),
+        third_derivative_sup,
+    )
+    rounding_inflation = nextafter(scale, inf) * 128.0 * 2.220446049250313e-16
+    delta = nextafter(certificate_radius + rounding_inflation, inf)
+
+    return QuadraticTanhEnclosure(
+        coeffs=(c, b, a),
+        delta=delta,
+        lower=lower,
+        upper=upper,
+        function="tanh_prime",
+        metadata={
+            "method": "endpoint-midpoint-interpolation-remainder",
+            "nodes": (lower, midpoint, upper),
+            "values": values,
+            "midpoint": midpoint,
+            "half_width": half_width,
+            "normalized_coeffs": (gamma + residual_shift, beta, alpha),
+            "third_derivative_candidates": tuple(t_candidates),
+            "third_derivative_sup": third_derivative_sup,
+            "global_interpolation_radius": global_interpolation_radius,
+            "certificate_subdivisions": certificate_subdivisions,
+            "certificate_residual_lower": residual_lower,
+            "certificate_residual_upper": residual_upper,
+            "certificate_records": certificate_records,
+            "residual_shift": residual_shift,
+            "rounding_inflation": rounding_inflation,
+            "outward_rounding": "final nextafter(delta + 128*eps*scale, +inf) safety inflation",
+        },
+    )
 
 
 def _solve_dense_system(matrix: list[list[float]], rhs: list[float]) -> list[float]:

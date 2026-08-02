@@ -9,6 +9,7 @@ from intervalnets.pz_tanh import (
     affine_tanh_double_prime_enclosure,
     affine_tanh_enclosure,
     affine_tanh_prime_enclosure,
+    quadratic_tanh_prime_enclosure,
     certify_tanh_residual_subdivision,
     compute_tanh_polynomial,
 )
@@ -134,3 +135,28 @@ def test_affine_tanh_enclosures_handle_point_intervals(helper, func, name):
     assert enclosure.function == name
     assert enclosure.metadata["method"] == "point-interval"
     assert enclosure.metadata["x_candidates"] == (0.25,)
+
+
+@pytest.mark.parametrize(
+    "interval",
+    [(-2.0, 2.0), (-1.576, 1.613), (-1.0, 1.0), (-0.35, 0.8), (0.2, 1.4)],
+)
+def test_quadratic_tanh_prime_enclosure_bounds_sampled_values(interval) -> None:
+    lower, upper = interval
+    enclosure = quadratic_tanh_prime_enclosure(Interval(lower, upper))
+    c, b, a = enclosure.coeffs
+
+    assert enclosure.delta >= 0.0
+    assert enclosure.metadata["certificate_subdivisions"] == 64
+    for index in range(2001):
+        x = lower + (upper - lower) * index / 2000.0
+        residual = _tanh_prime(x) - (c + b * x + a * x * x)
+        assert abs(residual) <= enclosure.delta
+
+
+def test_quadratic_tanh_prime_enclosure_is_tighter_on_symmetric_bump() -> None:
+    interval = Interval(-1.6, 1.6)
+    affine = affine_tanh_prime_enclosure(interval)
+    quadratic = quadratic_tanh_prime_enclosure(interval)
+
+    assert quadratic.delta < 0.4 * affine.delta
