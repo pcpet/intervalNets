@@ -1,0 +1,1193 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,tabularx,array,longtable}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage[T1]{fontenc}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\eps}{\varepsilon}
+\newcommand{\Sym}{\operatorname{Sym}}
+\newcommand{\lb}{\operatorname{lb}}
+\newcommand{\ub}{\operatorname{ub}}
+\newcommand{\midp}{\operatorname{mid}}
+\newcommand{\rad}{\operatorname{rad}}
+\newcommand{\wid}{\operatorname{wid}}
+\newcommand{\magI}{\operatorname{mag}}
+\newcommand{\mig}{\operatorname{mig}}
+\newcommand{\Mean}{\operatorname{Mean}}
+\newcommand{\Max}{\operatorname{Max}}
+\newcommand{\NA}{\texttt{NA}}
+
+\title{Diagnostics and Metrics for Polynomial-Zonotope\\
+Neural-Network Certification}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note fixes a coherent and explicitly computable set of diagnostics for
+certified neural networks in PDE applications.  It is compatible with the
+companion reference \emph{Notation and Terminology for Polynomial-Zonotope
+Neural-Network Certification}.  In particular, there are exactly two classes
+of noise symbols: domain noise symbols \(\alpha\) and approximation noise
+symbols \(\eta\), with combined vector \(\eps=(\alpha,\eta)\).  The word
+\emph{residual} is reserved for an actual function difference, such as an
+activation-approximation residual or a PDE residual, and is not used as an
+alternative name for \(\eta\).
+
+The note gives mathematical definitions, aggregation rules, canonical output
+schemas, and two required benchmark levels.  The \emph{mini benchmark} is the
+smallest standardized report suitable for routine method comparisons.  The
+\emph{medium benchmark} contains the complete mini benchmark and additionally
+records per-neuron preactivation intervals, activation approximation-error
+radii, and layerwise normalized interval-hull radii.
+\end{abstract}
+
+\section{Compatibility with the notation reference}
+
+Let
+\[
+ \Phi:\mathcal X\subseteq\R^{d_0}\longrightarrow\R^{d_{\rm out}}
+\]
+be the complete neural network and let
+\[
+ X(\alpha),\qquad \alpha\in[-1,1]^p,
+\]
+be a polynomial-zonotope parametrization of the physical input set
+\(\mathcal X\).  The network is written as
+\[
+ \Phi=A_L\circ\sigma_L\circ\cdots\circ A_1\circ\sigma_1\circ A_0,
+ \qquad A_\ell(y)=W_\ell y+b_\ell.
+\]
+At hidden layer \(\ell\), \(z_\ell\) and \(y_\ell\) denote the preactivation
+and postactivation, while \(Z_\ell(\eps)\) and \(Y_\ell(\eps)\) denote their
+polynomial enclosures.  The corresponding polynomial enclosures of the first
+and second physical-input derivatives are denoted by \(J_\ell(\eps)\) and
+\(H_\ell(\eps)\).
+
+For the complete network, write
+\[
+ Y(\eps),\qquad J(\eps),\qquad H(\eps)
+\]
+for the final polynomial enclosures of
+\[
+ \Phi(X(\alpha)),\qquad
+ \left.\partial\Phi\right|_{X(\alpha)},\qquad
+ \left.\partial^2\Phi\right|_{X(\alpha)}.
+\]
+The derivatives are always with respect to the physical input \(x\).  The
+variables \(\alpha\) and \(\eta\) only parametrize the certified enclosure.
+
+For \(r\in\{0,1,2\}\), with \(\sigma^{(0)}=\sigma\), the canonical scalar
+activation enclosure is
+\[
+ \sigma^{(r)}(t)
+ \in \widehat\sigma_{\ell i}^{(r)}(t)
+      +\rho_{\ell i}^{(r)}\eta_{\ell i}^{(r)},
+ \qquad \eta_{\ell i}^{(r)}\in[-1,1].
+\]
+Here \(\rho_{\ell i}^{(r)}\geq0\) is the
+\emph{approximation-error radius}, \(\eta_{\ell i}^{(r)}\) is an
+\emph{approximation noise symbol}, and
+\[
+ r_{\ell i}^{(r)}(t)
+ =\sigma^{(r)}(t)-\widehat\sigma_{\ell i}^{(r)}(t)
+\]
+is the actual residual function.
+
+\section{Cells, indices, and physical-volume weights}
+
+Let
+\[
+ \mathcal X=\bigcup_{c=1}^{N_{\rm cell}}\mathcal X_c
+\]
+be the partition used for certification, with pairwise disjoint interiors.
+For cell \(c\), let \(X_c(\alpha)\) denote its domain parametrization.  We use
+\[
+ c=1,\ldots,N_{\rm cell},\qquad
+ i=1,\ldots,d_{\rm out},\qquad
+ a,b=1,\ldots,d_0.
+\]
+Thus \(i\) indexes the output component, \(a,b\) index physical-input
+coordinates, and \(c\) indexes the certification cell.
+
+For unequal physical cell volumes, define
+\[
+ \omega_c
+ =\frac{|\mathcal X_c|}{\sum_{k=1}^{N_{\rm cell}}|\mathcal X_k|},
+ \qquad \sum_c\omega_c=1.
+\]
+When all cells have equal volume, \(\omega_c=1/N_{\rm cell}\).  If physical
+cell volumes are unavailable, the resulting average must be labelled an
+\emph{unweighted cell average}; it must not be called a domain average.
+
+\section{Interval terminology}
+
+Let \(I=[\underline I,\overline I]\) be a nonempty closed real interval.
+Define
+\[
+ \lb(I)=\underline I,\qquad \ub(I)=\overline I,
+\]
+\[
+ \midp(I)=\frac{\underline I+\overline I}{2},\qquad
+ \rad(I)=\frac{\overline I-\underline I}{2},
+\]
+\[
+ \wid(I)=\overline I-\underline I=2\rad(I),
+\]
+\[
+ \magI(I)=\max\{|\underline I|,|\overline I|\},
+\]
+and
+\[
+ \mig(I)=
+ \begin{cases}
+  \min\{|\underline I|,|\overline I|\},&0\notin I,\\
+  0,&0\in I.
+ \end{cases}
+\]
+The magnitude is a certified upper bound on \(|z|\) for every \(z\in I\),
+while the mignitude is the largest certified lower bound on \(|z|\) over the
+interval.
+
+\subsection{Final interval hulls}
+
+For every cell \(c\), intervalize the final polynomial enclosures over all
+domain and approximation noise symbols:
+\[
+ [Y^i]_c=[\underline Y_c^i,\overline Y_c^i],
+\]
+\[
+ [J_{ia}]_c=[\underline J_{c,ia},\overline J_{c,ia}],
+\]
+\[
+ [H_{iab}]_c=[\underline H_{c,iab},\overline H_{c,iab}].
+\]
+These intervals enclose, respectively,
+\[
+ \Phi^i(X_c(\alpha)),\qquad
+ \left.\partial_a\Phi^i\right|_{X_c(\alpha)},\qquad
+ \left.\partial_{ab}\Phi^i\right|_{X_c(\alpha)}.
+\]
+Unless explicitly stated otherwise, all final width metrics are computed from
+these interval hulls.
+
+\section{Scalar tightness metrics}
+
+For a scalar interval \(I\), define the absolute width and radius by
+\[
+ w(I)=\wid(I),\qquad r(I)=\rad(I).
+\]
+The absolute width is the primary dimensional tightness metric.
+
+The local relative radius is
+\[
+ \rho_{\rm loc}(I)=
+ \begin{cases}
+  \dfrac{\rad(I)}{\magI(I)},&\magI(I)>0,\\[2mm]
+  0,&I=[0,0].
+ \end{cases}
+\]
+No stabilization parameter is used.  This metric must always be reported
+alongside an absolute metric because an interval can be very small in absolute
+terms while still having local relative radius near one when it is centered
+near zero.
+
+The local relative width is
+\[
+ \rho_{\rm wid}(I)=
+ \begin{cases}
+  \dfrac{\wid(I)}{\magI(I)},&\magI(I)>0,\\[2mm]
+  0,&I=[0,0].
+ \end{cases}
+\]
+It is dimensionless and explicitly computable, and it satisfies
+\[
+ \rho_{\rm wid}(I)=2\rho_{\rm loc}(I).
+\]
+Thus local relative width and local relative radius contain the same
+information.  The glossary includes both terms for completeness, but the
+canonical compact summaries use the radius form to avoid redundant headline
+metrics.  For intervals crossing zero, the local relative width may be as large
+as two.
+
+The sign-certification indicator is
+\[
+ s(I)=
+ \begin{cases}
+  1,&0\notin I,\\
+  0,&0\in I.
+ \end{cases}
+\]
+
+\subsection{Familywise reference scales and normalized radii}
+
+Define the data-derived scales
+\[
+ S_Y=\max_{c,i}\magI([Y^i]_c),
+\]
+\[
+ S_J=\max_{c,i,a}\magI([J_{ia}]_c),
+\]
+\[
+ S_H=\max_{c,i,a,b}\magI([H_{iab}]_c).
+\]
+For a family \(Q\in\{Y,J,H\}\) and an interval \(I\) from that family,
+define
+\[
+ \rho_{\rm glob}(I;S_Q)=
+ \begin{cases}
+  \dfrac{\rad(I)}{S_Q},&S_Q>0,\\[2mm]
+  0,&S_Q=0.
+ \end{cases}
+\]
+This is the canonical \emph{global normalized radius}.  Equivalently,
+\(\wid(I)/(2S_Q)\) gives the same value.  Only the radius form is used in the
+canonical schemas.
+
+\paragraph{Scope of a reference scale.}
+A reported value of \(S_Y,S_J,S_H\) is valid only for the exact collection of
+cells and components summarized in the same output record.  When comparing
+methods, the preferred comparison uses a shared reference scale computed from
+a designated reference family, or reports absolute widths in addition to each
+method's own normalized radius.
+
+\section{Aggregation rules}
+
+Let \(q_{c,k}\geq0\) be a cellwise diagnostic, where \(k\) collects all
+non-cell indices.  Its volume-weighted mean is
+\[
+ \Mean_\omega(q)
+ =\sum_{c=1}^{N_{\rm cell}}\omega_c
+   \left(\frac1{N_k}\sum_{k=1}^{N_k}q_{c,k}\right).
+\]
+Its maximum is
+\[
+ \Max(q)=\max_{c,k}q_{c,k}.
+\]
+The canonical empirical quantiles are
+\[
+ Q_{0.50}(q),\qquad Q_{0.90}(q),\qquad Q_{0.99}(q),
+\]
+computed after flattening the finite collection \(\{q_{c,k}\}_{c,k}\).  The
+implementation must record the interpolation convention used by its numerical
+library.  The default recommendation is the library's linear interpolation
+convention.
+
+The worst-cell index is
+\[
+ c_{\max}(q)
+ =\min\operatorname*{arg\,max}_c\left(\max_k q_{c,k}\right),
+\]
+where the minimum resolves ties deterministically.
+
+\section{Function-value, Jacobian, and Hessian diagnostics}
+
+\subsection{Function values}
+
+For every \(c,i\), define
+\[
+ w^Y_{c,i}=\wid([Y^i]_c),\qquad
+ \rho_{c,i}^{Y,{\rm loc}}=\rho_{\rm loc}([Y^i]_c),\qquad
+ \rho_{c,i}^{Y,{\rm glob}}=\rho_{\rm glob}([Y^i]_c;S_Y).
+\]
+The required summaries are the volume-weighted mean, maximum, and
+\(0.50,0.90,0.99\) quantiles of \(w^Y_{c,i}\), together with the
+volume-weighted mean and maximum of \(\rho_{c,i}^{Y,{\rm glob}}\).
+
+Define the componentwise width vector and its norms by
+\[
+ w_c^Y=(w^Y_{c,1},\ldots,w^Y_{c,d_{\rm out}}),
+\]
+\[
+ W_{c,2}^Y=\|w_c^Y\|_2,\qquad
+ W_{c,\infty}^Y=\|w_c^Y\|_\infty.
+\]
+
+\subsection{Jacobians}
+
+For every \(c,i,a\), define
+\[
+ w^J_{c,ia}=\wid([J_{ia}]_c),\qquad
+ \rho_{c,ia}^{J,{\rm loc}}=\rho_{\rm loc}([J_{ia}]_c),\qquad
+ \rho_{c,ia}^{J,{\rm glob}}=\rho_{\rm glob}([J_{ia}]_c;S_J).
+\]
+Let \(W_c^J=(w^J_{c,ia})_{i,a}\).  The Jacobian Frobenius width is
+\[
+ W_{c,F}^J=\|W_c^J\|_F
+ =\left(\sum_{i=1}^{d_{\rm out}}\sum_{a=1}^{d_0}
+ (w^J_{c,ia})^2\right)^{1/2}.
+\]
+For output component \(i\), the gradient width is
+\[
+ W_{c,i}^{\nabla}
+ =\left(\sum_{a=1}^{d_0}(w^J_{c,ia})^2\right)^{1/2}.
+\]
+For physical-input coordinate \(a\), define
+\[
+ W_{c,a}^{\rm input}
+ =\left(\sum_{i=1}^{d_{\rm out}}(w^J_{c,ia})^2\right)^{1/2}.
+\]
+The required summaries are the same entrywise quantities as for function
+values.  In addition, report
+\[\Mean_\omega(W_F^J)\qquad\text{and}\qquad \max_c W_{c,F}^J.\]
+
+\subsection{Hessians}
+
+For every \(c,i,a,b\), define
+\[
+ w^H_{c,iab}=\wid([H_{iab}]_c),\qquad
+ \rho_{c,iab}^{H,{\rm loc}}=\rho_{\rm loc}([H_{iab}]_c),\qquad
+ \rho_{c,iab}^{H,{\rm glob}}=\rho_{\rm glob}([H_{iab}]_c;S_H).
+\]
+The Hessian Frobenius width is
+\[
+ W_{c,F}^H
+ =\left(\sum_{i=1}^{d_{\rm out}}\sum_{a=1}^{d_0}
+ \sum_{b=1}^{d_0}(w^H_{c,iab})^2\right)^{1/2}.
+\]
+If only entries with \(a\leq b\) are stored, the implementation must either
+reconstruct the full symmetric tensor or use weight one for \(a=b\) and weight
+two for \(a<b\).
+
+The Hessian symmetry discrepancy is
+\[
+ E_{\rm sym}^H
+ =\max_{c,i,a,b}\max\left\{
+ |\underline H_{c,iab}-\underline H_{c,iba}|,
+ |\overline H_{c,iab}-\overline H_{c,iba}|
+ \right\}.
+\]
+
+\section{Certified function-space norm metrics}
+
+Let \(\mathcal N\geq0\) be a norm or squared norm with certified interval
+\[
+ [\mathcal N]=[\underline{\mathcal N},\overline{\mathcal N}],
+ \qquad 0\leq\underline{\mathcal N}\leq\overline{\mathcal N}.
+\]
+Always report the raw interval and its absolute width
+\[
+ w_{\mathcal N}=\overline{\mathcal N}-\underline{\mathcal N}.
+\]
+The canonical relative norm width is
+\[
+ \rho_{\mathcal N}=
+ \begin{cases}
+  \dfrac{\overline{\mathcal N}-\underline{\mathcal N}}
+        {\overline{\mathcal N}},&\overline{\mathcal N}>0,\\[2mm]
+  0,&\overline{\mathcal N}=0.
+ \end{cases}
+\]
+It lies in \([0,1]\).  The equivalent lower-bound informativeness is
+\[
+ \gamma_{\mathcal N}=
+ \begin{cases}
+  \dfrac{\underline{\mathcal N}}{\overline{\mathcal N}},
+  &\overline{\mathcal N}>0,\\[2mm]
+  1,&\overline{\mathcal N}=0,
+ \end{cases}
+ \qquad \gamma_{\mathcal N}=1-\rho_{\mathcal N}.
+\]
+Only \(\rho_{\mathcal N}\) is required as the canonical tightness
+summary.  For a nonnegative norm interval, this relative norm width is exactly
+the local relative width defined above because
+\(\magI([\underline{\mathcal N},\overline{\mathcal N}])
+=\overline{\mathcal N}\).
+
+\subsection{Domain-volume-normalized norm intervals}
+
+Let
+\[
+ V_{\mathcal X}=|\mathcal X|>0
+\]
+be the physical integration-domain volume.  The
+\emph{domain-volume-normalized norm} is
+\[
+ \mathcal N_{\rm vol}=\frac{\mathcal N}{\sqrt{V_{\mathcal X}}}.
+\]
+For a certified norm interval, define
+\[
+ [\mathcal N_{\rm vol}]
+ =\left[
+ \frac{\underline{\mathcal N}}{\sqrt{V_{\mathcal X}}},
+ \frac{\overline{\mathcal N}}{\sqrt{V_{\mathcal X}}}
+ \right].
+\]
+For a certified squared-norm interval
+\([\mathcal N^2]=[\underline{\mathcal N^2},
+\overline{\mathcal N^2}]\), define
+\[
+ [\mathcal N_{\rm vol}^2]
+ =\left[
+ \frac{\underline{\mathcal N^2}}{V_{\mathcal X}},
+ \frac{\overline{\mathcal N^2}}{V_{\mathcal X}}
+ \right].
+\]
+For the \(L^2\) norm, \(\mathcal N_{\rm vol}\) is the root-mean-square
+magnitude of the function over \(\mathcal X\).  For \(W^{1,2}\) and
+\(W^{2,2}\), it is the square root of the mean value of the corresponding
+value-and-derivative energy density.  The term \emph{RMS norm} is canonical
+only for \(L^2\); for Sobolev norms use \emph{domain-volume-normalized
+Sobolev norm}.
+
+This metric is not a tightness metric.  It removes the trivial
+\(\sqrt{V_{\mathcal X}}\) scaling of an \(L^2\)-type norm and is useful
+when comparing experiments on domains with different volumes.  It does not
+normalize by the size of the represented function and does not measure
+interval overestimation.  Positive rescaling leaves the relative norm width
+unchanged:
+\[
+ \frac{\wid([\mathcal N_{\rm vol}])}
+ {\ub([\mathcal N_{\rm vol}])}
+ =
+ \frac{\wid([\mathcal N])}{\ub([\mathcal N])}
+ =\rho_{\mathcal N}.
+\]
+Consequently, the domain-volume-normalized interval and the relative norm
+width must be reported as separate metrics.  The word \emph{normalized}
+without a qualifier must not be used for either one.
+
+For \(L^2\)- and Sobolev norms, retain both the squared-norm interval and the
+norm interval.  The primary relative-width diagnostic is computed before the
+square root.
+
+Define
+\[
+ I_0=\int_{\mathcal X}|\Phi(x)|_2^2\,dx,
+\]
+\[
+ I_1=\int_{\mathcal X}\left|\left.\partial\Phi\right|_x\right|_F^2\,dx,
+\]
+\[
+ I_2=\int_{\mathcal X}\left|\left.\partial^2\Phi\right|_x\right|_F^2\,dx.
+\]
+Then
+\[
+ \|\Phi\|_{L^2}^2=I_0,\qquad
+ \|\Phi\|_{W^{1,2}}^2=I_0+I_1,
+\]
+\[
+ \|\Phi\|_{W^{2,2}}^2=I_0+I_1+I_2.
+\]
+For the terms present in a chosen norm, define
+\[
+ C_k^{\rm upper}
+ =\begin{cases}
+ \dfrac{\overline I_k}{\sum_j\overline I_j},
+ &\sum_j\overline I_j>0,\\
+ 0,&\sum_j\overline I_j=0,
+ \end{cases}
+\]
+and
+\[
+ C_k^{\rm width}
+ =\begin{cases}
+ \dfrac{\overline I_k-\underline I_k}
+ {\sum_j(\overline I_j-\underline I_j)},
+ &\sum_j(\overline I_j-\underline I_j)>0,\\
+ 0,&\sum_j(\overline I_j-\underline I_j)=0.
+ \end{cases}
+\]
+
+\section{PDE residual diagnostics}
+
+Let
+\[
+ \mathcal R_\Phi(x)=\mathcal L[\Phi](x)-f(x)
+\]
+be the PDE residual function.  For every cell \(c\), let
+\[
+ [\mathcal R_\Phi]_c
+ =[\underline{\mathcal R}_c,\overline{\mathcal R}_c]
+\]
+be a certified interval enclosure.  Define
+\[
+ M_c^{\mathcal R}=\magI([\mathcal R_\Phi]_c),\qquad
+ w_c^{\mathcal R}=\wid([\mathcal R_\Phi]_c).
+\]
+The certified global pointwise residual upper bound is
+\[
+ \|\mathcal R_\Phi\|_{L^\infty}^{\rm upper}
+ =\max_c M_c^{\mathcal R}.
+\]
+If available, also report
+\[
+ [\|\mathcal R_\Phi\|_{L^2}^2]
+ \quad\text{and}\quad
+ [\|\mathcal R_\Phi\|_{L^2}].
+\]
+Boundary-condition and initial-condition residuals must be represented by
+separate residual functions and reported separately.
+
+\section{Activation-enclosure diagnostics}
+
+For cell \(c\), activation layer \(\ell\), neuron \(i\), and derivative order
+\(r\in\{0,1,2\}\), let
+\[
+ [Z_{\ell i}]_c
+ =[\underline Z_{c,\ell i},\overline Z_{c,\ell i}]
+\]
+be the certified preactivation interval used to construct the activation
+enclosure.  Record
+\[
+ w^Z_{c,\ell i}=\wid([Z_{\ell i}]_c)
+\]
+and the certified approximation-error radius
+\[
+ \rho_{c,\ell i}^{(r)}.
+\]
+The associated approximation-error diameter is
+\[
+ d_{c,\ell i}^{(r)}=2\rho_{c,\ell i}^{(r)}.
+\]
+
+For comparisons within one layer and derivative order, define
+\[
+ S_\ell^{(r)}
+ =\max_{c,i}\magI\left([\sigma^{(r)}(Z_{\ell i})]_c\right)
+\]
+and
+\[
+ \widehat\rho_{c,\ell i}^{(r)}
+ =\begin{cases}
+  \dfrac{\rho_{c,\ell i}^{(r)}}{S_\ell^{(r)}},
+  &S_\ell^{(r)}>0,\\[2mm]
+  0,&S_\ell^{(r)}=0.
+ \end{cases}
+\]
+This is the canonical normalized activation approximation-error radius.
+
+\subsection{Layerwise normalized interval-hull radius}
+
+Let \([Q_{\ell i}]_c\) be the interval hull of a specified scalar neuron
+quantity \(Q\) at layer \(\ell\).  The quantity identifier must be one of
+\[
+ Q\in\{Z,Y,\sigma^{(0)}(Z),\sigma^{(1)}(Z),\sigma^{(2)}(Z)\}.
+\]
+For fixed \(Q\) and \(\ell\), define
+\[
+ S_{Q,\ell}=\max_{c,i}\magI([Q_{\ell i}]_c)
+\]
+and
+\[
+ \nu_{c,\ell i}^{Q}
+ =\begin{cases}
+ \dfrac{\rad([Q_{\ell i}]_c)}{S_{Q,\ell}},&S_{Q,\ell}>0,\\[2mm]
+ 0,&S_{Q,\ell}=0.
+ \end{cases}
+\]
+The medium benchmark must include the postactivation-value table
+\(Q=Y\).  Tables for \(Z\), \(\sigma'(Z)\), and \(\sigma''(Z)\) are optional
+extensions but must follow the same schema.
+
+For a single wide table with layers as columns, aggregate over cells by the
+volume-weighted mean
+\[
+ \bar\nu_{\ell i}^{Q}=\sum_c\omega_c\nu_{c,\ell i}^{Q}.
+\]
+The wide table entry in row \(i\), column \(\ell\) is
+\(\bar\nu_{\ell i}^{Q}\).  If layer \(\ell\) has fewer than \(i\) neurons,
+the entry is \(\NA\), not zero.
+
+\section{Representation-complexity and reduction diagnostics}
+
+For a sparse polynomial
+\[
+ P(\eps)=\sum_{\lambda\in\Lambda_P}P_\lambda\eps^\lambda,
+\]
+record
+\[
+ N_\alpha=p,\qquad N_\eta=q,\qquad
+ N_{\rm mon}=|\Lambda_P|,
+\]
+\[
+ d_{\max}=\max_{\lambda\in\Lambda_P}|\lambda|_1,
+\]
+\[
+ d_{\alpha,\max}=\max_{\lambda\in\Lambda_P}|\lambda^\alpha|_1,
+ \qquad
+ d_{\eta,\max}=\max_{\lambda\in\Lambda_P}|\lambda^\eta|_1,
+\]
+and
+\[
+ N_{\alpha\eta}
+ =\left|\left\{\lambda\in\Lambda_P:
+ |\lambda^\alpha|_1>0\ \text{and}\ |\lambda^\eta|_1>0
+ \right\}\right|.
+\]
+Duplicate exponent vectors must be merged before counting distinct monomials.
+If \(P_\lambda\in U\) and \(\dim U=s\), the stored scalar coefficient count is
+\[
+ N_{\rm coeff}=s|\Lambda_P|.
+\]
+
+For support reduction with retained support \(\Lambda_{\rm keep}\) and
+discarded support \(\Lambda_{\rm drop}\), record
+\[
+ N_{\rm before}=|\Lambda_P|,
+\]
+\[
+ N_{\rm after}=|\Lambda_{\rm keep}|+N_{\rm new},
+\]
+\[
+ R_{\rm support}
+ =\begin{cases}
+ 1-N_{\rm after}/N_{\rm before},&N_{\rm before}>0,\\
+ 0,&N_{\rm before}=0,
+ \end{cases}
+\]
+and, for a fixed coefficient norm,
+\[
+ M_{\rm drop}=\sum_{\lambda\in\Lambda_{\rm drop}}\|P_\lambda\|.
+\]
+When reduced and unreduced interval hulls are both available, define the
+reduction-induced width increase
+\[
+ \Delta w_{\rm red}
+ =\wid([P]_{\rm reduced})-\wid([P]_{\rm unreduced}).
+\]
+
+\section{Runtime, memory, and soundness diagnostics}
+
+Record non-overlapping wall-clock times where applicable:
+\[
+ T_{\rm value},\ T_{\rm Jacobian},\ T_{\rm Hessian},\
+ T_{\rm activation},\ T_{\rm multiplication},
+\]
+\[
+ T_{\rm reduction},\ T_{\rm integration},\
+ T_{\rm intervalization},\ T_{\rm total}.
+\]
+Also record peak allocated memory \(M_{\rm peak}\).  GPU measurements require
+device synchronization before and after each timed region.
+
+For sampled physical points \(x_n\in\mathcal X_c\), test containment of
+function values and all derivatives that are part of the benchmark.  For a
+scalar value \(v\) and interval \(I\), define
+\[
+ d(v,I)=\max\{\lb(I)-v,\ v-\ub(I),\ 0\}.
+\]
+Record the number of failures \(N_{\rm fail}\) and the maximum sampled
+containment violation \(D_{\rm fail}\).  Sampling cannot prove soundness, but
+any failure disproves the claimed enclosure.  Also record invalid-interval,
+NaN-endpoint, and infinite-endpoint counts.
+
+\section{Canonical data representation}
+
+All benchmark data must be stored in UTF-8 comma-separated-value files with a
+single header row, a period as decimal separator, and no thousands separator.
+Missing values are represented by the literal string \(\NA\).  Boolean values
+are represented by \texttt{0} and \texttt{1}.  Infinity is represented by
+\texttt{inf} and negative infinity by \texttt{-inf}.  Each file must be
+accompanied by a metadata file named \texttt{benchmark\_metadata.json}.
+
+The metadata must contain at least:
+\begin{verbatim}
+{
+  "schema_version": "1.2",
+  "benchmark_level": "mini" or "medium",
+  "problem_id": "...",
+  "model_id": "...",
+  "method_id": "...",
+  "git_commit": "..." or null,
+  "dtype": "float64",
+  "device": "cpu" or "cuda:...",
+  "quantile_interpolation": "linear",
+  "cell_average": "volume_weighted" or "unweighted",
+  "timestamp_utc": "ISO-8601 timestamp"
+}
+\end{verbatim}
+
+\subsection{Canonical tidy metric table}
+
+Every benchmark must contain \texttt{metrics.csv}.  Its exact column order is:
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}r l X@{}}
+\toprule
+Position & Column & Meaning \\
+\midrule
+1 & \texttt{schema\_version} & Schema version, currently \texttt{1.2}. \\
+2 & \texttt{benchmark\_level} & \texttt{mini} or \texttt{medium}. \\
+3 & \texttt{problem\_id} & PDE or benchmark identifier. \\
+4 & \texttt{model\_id} & Trained-network identifier. \\
+5 & \texttt{method\_id} & Certification-method identifier. \\
+6 & \texttt{run\_id} & Unique identifier for the execution. \\
+7 & \texttt{split\_id} & Domain partition or refinement identifier. \\
+8 & \texttt{quantity} & Canonical quantity identifier. \\
+9 & \texttt{metric} & Canonical metric identifier. \\
+10 & \texttt{aggregation} & \texttt{none}, \texttt{mean\_weighted}, \texttt{max}, \texttt{q50}, \texttt{q90}, or \texttt{q99}. \\
+11 & \texttt{derivative\_order} & \texttt{0}, \texttt{1}, \texttt{2}, or \NA. \\
+12 & \texttt{layer} & Zero-based layer index or \NA. \\
+13 & \texttt{neuron} & Zero-based neuron index or \NA. \\
+14 & \texttt{output\_index} & Zero-based output component or \NA. \\
+15 & \texttt{input\_index\_a} & First physical-input coordinate or \NA. \\
+16 & \texttt{input\_index\_b} & Second coordinate for Hessians or \NA. \\
+17 & \texttt{cell\_id} & Zero-based cell identifier or \NA. \\
+18 & \texttt{value} & Numeric metric value. \\
+19 & \texttt{unit} & Unit string, \texttt{dimensionless}, or \NA. \\
+20 & \texttt{status} & \texttt{ok}, \texttt{missing}, \texttt{invalid}, or \texttt{not\_implemented}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The pair \texttt{quantity}, \texttt{metric} determines the mathematical
+meaning.  Canonical quantity identifiers include
+\begin{center}
+\texttt{Y}, \texttt{J}, \texttt{H}, \texttt{L2\_sq}, \texttt{L2},
+\texttt{W12\_sq}, \texttt{W12}, \texttt{W22\_sq}, \texttt{W22},
+\texttt{PDE\_residual}, \texttt{boundary\_residual},
+\texttt{initial\_residual}, \texttt{complexity}, \texttt{runtime},
+\texttt{memory}, and \texttt{soundness}.
+\end{center}
+Canonical metric identifiers include
+\begin{center}
+\texttt{lower}, \texttt{upper}, \texttt{width},
+\texttt{local\_relative\_width}, \texttt{local\_relative\_radius},
+\texttt{global\_normalized\_radius}, \texttt{frobenius\_width},
+\texttt{relative\_norm\_width},
+\texttt{domain\_volume\_normalized\_lower},
+\texttt{domain\_volume\_normalized\_upper},
+\texttt{domain\_volume\_normalized\_width},
+\texttt{linf\_upper}, \texttt{n\_alpha}, \texttt{n\_eta},
+\texttt{n\_monomials}, \texttt{n\_mixed\_monomials},
+\texttt{max\_degree}, \texttt{seconds}, \texttt{bytes},
+\texttt{failure\_count}, and \texttt{max\_violation}.
+\end{center}
+
+\subsection{Canonical cellwise interval table}
+
+The mini and medium benchmarks must contain \texttt{cell\_intervals.csv} with
+this exact column order:
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}r l X@{}}
+\toprule
+Position & Column & Meaning \\
+\midrule
+1 & \texttt{run\_id} & Execution identifier. \\
+2 & \texttt{split\_id} & Partition identifier. \\
+3 & \texttt{cell\_id} & Zero-based cell identifier. \\
+4 & \texttt{cell\_weight} & \(\omega_c\), or \(1/N_{\rm cell}\) for unweighted output. \\
+5 & \texttt{quantity} & \texttt{Y}, \texttt{J}, \texttt{H}, or residual identifier. \\
+6 & \texttt{output\_index} & Output component or \NA. \\
+7 & \texttt{input\_index\_a} & First derivative coordinate or \NA. \\
+8 & \texttt{input\_index\_b} & Second derivative coordinate or \NA. \\
+9 & \texttt{lower} & Interval lower endpoint. \\
+10 & \texttt{upper} & Interval upper endpoint. \\
+11 & \texttt{midpoint} & Interval midpoint. \\
+12 & \texttt{radius} & Interval radius. \\
+13 & \texttt{width} & Interval width. \\
+14 & \texttt{magnitude} & Interval magnitude. \\
+15 & \texttt{mignitude} & Interval mignitude. \\
+16 & \texttt{local\_relative\_radius} & \(\rho_{\rm loc}\). \\
+17 & \texttt{global\_normalized\_radius} & Familywise \(\rho_{\rm glob}\). \\
+18 & \texttt{sign\_certified} & \texttt{1} if zero is excluded, otherwise \texttt{0}. \\
+19 & \texttt{status} & \texttt{ok}, \texttt{invalid}, or \texttt{not\_implemented}. \\
+20 & \texttt{local\_relative\_width} & \(\rho_{\rm wid}=2\rho_{\rm loc}\). \\
+\bottomrule
+\end{tabularx}
+\end{center}
+Rows are sorted lexicographically by
+\[
+ (\texttt{cell\_id},\texttt{quantity},\texttt{output\_index},
+ \texttt{input\_index\_a},\texttt{input\_index\_b}).
+\]
+
+\subsection{Canonical norm table}
+
+The benchmark must contain \texttt{norms.csv} with exact column order
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}r l X@{}}
+\toprule
+Position & Column & Meaning \\
+\midrule
+1 & \texttt{run\_id} & Execution identifier. \\
+2 & \texttt{norm} & \texttt{L2}, \texttt{W12}, \texttt{W22}, or residual norm. \\
+3 & \texttt{squared} & \texttt{1} for squared norm, otherwise \texttt{0}. \\
+4 & \texttt{lower} & Certified lower endpoint. \\
+5 & \texttt{upper} & Certified upper endpoint. \\
+6 & \texttt{width} & Upper minus lower. \\
+7 & \texttt{relative\_width} & Width divided by upper endpoint, with zero for \([0,0]\). \\
+8 & \texttt{value\_contribution\_upper} & \(C_0^{\rm upper}\), or \NA. \\
+9 & \texttt{gradient\_contribution\_upper} & \(C_1^{\rm upper}\), or \NA. \\
+10 & \texttt{hessian\_contribution\_upper} & \(C_2^{\rm upper}\), or \NA. \\
+11 & \texttt{value\_contribution\_width} & \(C_0^{\rm width}\), or \NA. \\
+12 & \texttt{gradient\_contribution\_width} & \(C_1^{\rm width}\), or \NA. \\
+13 & \texttt{hessian\_contribution\_width} & \(C_2^{\rm width}\), or \NA. \\
+14 & \texttt{status} & \texttt{ok}, \texttt{invalid}, or \texttt{not\_implemented}. \\
+15 & \texttt{domain\_volume} & Physical integration-domain volume \(V_{\mathcal X}\). \\
+16 & \texttt{domain\_volume\_normalized\_lower} & Lower endpoint divided by \(V_{\mathcal X}\) for squared rows and by \(\sqrt{V_{\mathcal X}}\) otherwise. \\
+17 & \texttt{domain\_volume\_normalized\_upper} & Upper endpoint with the same scaling. \\
+18 & \texttt{domain\_volume\_normalized\_width} & Width with the same scaling. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+Rows are ordered first by \texttt{norm} in the order
+\texttt{L2}, \texttt{W12}, \texttt{W22}, followed by other norms, and then by
+\texttt{squared} with squared rows first.
+
+\section{Mini benchmark}
+
+The mini benchmark is the mandatory smallest benchmark.  It is intended for
+fast regression tests and standardized comparisons of certification methods.
+It must be possible to execute it without storing all intermediate polynomial
+objects.
+
+\subsection{Required outputs}
+
+The mini benchmark must produce:
+\begin{enumerate}[label=\arabic*.]
+ \item \texttt{benchmark\_metadata.json};
+ \item \texttt{metrics.csv};
+ \item \texttt{cell\_intervals.csv};
+ \item \texttt{norms.csv};
+ \item \texttt{complexity.csv};
+ \item \texttt{timings.csv};
+ \item \texttt{soundness.csv}.
+\end{enumerate}
+
+\subsection{Norm-output program contract}
+
+The following contract is part of the definition of both benchmark programs.
+It is not an optional reporting convention.
+
+For every implemented norm
+\[
+ N\in\{\texttt{L2},\texttt{W12},\texttt{W22}\},
+\]
+the benchmark program must emit both the squared and unsquared certified norm
+rows in \texttt{norms.csv}.  Every such row with status \texttt{ok} must
+populate all of the following fields:
+\[
+ \texttt{lower},\quad \texttt{upper},\quad \texttt{width},\quad
+ \texttt{relative\_width},\quad \texttt{domain\_volume},
+\]
+\[
+ \texttt{domain\_volume\_normalized\_lower},\quad
+ \texttt{domain\_volume\_normalized\_upper},\quad
+ \texttt{domain\_volume\_normalized\_width}.
+\]
+For a squared norm row, the three domain-volume-normalized endpoints and width
+are obtained by division by \(V_{\mathcal X}\).  For an unsquared norm row,
+they are obtained by division by \(\sqrt{V_{\mathcal X}}\).
+
+A program that reports only the unnormalized interval, only the relative width,
+or only a scalar domain-volume-normalized point estimate does not implement the
+mini benchmark.  Since the medium benchmark inherits the complete mini
+benchmark, such a program also does not implement the medium benchmark.
+
+
+\subsection{Required diagnostics}
+
+For final function values \(Y\), report:
+\begin{itemize}
+ \item volume-weighted mean width;
+ \item maximum width;
+ \item \(0.50,0.90,0.99\) width quantiles;
+ \item volume-weighted mean global normalized radius;
+ \item maximum global normalized radius.
+\end{itemize}
+
+For the final Jacobian \(J\), report the same entrywise summaries and also
+\[
+ \Mean_\omega(W_F^J),\qquad \max_c W_{c,F}^J.
+\]
+
+For the final Hessian \(H\), report the corresponding diagnostics whenever
+second derivatives are propagated or required by the PDE.  Otherwise rows must
+be present in \texttt{metrics.csv} with status \texttt{not\_implemented}; they
+must not be silently omitted.
+
+For each implemented function-space norm, report the squared and unsquared
+intervals, absolute widths, relative norm widths, the physical domain volume,
+and the corresponding domain-volume-normalized intervals.  The minimum
+standard set is \(L^2\) and \(W^{1,2}\); \(W^{2,2}\) is required when a
+Hessian is propagated.
+
+\paragraph{Mandatory norm-row contract.}
+For every required norm name \(N\in\{\texttt{L2},\texttt{W12}\}\), and
+also \(N=\texttt{W22}\) whenever the Hessian is propagated, the mini
+benchmark must write exactly two rows to \texttt{norms.csv}: first the squared
+row \(\texttt{squared}=1\), then the unsquared row
+\(\texttt{squared}=0\).  In both rows, columns 15--18 are mandatory and
+must contain
+\[
+ V_{\mathcal X},\qquad
+ \frac{\underline{\mathcal N^2}}{V_{\mathcal X}},\quad
+ \frac{\overline{\mathcal N^2}}{V_{\mathcal X}},\quad
+ \frac{\overline{\mathcal N^2}-\underline{\mathcal N^2}}
+      {V_{\mathcal X}}
+\]
+for the squared row, and
+\[
+ V_{\mathcal X},\qquad
+ \frac{\underline{\mathcal N}}{\sqrt{V_{\mathcal X}}},\quad
+ \frac{\overline{\mathcal N}}{\sqrt{V_{\mathcal X}}},\quad
+ \frac{\overline{\mathcal N}-\underline{\mathcal N}}
+      {\sqrt{V_{\mathcal X}}}
+\]
+for the unsquared row.  These values must not be omitted, replaced by
+\texttt{NA}, or inferred only by downstream plotting code when the underlying
+norm interval has status \texttt{ok}.  A mini-benchmark implementation is
+non-conforming if these columns are absent or unpopulated.
+
+For PDE certification, report
+\[
+ \|\mathcal R_\Phi\|_{L^\infty}^{\rm upper}
+\]
+and, when implemented, certified \(L^2\) residual intervals.  Boundary and
+initial residuals are separate quantities.
+
+For representation complexity, record at least
+\[
+ N_\alpha,\quad N_\eta,\quad N_{\rm mon},\quad
+ N_{\alpha\eta},\quad d_{\max},\quad N_{\rm coeff}
+\]
+for \(Y\), \(J\), and \(H\) separately.
+
+For computational cost, record total runtime, the principal non-overlapping
+stage times, and peak memory.  For soundness diagnostics, record
+\(N_{\rm fail}\), \(D_{\rm fail}\), invalid interval count, NaN endpoint count,
+and infinite endpoint count.
+
+\subsection{Canonical mini-benchmark summary order}
+
+For human-readable printing, the summary rows must appear in this order:
+\begin{enumerate}[label=\arabic*.]
+ \item run metadata and domain partition;
+ \item function-value enclosure diagnostics;
+ \item Jacobian enclosure diagnostics;
+ \item Hessian enclosure diagnostics;
+ \item squared and unsquared function-space norm intervals, immediately
+ followed by their domain-volume-normalized lower endpoint, upper endpoint,
+ and width;
+ \item PDE, boundary, and initial residual diagnostics;
+ \item representation-complexity diagnostics for \(Y,J,H\);
+ \item runtime and peak-memory diagnostics;
+ \item soundness and validity diagnostics.
+\end{enumerate}
+Within each enclosure family, print metrics in the order
+\[
+ \texttt{mean\_width},\ \texttt{max\_width},\
+ \texttt{q50\_width},\ \texttt{q90\_width},\ \texttt{q99\_width},
+\]
+\[
+ \texttt{mean\_global\_normalized\_radius},\
+ \texttt{max\_global\_normalized\_radius},
+\]
+followed by family-specific matrix or tensor diagnostics.
+
+\section{Medium benchmark}
+
+The medium benchmark contains every mini-benchmark output, file, row, column,
+and diagnostic without modification.  In particular, it must produce the same
+\texttt{norms.csv} required by the mini benchmark, including the mandatory
+squared and unsquared domain-volume-normalized norm intervals in columns
+15--18.  The medium benchmark is therefore not permitted to omit, rename, or
+replace these quantities with only relative widths.  It additionally diagnoses
+where approximation error enters the network and how interval hulls evolve
+through the hidden layers.
+
+\paragraph{Inheritance rule.}
+A medium-benchmark program must first satisfy every mini-benchmark conformance
+condition.  Its additional per-neuron and layerwise files extend the mini
+benchmark; they do not form an alternative output schema.  Consequently, a
+medium-benchmark run is non-conforming whenever the corresponding mini
+benchmark would be non-conforming, including whenever any required
+\texttt{domain\_volume\_normalized\_lower},
+\texttt{domain\_volume\_normalized\_upper}, or
+\texttt{domain\_volume\_normalized\_width} entry is missing from an
+implemented norm row.
+
+\subsection{Per-neuron activation approximation table}
+
+The medium benchmark must contain
+\texttt{activation\_approximation.csv}.  Its exact column order is:
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}r l X@{}}
+\toprule
+Position & Column & Meaning \\
+\midrule
+1 & \texttt{run\_id} & Execution identifier. \\
+2 & \texttt{split\_id} & Partition identifier. \\
+3 & \texttt{cell\_id} & Zero-based cell identifier. \\
+4 & \texttt{cell\_weight} & Physical-volume weight \(\omega_c\). \\
+5 & \texttt{layer} & Zero-based hidden activation-layer index. \\
+6 & \texttt{neuron} & Zero-based neuron index within the layer. \\
+7 & \texttt{derivative\_order} & \texttt{0}, \texttt{1}, or \texttt{2}. \\
+8 & \texttt{preactivation\_lower} & \(\underline Z_{c,\ell i}\). \\
+9 & \texttt{preactivation\_upper} & \(\overline Z_{c,\ell i}\). \\
+10 & \texttt{preactivation\_midpoint} & Midpoint of \([Z_{\ell i}]_c\). \\
+11 & \texttt{preactivation\_radius} & Radius of \([Z_{\ell i}]_c\). \\
+12 & \texttt{preactivation\_width} & Width of \([Z_{\ell i}]_c\). \\
+13 & \texttt{approximation\_kind} & Canonical approximation identifier, e.g. \texttt{affine}, \texttt{quadratic}, or \texttt{interval}. \\
+14 & \texttt{approximation\_error\_radius} & \(\rho_{c,\ell i}^{(r)}\). \\
+15 & \texttt{approximation\_error\_diameter} & \(2\rho_{c,\ell i}^{(r)}\). \\
+16 & \texttt{activation\_scale} & \(S_\ell^{(r)}\). \\
+17 & \texttt{normalized\_approximation\_radius} & \(\widehat\rho_{c,\ell i}^{(r)}\). \\
+18 & \texttt{noise\_symbol\_id} & Stable identifier for \(\eta_{\ell i}^{(r)}\), or \NA if no fresh symbol is introduced. \\
+19 & \texttt{shared\_noise\_group} & Identifier when one approximation noise symbol is reused, otherwise \NA. \\
+20 & \texttt{status} & \texttt{ok}, \texttt{invalid}, or \texttt{not\_implemented}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+Rows are sorted by
+\[
+ (\texttt{cell\_id},\texttt{layer},\texttt{neuron},
+ \texttt{derivative\_order}).
+\]
+The derivative-order rows \(0,1,2\) must be present whenever the corresponding
+activation enclosure is used by the propagated value, Jacobian, or Hessian.
+
+\subsection{Layerwise normalized interval-radius table}
+
+The medium benchmark must contain a separate wide table named
+\begin{center}\path{layer_normalized_radius_Y.csv}.\end{center}
+It summarizes the postactivation
+interval hulls \([Y_{\ell i}]_c\).  Its exact column order is
+\[
+ \texttt{neuron},\ \texttt{layer\_0},\ \texttt{layer\_1},\ \ldots,
+ \texttt{layer\_{L-1}}.
+\]
+The row index \texttt{neuron} is zero-based.  The entry in row \(i\), column
+\texttt{layer\_\(\ell\)} is
+\[
+ \bar\nu_{\ell i}^{Y}
+ =\sum_c\omega_c
+ \begin{cases}
+ \dfrac{\rad([Y_{\ell i}]_c)}
+ {\max_{c',j}\magI([Y_{\ell j}]_{c'})},
+ &\max_{c',j}\magI([Y_{\ell j}]_{c'})>0,\\[3mm]
+ 0,&\text{otherwise}.
+ \end{cases}
+\]
+If layer \(\ell\) has fewer than \(i+1\) neurons, the entry is \(\NA\).
+Columns always follow increasing layer index; rows always follow increasing
+neuron index.
+
+The medium benchmark may additionally provide the same wide schema for other
+quantities using the filenames
+\begin{center}
+\texttt{layer\_normalized\_radius\_Z.csv},\\
+\texttt{layer\_normalized\_radius\_sigma1.csv},\\
+\texttt{layer\_normalized\_radius\_sigma2.csv}.
+\end{center}
+Here \texttt{sigma1} and \texttt{sigma2} refer to interval hulls of
+\(\sigma'(Z_{\ell i})\) and \(\sigma''(Z_{\ell i})\), respectively.  These
+optional tables must use the identical row and column conventions.
+
+\subsection{Required medium-benchmark visual summaries}
+
+A medium-benchmark report should render, from the canonical CSV data:
+\begin{enumerate}[label=\arabic*.]
+ \item one table per derivative order \(r=0,1,2\), with rows corresponding to
+ neurons and grouped columns containing preactivation interval, approximation
+ kind, approximation-error radius, and normalized approximation radius;
+ \item the wide layer table \texttt{layer\_normalized\_radius\_Y.csv};
+ \item a ranked list of the largest approximation-error radii;
+ \item a ranked list of the largest normalized approximation-error radii;
+ \item the worst cells and neurons according to preactivation width and
+ approximation-error radius.
+\end{enumerate}
+These visual summaries are derived views.  The CSV files remain the canonical
+data representation.
+
+\section{Implementation invariants and safety checks}
+
+An implementation conforming to this reference must satisfy the following
+invariants.
+
+\begin{enumerate}[label=\arabic*.]
+ \item Every reported metric is computable from explicitly stored endpoints,
+ coefficients, counts, or timings.  No hidden stabilization constant is used.
+ \item The only polynomial variable classes are domain noise symbols \(\alpha\)
+ and approximation noise symbols \(\eta\).
+ \item The word \emph{residual} denotes an actual function difference, never a
+ noise symbol.
+ \item All derivative indices refer to derivatives with respect to the physical
+ input \(x\).
+ \item Missing or unimplemented quantities are represented by \(\NA\) and an
+ explicit non-\texttt{ok} status; they are never silently replaced by zero.
+ \item Zero is used only when the mathematical definition prescribes zero, such
+ as the normalized radius of an identically zero interval family.
+ \item Cell-weighted means use the stored \texttt{cell\_weight} values, which
+ must sum to one within numerical tolerance.
+ \item Distinct monomials are counted only after duplicate exponent vectors are
+ merged.
+ \item Squared norm intervals are retained even when unsquared norm intervals
+ are also reported.
+ \item Sampling diagnostics are labelled as diagnostics and are not described
+ as proofs of soundness.
+\end{enumerate}
+
+\section{Canonical vocabulary}
+
+\renewcommand{\arraystretch}{1.2}
+\small
+\begin{tabularx}{\textwidth}{@{}l X@{}}
+\toprule
+Preferred term & Meaning \\
+\midrule
+Interval hull & Final interval enclosure obtained from a polynomial enclosure over all domain and approximation noise symbols. \\
+Absolute width & Upper endpoint minus lower endpoint. \\
+Absolute radius & Half the absolute width. \\
+Magnitude & Maximum absolute value of the interval endpoints. \\
+Mignitude & Largest certified lower bound on absolute value over the interval. \\
+Local relative width & Interval width divided by the magnitude of the same interval; equal to twice the local relative radius. \\
+Local relative radius & Interval radius divided by the magnitude of the same interval. \\
+Global normalized radius & Interval radius divided by the maximum magnitude over the same explicitly specified family. \\
+Volume-weighted mean width & Componentwise mean width weighted by physical cell volume. \\
+Relative norm width & Width of a nonnegative norm interval divided by its upper endpoint; this is a tightness metric. \\
+Domain-volume-normalized norm & Norm divided by the square root of the physical integration-domain volume; this is a scale metric, not a tightness metric. \\
+Approximation-error radius & Certified nonnegative scalar \(\rho\) in an activation enclosure. \\
+Approximation noise symbol & A component of \(\eta\); this is the canonical name. \\
+Approximation noise term & A product \(\rho\eta\). \\
+Residual function & An actual difference between a function and its approximation, or between the two sides of a PDE. \\
+Distinct monomial count & Cardinality of the canonical exponent support after duplicate exponents are merged. \\
+Mixed monomial & A monomial depending on at least one domain noise symbol and at least one approximation noise symbol. \\
+Reduction-induced width increase & Difference between reduced and unreduced interval-hull widths. \\
+Mini benchmark & Mandatory compact diagnostic suite for routine regression and method comparison. \\
+Medium benchmark & Complete mini benchmark plus per-neuron approximation diagnostics and layerwise interval-hull-radius tables. \\
+\bottomrule
+\end{tabularx}
+\normalsize
+
+\section{Default interpretation}
+
+No normalized metric replaces the absolute width.  The default pair for
+pointwise enclosures is
+\[
+ \boxed{\text{absolute width}}
+ \qquad\text{and}\qquad
+ \boxed{\text{global normalized radius}}.
+\]
+The local relative radius and the equivalent local relative width are secondary
+diagnostics.  For nonnegative function-space norm intervals, the default
+tightness metric is the relative norm width
+\[
+ \rho_{\mathcal N}
+ =\frac{\overline{\mathcal N}-\underline{\mathcal N}}
+ {\overline{\mathcal N}}
+\]
+when \(\overline{\mathcal N}>0\), and zero for the exact interval \([0,0]\).
+The domain-volume-normalized norm interval is reported separately whenever
+\(V_{\mathcal X}\) is available.  It describes average physical scale over
+the domain and must not be interpreted as enclosure tightness.
+
+The canonical CSV schemas, fixed column orders, benchmark-level requirements,
+and implementation invariants are part of the mathematical reference.  Agents
+must not change them silently.  Any extension must preserve the existing
+columns and identifiers and must increase the schema version when semantics
+change.
+
+\end{document}

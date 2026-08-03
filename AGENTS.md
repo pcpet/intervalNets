@@ -19,6 +19,7 @@ Inspect the existing implementation and tests before editing it. Use the documen
 - `docs/affine_tanh_enclosures.tex`: certified affine enclosures for `tanh`, `tanh'`, and `tanh''`;
 - `docs/certified_polynomial_zonotope_integration.tex`: geometric PZ integration and approximation-noise semantics;
 - `docs/direct_integrated_twojet_squares.tex`: direct certified integration of squared PZ two-jets without constructing the squared integrand.
+- `docs/diagnostics_and_metrics_glossary.tex`: ground-truth metric definitions, aggregation rules, canonical CSV/JSON schemas, and mandatory mini- and medium-benchmark outputs; consult this before adding or changing benchmark diagnostics or output columns.
 
 The current source code and tests define the implemented public behavior. When a design document and the implementation differ, identify the discrepancy explicitly instead of silently changing semantics.
 
@@ -48,6 +49,21 @@ For changes to certified PZ `L^2`, `W^{1,2}`, or `W^{2,2}` integration, read `do
 The direct-integration optimization must reproduce the current certified enclosure while avoiding materialization of the squared PZ integrand. Exploit unordered monomial-pair symmetry and Hessian symmetry, but still merge all contributions with the same retained pointwise-noise exponent before taking absolute values. Keep the existing explicit-square path available at least internally for regression comparisons until equivalence is well tested.
 
 Benchmark enclosure construction, norm-integrand construction, and integration separately. Final monomial count alone is not an adequate performance measure because sparse polynomial multiplication processes intermediate term pairs before canonicalization.
+
+All benchmark notebooks and reusable diagnostics must follow
+`docs/diagnostics_and_metrics_glossary.tex`. Preserve its schema version,
+exact canonical column orders, missing-value/status conventions, deterministic
+row ordering, and distinction between absolute widths, local relative radii,
+familywise global normalized radii, and relative norm widths. A medium
+benchmark includes every mini-benchmark output plus the per-neuron activation
+approximation table and `layer_normalized_radius_Y.csv`; do not silently omit
+unimplemented required quantities.
+
+For schema version 1.2 and later, preserve both local relative radius and local
+relative width in the prescribed columns, and populate the physical domain
+volume plus the domain-volume-normalized lower endpoint, upper endpoint, and
+width for every implemented squared and unsquared norm row. Domain-volume
+normalization is a scale metric; relative norm width is the tightness metric.
 
 For value-only \(L^2\) performance work, use
 `notebooks/pz_l2_value_benchmarks.ipynb`. The affine tanh enclosure keeps the
