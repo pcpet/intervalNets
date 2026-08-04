@@ -1,0 +1,4 @@
+run_id,stage,seconds,status
+pinn100d_shallow300_medium_interval,L2_total,0.008936213000197313,ok
+pinn100d_shallow300_medium_interval,W12_total,0.5348716300004526,ok
+pinn100d_shallow300_medium_interval,final_enclosures,0.9840491009999823,ok

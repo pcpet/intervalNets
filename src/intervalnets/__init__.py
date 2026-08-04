@@ -46,6 +46,11 @@ from .pz_norms import (
 )
 
 from .pinn import load_tanh_mlp_checkpoint, sequential_value_jacobian_laplacian
+from .shallow_hybrid import (
+    ShallowHybridOneJetResult,
+    integrate_shallow_hybrid_onejet_squared,
+    shallow_scalar_hybrid_onejet_reverse,
+)
 
 __all__ = [
     "Interval",
@@ -85,6 +90,9 @@ __all__ = [
     "pz_twojet_w22_norm",
     "sequential_value_jacobian_laplacian",
     "load_tanh_mlp_checkpoint",
+    "ShallowHybridOneJetResult",
+    "integrate_shallow_hybrid_onejet_squared",
+    "shallow_scalar_hybrid_onejet_reverse",
 ]
 
 try:
