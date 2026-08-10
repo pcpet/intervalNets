@@ -1,4 +1,5 @@
 from dataclasses import replace
+from math import tanh
 
 import pytest
 
@@ -7,6 +8,7 @@ from intervalnets.pz_integration import (
     IntegratedPZResult,
     POINTWISE_RESIDUAL_KINDS,
     PZIntegrationCell,
+    box_monomial_absolute_moment,
     integrate_over_cell,
     integrate_pz_over_domain,
     integrate_pz_onejet_squared,
@@ -164,7 +166,7 @@ def test_direct_twojet_square_canonicalizes_pointwise_cancellation_and_keeps_odd
 
     cancelling_y = PolynomialZonotope(torch.tensor([1.0, 1.0], dtype=torch.float64), {(0, 1): torch.tensor([1.0, -1.0], dtype=torch.float64)}, num_noise=2, noise_kinds=kinds)
     cancelling = integrate_pz_twojet_squared(PZTwoJet(cancelling_y, zero_j, zero_h), cell, "l2")
-    assert float(cancelling.lower) == pytest.approx(0.0, abs=1e-14)
+    assert float(cancelling.lower) == pytest.approx(4.0)
     assert float(cancelling.upper) == pytest.approx(8.0)
 
     odd_y = PolynomialZonotope(torch.tensor([0.0], dtype=torch.float64), {(1, 0): torch.tensor([1.0], dtype=torch.float64), (0, 1): torch.tensor([1.0], dtype=torch.float64)}, num_noise=2, noise_kinds=kinds)
@@ -173,7 +175,10 @@ def test_direct_twojet_square_canonicalizes_pointwise_cancellation_and_keeps_odd
     from intervalnets.pz_norms import pz_twojet_l2_integrand
     explicit = integrate_over_cell(pz_twojet_l2_integrand(odd_jet), cell, output="interval")
     _assert_interval_close(direct, explicit)
-    assert float(direct.lower) < -5.0  # The odd alpha*eta term receives full measure.
+    # The odd alpha*eta term does not vanish: it receives the absolute domain
+    # moment int |alpha| = 1, while eta**2 is reduced one-sided to [0, 2].
+    assert float(direct.lower) == pytest.approx(-4.0 / 3.0)
+    assert float(direct.upper) == pytest.approx(14.0 / 3.0)
 
 
 @pytest.mark.skipif(torch is None, reason="PyTorch not installed")
@@ -224,6 +229,31 @@ def test_direct_twojet_square_vectorizes_float_coefficients(monkeypatch):
     direct = integrate_pz_twojet_squared(jet, cell, "l2")
 
     _assert_interval_close(direct, explicit)
+
+
+def test_direct_twojet_square_python_path_matches_improved_explicit_rule(monkeypatch):
+    import intervalnets.pz_integration as pz_integration
+    from intervalnets.pz_norms import pz_twojet_l2_integrand
+
+    kinds = ("domain", "approximation_pointwise")
+    y = PolynomialZonotope(
+        (0.0,),
+        {(1, 0): (1.0,), (0, 1): (1.0,)},
+        num_noise=2,
+        noise_kinds=kinds,
+    )
+    zero_j = PolynomialZonotope.constant(((0.0,),), num_noise=2, noise_kinds=kinds)
+    zero_h = PolynomialZonotope.constant((((0.0,),),), num_noise=2, noise_kinds=kinds)
+    jet = PZTwoJet(y, zero_j, zero_h)
+    cell = PZIntegrationCell.from_bounds((-1.0,), (1.0,))
+    explicit = integrate_over_cell(pz_twojet_l2_integrand(jet), cell, output="interval")
+
+    monkeypatch.setattr(pz_integration, "np", None)
+    direct = integrate_pz_twojet_squared(jet, cell, "l2")
+
+    _assert_interval_close(direct, explicit)
+    assert float(direct.lower) == pytest.approx(-4.0 / 3.0)
+    assert float(direct.upper) == pytest.approx(14.0 / 3.0)
 
 
 @pytest.mark.skipif(torch is None, reason="PyTorch not installed")
@@ -310,6 +340,90 @@ def test_integrating_pointwise_residual_adds_radius_not_symbolic_moment():
     assert result.interval_radius == pytest.approx(0.5)
 
 
+def test_box_monomial_absolute_moment_keeps_odd_powers():
+    assert box_monomial_absolute_moment((1,)) == pytest.approx(1.0)
+    assert box_monomial_absolute_moment((1, 2)) == pytest.approx(2.0 / 3.0)
+    assert box_monomial_absolute_moment(()) == pytest.approx(1.0)
+    with pytest.raises(ValueError):
+        box_monomial_absolute_moment((-1,))
+
+
+def test_pointwise_mixed_term_uses_absolute_moment_and_even_power_is_one_sided():
+    z = PolynomialZonotope(
+        0.0,
+        {
+            (1, 1): 2.0,
+            (0, 2): 3.0,
+        },
+        num_noise=2,
+        noise_kinds=("domain", "approximation_pointwise"),
+    )
+
+    result = integrate_pz_over_domain(z)
+    interval = result.interval_enclosure()
+
+    # 2 alpha eta contributes [-2, 2], using int |alpha| = 1 rather than
+    # either the signed moment zero or the full reference measure two.
+    # 3 eta**2 contributes [0, 6] through midpoint 3 and radius 3.
+    assert result.polynomial.center == pytest.approx(3.0)
+    assert result.interval_radius == pytest.approx(5.0)
+    assert interval.lower == pytest.approx(-2.0)
+    assert interval.upper == pytest.approx(8.0)
+
+
+def test_even_pointwise_power_with_odd_domain_power_uses_half_absolute_moment():
+    z = PolynomialZonotope(
+        0.0,
+        {(1, 2): 4.0},
+        num_noise=2,
+        noise_kinds=("domain", "pointwise_residual"),
+    )
+
+    result = integrate_pz_over_domain(z)
+
+    assert result.polynomial.center == pytest.approx(0.0)
+    assert result.interval_radius == pytest.approx(2.0)
+
+
+def test_global_symbolic_noise_keeps_signed_moment_semantics():
+    z = PolynomialZonotope(
+        0.0,
+        {(1, 1): 2.0, (2, 1): 3.0},
+        num_noise=2,
+        noise_kinds=("domain", "approximation_symbolic"),
+    )
+
+    result = integrate_pz_over_domain(z)
+
+    assert result.interval_radius == pytest.approx(0.0)
+    assert set(result.polynomial.terms) == {(1,)}
+    assert result.polynomial.terms[(1,)] == pytest.approx(2.0)
+
+
+def test_pointwise_parity_refinement_is_conservative_with_global_symbols():
+    kinds = ("domain", "approximation_symbolic", "approximation_pointwise")
+    even = PolynomialZonotope(
+        0.0,
+        {(0, 2, 2): 4.0},
+        num_noise=3,
+        noise_kinds=kinds,
+    )
+    ambiguous = PolynomialZonotope(
+        0.0,
+        {(0, 1, 2): 4.0},
+        num_noise=3,
+        noise_kinds=kinds,
+    )
+
+    even_interval = integrate_pz_over_domain(even).interval_enclosure()
+    ambiguous_interval = integrate_pz_over_domain(ambiguous).interval_enclosure()
+
+    assert float(even_interval.lower) == pytest.approx(0.0)
+    assert float(even_interval.upper) == pytest.approx(8.0)
+    assert float(ambiguous_interval.lower) == pytest.approx(-8.0)
+    assert float(ambiguous_interval.upper) == pytest.approx(8.0)
+
+
 def test_geometric_volume_scales_pointwise_residual_radius():
     z = PolynomialZonotope(
         0.0,
@@ -324,6 +438,39 @@ def test_geometric_volume_scales_pointwise_residual_radius():
     assert result.polynomial.terms == {}
     assert result.interval_radius == pytest.approx(15.0)
     assert result.measure == 7.5
+
+
+def test_optional_volume_scales_absolute_and_signed_moments_by_one_density():
+    z = PolynomialZonotope(
+        1.0,
+        {(2, 0): 3.0, (1, 1): 2.0},
+        num_noise=2,
+        noise_kinds=("domain", "approximation_pointwise"),
+    )
+
+    result = integrate_pz_over_domain(z, volume=6.0)
+
+    # Constant density is 6 / 2 = 3. The exact alpha**2 term contributes 6,
+    # and 2 alpha eta has radius 2 * 3 * int|alpha| = 6.
+    assert result.polynomial.center == pytest.approx(12.0)
+    assert result.interval_radius == pytest.approx(6.0)
+
+
+def test_affine_cell_applies_jacobian_density_once_to_absolute_moment():
+    cell = PZIntegrationCell.from_bounds((-2.0,), (2.0,))
+    mixed = PolynomialZonotope(
+        0.0,
+        {(1, 1): 1.0},
+        num_noise=2,
+        noise_kinds=("domain", "approximation_pointwise"),
+    )
+
+    result = integrate_over_cell(mixed, cell, output="interval")
+
+    # J_X = 2 and int_{-1}^1 |alpha| d alpha = 1. The physical volume four
+    # must not be applied again after the absolute moment.
+    assert float(result.lower) == pytest.approx(-2.0)
+    assert float(result.upper) == pytest.approx(2.0)
 
 
 def test_symbolic_mode_keeps_residual_symbol_and_integrates_by_moments_only_when_requested():
@@ -372,14 +519,44 @@ def test_affine_tanh_residuals_integrate_as_pointwise_interval_radius():
 
         result = integrate_over_cell(x * residual, cell, output="interval")
 
-        # If the residual noise were treated as an ordinary symbolic monomial,
-        # the odd domain factor would integrate to zero. Pointwise residual
-        # handling instead accumulates it as interval radius.
+        # The odd domain factor is not discarded through its signed moment.
+        # Pointwise residual handling integrates its absolute moment instead:
+        # int_{-1}^1 |alpha| d alpha = 1.
         assert result.lower < 0.0
         assert result.upper > 0.0
         assert max(abs(float(result.lower)), abs(float(result.upper))) == pytest.approx(
-            2.0 * enclosure.delta
+            enclosure.delta
         )
+
+
+def test_affine_tanh_squared_pointwise_regression_matches_direct_path():
+    from intervalnets.pz_integration import integrate_pz_value_squared
+    from intervalnets.pz_norms import pz_sum_squares
+    from intervalnets.pytorch import _affine_enclosure_pz
+
+    cell = PZIntegrationCell.from_bounds((-1.0,), (1.0,))
+    x = cell.domain[0]
+    enclosure = affine_tanh_enclosure((-1.0, 1.0))
+    value = _affine_enclosure_pz(
+        x,
+        slope=enclosure.p,
+        intercept=enclosure.q,
+        radius=enclosure.delta,
+    )
+
+    explicit = integrate_over_cell(pz_sum_squares(value), cell, output="interval")
+    direct = integrate_pz_value_squared(value, cell)
+    p = enclosure.p
+    rho = enclosure.delta
+    expected_lower = 2.0 * p * p / 3.0 - 2.0 * p * rho
+    expected_upper = 2.0 * p * p / 3.0 + 2.0 * p * rho + 2.0 * rho * rho
+
+    _assert_interval_close(direct, explicit)
+    assert float(explicit.lower) == pytest.approx(expected_lower)
+    assert float(explicit.upper) == pytest.approx(expected_upper)
+    true_integral = 2.0 * (1.0 - tanh(1.0))
+    assert float(explicit.lower) < true_integral
+    assert float(explicit.upper) > true_integral
 
 def test_affine_cell_integrates_one_dimensional_polynomial_exactly():
     cell = PZIntegrationCell.from_bounds((1.0,), (3.0,))

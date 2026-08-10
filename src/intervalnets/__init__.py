@@ -49,7 +49,19 @@ from .pinn import load_tanh_mlp_checkpoint, sequential_value_jacobian_laplacian
 from .shallow_hybrid import (
     ShallowHybridOneJetResult,
     integrate_shallow_hybrid_onejet_squared,
+    integrate_shallow_hybrid_value_squared,
     shallow_scalar_hybrid_onejet_reverse,
+)
+from .deep_hybrid import (
+    DeepHybridOneJetResult,
+    FactoredPolynomialJacobian,
+    HybridDerivativeFactor,
+    deep_scalar_hybrid_onejet_reverse,
+    integrate_deep_hybrid_onejet_squared,
+    integrate_deep_hybrid_value_squared,
+    integrate_hybrid_onejet_squared,
+    integrate_hybrid_value_squared,
+    scalar_hybrid_onejet_reverse,
 )
 
 __all__ = [
@@ -92,7 +104,17 @@ __all__ = [
     "load_tanh_mlp_checkpoint",
     "ShallowHybridOneJetResult",
     "integrate_shallow_hybrid_onejet_squared",
+    "integrate_shallow_hybrid_value_squared",
     "shallow_scalar_hybrid_onejet_reverse",
+    "HybridDerivativeFactor",
+    "FactoredPolynomialJacobian",
+    "DeepHybridOneJetResult",
+    "deep_scalar_hybrid_onejet_reverse",
+    "scalar_hybrid_onejet_reverse",
+    "integrate_deep_hybrid_onejet_squared",
+    "integrate_deep_hybrid_value_squared",
+    "integrate_hybrid_onejet_squared",
+    "integrate_hybrid_value_squared",
 ]
 
 try:

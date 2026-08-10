@@ -137,6 +137,75 @@ Consequently,
 \end{equation}
 Thus polynomial integration over the reference box is a linear coefficient operation. No range enclosure of the polynomial is needed.
 
+For pointwise residual terms one also needs the absolute monomial moment
+\begin{equation}
+    \mu^{\mathrm{abs}}_\lambda
+    :=\int_\Xi\abs{\alpha^\lambda}\,d\alpha
+    =\prod_{j=1}^s\frac{2}{\lambda_j+1}.
+    \label{eq:absolute-box-moment}
+\end{equation}
+Unlike the signed moment \(\mu_\lambda\), this expression is nonzero for odd
+exponents.  It bounds a pointwise residual product without pretending that
+one fixed approximation-noise value is shared across the domain.
+
+\subsection{Coefficientwise pointwise-residual functional}
+
+Consider a canonical term
+\[
+    c_{\beta,\nu}\alpha^\beta\eta(\alpha)^\nu
+\]
+that contains at least one pointwise residual factor.  Canonicalization means
+that every contribution with the same full exponent \((\beta,\nu)\) has
+already been summed before an absolute value is taken.  The basic sound rule is
+\begin{equation}
+ \left|\int_\Xi
+ c_{\beta,\nu}\alpha^\beta\eta(\alpha)^\nu\,d\alpha\right|
+ \leq
+ \abs{c_{\beta,\nu}}\mu^{\mathrm{abs}}_\beta.
+ \label{eq:coefficientwise-absolute-rule}
+\end{equation}
+This improves the cruder replacement of
+\(\mu^{\mathrm{abs}}_\beta\) by the full measure \(2^s\).
+
+There is a further parity refinement.  If every non-domain uncertainty power
+is even, its product belongs to \([0,1]\).  If every domain power is also even,
+the integrated term lies between zero and
+\(c_{\beta,\nu}\mu^{\mathrm{abs}}_\beta\).  It is represented by
+\begin{equation}
+ m_{\beta,\nu}=\frac12c_{\beta,\nu}\mu^{\mathrm{abs}}_\beta,
+ \qquad
+ r_{\beta,\nu}=\frac12\abs{c_{\beta,\nu}}\mu^{\mathrm{abs}}_\beta.
+ \label{eq:even-pointwise-midpoint-radius}
+\end{equation}
+If all uncertainty powers are even but some domain power is odd, symmetry of
+the box gives equal positive and negative absolute moments, and the sound
+enclosure has zero midpoint and radius
+\begin{equation}
+ r_{\beta,\nu}=\frac12\abs{c_{\beta,\nu}}
+ \mu^{\mathrm{abs}}_\beta.
+ \label{eq:odd-domain-even-noise-radius}
+\end{equation}
+If any relevant uncertainty power is odd, the full symmetric radius in
+\eqref{eq:coefficientwise-absolute-rule} is retained.  Interactions with
+global symbolic variables are refined only when their parity makes the range
+classification unambiguous; otherwise the symmetric rule is used.
+
+This functional is still coefficientwise and therefore generally not sharp.
+For
+\[
+ Q(\alpha,\eta)=\sum_\nu c_\nu(\alpha)\eta^\nu,
+\]
+the theoretical pointwise target is
+\begin{equation}
+ \left[
+ \int_\Xi\min_{\eta\in[-1,1]^q}Q(\alpha,\eta)\,d\alpha,
+ \int_\Xi\max_{\eta\in[-1,1]^q}Q(\alpha,\eta)\,d\alpha
+ \right].
+ \label{eq:sharp-pointwise-target}
+\end{equation}
+Computing this parameterized polynomial optimization problem is outside the
+coefficientwise integration method.
+
 \section{Integration with respect to parameter measure}
 
 Define the polynomial pullback

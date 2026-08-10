@@ -12,7 +12,9 @@ from intervalnets import (
     PZIntegrationCell,
     PolynomialZonotope,
     integrate_pz_onejet_squared,
+    integrate_pz_value_squared,
     integrate_shallow_hybrid_onejet_squared,
+    integrate_shallow_hybrid_value_squared,
     shallow_scalar_hybrid_onejet_reverse,
 )
 from intervalnets.pytorch import pz_value_forward
@@ -63,9 +65,11 @@ def test_shallow_reverse_reuses_preactivation_for_value_and_derivative() -> None
     domain = PolynomialZonotope.from_box(lower, upper)
     result = shallow_scalar_hybrid_onejet_reverse(model, domain)
 
-    input_coefficients = torch.stack(
-        [domain.terms[exponent] for exponent in sorted(domain.terms)]
+    support = sorted(
+        domain.terms,
+        key=lambda exponent: next(i for i, power in enumerate(exponent) if power),
     )
+    input_coefficients = torch.stack([domain.terms[exponent] for exponent in support])
     expected_center = model[0].weight @ domain.center + model[0].bias
     expected_coefficients = model[0].weight @ input_coefficients.T
     expected_radius = torch.sum(torch.abs(expected_coefficients), dim=1)
@@ -124,3 +128,12 @@ def test_shallow_direct_integral_matches_generic_uncompressed_reference() -> Non
     assert float(specialized.lower) / volume <= sampled_squared
     assert sampled_squared <= float(specialized.upper) / volume
     assert sqrt(max(0.0, float(specialized.upper) / volume)) > 0.0
+
+    specialized_l2 = integrate_shallow_hybrid_value_squared(result, cell)
+    reference_l2 = integrate_pz_value_squared(result.final.Y, cell)
+    assert float(specialized_l2.lower) == pytest.approx(
+        float(reference_l2.lower), rel=2e-12, abs=2e-12
+    )
+    assert float(specialized_l2.upper) == pytest.approx(
+        float(reference_l2.upper), rel=2e-12, abs=2e-12
+    )

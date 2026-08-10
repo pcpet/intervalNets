@@ -210,12 +210,12 @@ density nor the reference measure.  Write
 \[
     D:=\{\text{domain indices}\},
     \qquad
-    P:=\{\text{approximation-noise indices}\},
+    P:=\{\text{pointwise approximation-noise indices}\},
 \]
-and let \(R:=\{1,\ldots,p\}\setminus D=P\).  Thus there are no
-non-domain symbolic variables beyond the approximation noise symbols.
-For an exponent \(\gamma\), denote by \(\gamma_D\) and \(\gamma_R\) the
-corresponding restrictions.
+and let \(U:=\{1,\ldots,p\}\setminus D\) collect all non-domain uncertainty
+indices.  Retained global symbolic indices may belong to \(U\setminus P\); in
+the common two-class convention, \(U=P\).  For an exponent \(\gamma\), denote
+by \(\gamma_D\) and \(\gamma_U\) the corresponding restrictions.
 
 For terms containing no approximation noise, define the box moment
 \begin{equation}
@@ -235,27 +235,68 @@ The reference measure is
 \[
     M:=2^d.
 \]
+For pointwise terms, the relevant domain functional is instead the absolute
+box moment
+\begin{equation}
+    \mu^{\mathrm{abs}}_{\gamma_D}
+    :=
+    \int_{[-1,1]^d}\abs{\alpha^{\gamma_D}}\,d\alpha
+    =
+    \prod_{i\in D}\frac{2}{\gamma_i+1}.
+    \label{eq:absolute-moment}
+\end{equation}
+There is no parity cancellation in \eqref{eq:absolute-moment}.
 
-The present \texttt{pointwise\_interval} integration semantics produce
+Canonical coefficients with the same full exponent \(\gamma\) are combined
+before the following rule is applied.  If a term contains pointwise
+approximation noise, let \(m_\gamma\) and \(r_\gamma\) denote its integrated
+midpoint and symmetric radius.  With \(U=\{1,\ldots,p\}\setminus D\), the
+parity-aware coefficientwise rule is
+\begin{equation}
+ (m_\gamma,r_\gamma)
+ =J_X\begin{cases}
+ \left(\frac12q_\gamma\mu^{\mathrm{abs}}_{\gamma_D},
+       \frac12\abs{q_\gamma}\mu^{\mathrm{abs}}_{\gamma_D}\right),
+ &\gamma_i\text{ even for every }i\in U
+  \text{ and every }i\in D,\\[2mm]
+ \left(0,
+       \frac12\abs{q_\gamma}\mu^{\mathrm{abs}}_{\gamma_D}\right),
+ &\gamma_i\text{ even for every }i\in U
+  \text{ and some }\gamma_i, i\in D,\text{ is odd},\\[2mm]
+ \left(0,
+       \abs{q_\gamma}\mu^{\mathrm{abs}}_{\gamma_D}\right),
+ &\text{otherwise}.
+ \end{cases}
+ \label{eq:pointwise-parity-rule}
+\end{equation}
+The first case uses that the entire monomial lies in \([0,1]\).  In the
+second case the uncertainty factor lies in \([0,1]\), while the positive and
+negative parts of the odd domain monomial have equal integral.  The last case
+retains the symmetric \([-1,1]\) bound because at least one non-domain
+uncertainty power is odd.  If a retained global symbolic factor cannot be
+classified safely, an implementation must use the last case.
+
+The improved \texttt{pointwise\_interval} semantics therefore produce
 \begin{align}
     b_\nu
     &:=
     J_X
-    \sum_{\substack{\gamma:\,\gamma_R=\nu\\
+    \sum_{\substack{\gamma:\,\gamma_U=\nu\\
                     \gamma_i=0\ \forall i\in P}}
     q_\gamma\mu_{\gamma_D},
     \label{eq:retained-coefficients}\\
+    M_{\mathrm{app}}
+    &:=\sum_{\substack{\gamma:\\
+                    \exists i\in P:\ \gamma_i>0}}m_\gamma,
+    &
     R_{\mathrm{app}}
-    &:=
-    J_X M
-    \sum_{\substack{\gamma:\\
-                    \exists i\in P:\ \gamma_i>0}}
-    \abs{q_\gamma}.
+    &:=\sum_{\substack{\gamma:\\
+                    \exists i\in P:\ \gamma_i>0}}r_\gamma.
     \label{eq:approximation-radius}
 \end{align}
 Here \(q_0\) may be viewed as the coefficient with zero exponent, so its
 contribution is included in \(b_0\).  Under the two-class convention,
-\(\gamma_i=0\) for every \(i\in P\) implies \(\gamma_R=0\); hence the
+\(\gamma_i=0\) for every \(i\in P\) implies \(\gamma_U=0\); hence the
 retained object is the scalar \(B=b_0\).  The more general coefficient-map
 notation is kept below because it matches the implementation.
 It is finally interval-enclosed as
@@ -264,8 +305,8 @@ It is finally interval-enclosed as
     \mathcal{I}_{\mathrm{current}}(Q)
     =
     \left[
-        b_0-\sum_{\nu\neq0}\abs{b_\nu}-R_{\mathrm{app}},
-        b_0+\sum_{\nu\neq0}\abs{b_\nu}+R_{\mathrm{app}}
+        b_0+M_{\mathrm{app}}-\sum_{\nu\neq0}\abs{b_\nu}-R_{\mathrm{app}},
+        b_0+M_{\mathrm{app}}+\sum_{\nu\neq0}\abs{b_\nu}+R_{\mathrm{app}}
     \right],
     }
     \label{eq:current-functional}
@@ -273,10 +314,11 @@ It is finally interval-enclosed as
 with outward rounding in an implementation.
 
 \begin{warning}
-For an approximation-noise term, the current rule uses the full reference
-measure \(M\), not the possibly vanishing signed moment
+For an approximation-noise term, the rule uses the absolute moment
+\(\mu^{\mathrm{abs}}_{\gamma_D}\), not the possibly vanishing signed moment
 \(\mu_{\gamma_D}\).  Thus an odd domain factor multiplying approximation
-noise must not be discarded by parity.
+noise is retained.  The rule remains coefficientwise and is generally not
+the sharp pointwise integral enclosure.
 \end{warning}
 
 \section{First symmetry: weighted upper-triangular Hessian coordinates}
@@ -862,8 +904,11 @@ Use
     z(\alpha,\eta)=\alpha+\eta.
 \]
 Its square contains \(2\alpha\eta\).  The ordinary domain moment of this term
-is zero, but the current approximation-noise semantics assign it a nonzero interval
-radius.  The direct implementation must match the old result.
+is zero, but the pointwise semantics assign it a nonzero interval radius using
+\(\int_{-1}^1\abs{\alpha}\,d\alpha=1\), rather than the total measure two.
+The \(\eta^2\) term is nonnegative and therefore receives the one-sided
+midpoint/radius reduction.  The direct implementation must match the explicit
+squared-integrand result after both apply these rules.
 
 \subsection{Hessian symmetry}
 

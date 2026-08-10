@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from itertools import product
 from math import inf, isfinite, nextafter, prod, sqrt
 from numbers import Real
+from operator import index as integer_index
 from typing import Any, Literal, Sequence
 
 from .interval import Interval
@@ -183,6 +184,50 @@ def _is_pointwise_kind(kind: str) -> bool:
     return kind in POINTWISE_RESIDUAL_KINDS
 
 
+def box_monomial_absolute_moment(exponents: Sequence[int]) -> float:
+    """Exact integral of ``abs(alpha**exponents)`` over ``[-1, 1]^d``.
+
+    Unlike :func:`box_monomial_moment`, odd powers do not cancel.  Every
+    exponent must be a non-negative integer.
+    """
+
+    normalized: list[int] = []
+    for exponent in exponents:
+        try:
+            power = integer_index(exponent)
+        except TypeError as error:
+            raise ValueError("monomial exponents must be non-negative integers.") from error
+        if power < 0:
+            raise ValueError("monomial exponents must be non-negative integers.")
+        normalized.append(power)
+    return prod(2.0 / (power + 1.0) for power in normalized)
+
+
+def _pointwise_term_midpoint_radius(
+    exponent: Exponent,
+    coefficient: Any,
+    domain_indices: Sequence[int],
+    non_domain_indices: Sequence[int],
+    *,
+    density: float = 1.0,
+) -> tuple[Any, Any]:
+    """Integrate one canonical pointwise term by absolute moments and parity."""
+
+    domain_exponent = tuple(exponent[index] for index in domain_indices)
+    absolute_moment = density * box_monomial_absolute_moment(domain_exponent)
+    all_uncertainty_even = all(exponent[index] % 2 == 0 for index in non_domain_indices)
+    if not all_uncertainty_even:
+        return _zero_like(coefficient), _mul_coeff(_abs_coeff(coefficient), absolute_moment)
+
+    half_moment = 0.5 * absolute_moment
+    if all(power % 2 == 0 for power in domain_exponent):
+        return (
+            _mul_coeff(coefficient, half_moment),
+            _mul_coeff(_abs_coeff(coefficient), half_moment),
+        )
+    return _zero_like(coefficient), _mul_coeff(_abs_coeff(coefficient), half_moment)
+
+
 def integrate_pz_over_domain(
     zonotope: PolynomialZonotope,
     domain_indices: Sequence[int] | None = None,
@@ -190,7 +235,12 @@ def integrate_pz_over_domain(
     mode: IntegrationMode = "pointwise_interval",
     volume: float | None = None,
 ) -> IntegratedPZResult:
-    """Integrate domain variables while preserving pointwise residual semantics."""
+    """Integrate domain variables while preserving pointwise residual semantics.
+
+    ``volume`` is the physical measure represented by the reference box.  If
+    supplied, every reference-box moment is multiplied by the one constant
+    density ``volume / 2**len(domain_indices)`` exactly once.
+    """
 
     if mode not in ("pointwise_interval", "symbolic"):
         raise ValueError("mode must be 'pointwise_interval' or 'symbolic'.")
@@ -203,9 +253,11 @@ def integrate_pz_over_domain(
     domain_set = set(indices)
     retained_indices = tuple(index for index in range(zonotope.num_noise) if index not in domain_set)
     retained_kinds = tuple(zonotope.noise_kinds[index] for index in retained_indices)
-    measure = float(volume) if volume is not None else float(2 ** len(indices))
+    reference_measure = float(2 ** len(indices))
+    measure = float(volume) if volume is not None else reference_measure
     if measure < 0.0:
         raise ValueError("volume/measure must be non-negative.")
+    density = measure / reference_measure
 
     center = _mul_coeff(zonotope.center, measure)
     terms: dict[Exponent, Any] = {}
@@ -216,14 +268,22 @@ def integrate_pz_over_domain(
     for exponent, coeff in zonotope.terms.items():
         has_pointwise = any(exponent[index] for index in pointwise_indices)
         if mode == "pointwise_interval" and has_pointwise:
-            radius = _add_coeff(radius, _mul_coeff(_abs_coeff(coeff), measure))
+            midpoint, term_radius = _pointwise_term_midpoint_radius(
+                exponent,
+                coeff,
+                indices,
+                retained_indices,
+                density=density,
+            )
+            center = _add_coeff(center, midpoint)
+            radius = _add_coeff(radius, term_radius)
             continue
 
         moment = box_monomial_moment(tuple(exponent[index] for index in indices))
         if moment == 0.0:
             continue
         retained_exponent = tuple(exponent[index] for index in retained_indices)
-        integrated_coeff = _mul_coeff(coeff, moment)
+        integrated_coeff = _mul_coeff(coeff, density * moment)
         if retained_exponent == zero_retained:
             center = _add_coeff(center, integrated_coeff)
         else:
@@ -236,6 +296,8 @@ def integrate_pz_over_domain(
         metadata={
             "mode": mode,
             "domain_indices": indices,
+            "reference_measure": reference_measure,
+            "constant_density": density,
             "pointwise_residual_indices": pointwise_indices,
             "pointwise_residual_kinds": tuple(zonotope.noise_kinds[index] for index in pointwise_indices),
         },
@@ -412,12 +474,17 @@ def _integrate_numpy_twojet_square(
                 * (
                     center_square
                     + diagonal[support_domain].sum() / 3.0
+                    + 0.5 * diagonal[support_pointwise].sum()
                 )
             )
 
-            pointwise_radius_unscaled = float(
-                np.abs(2.0 * np.asarray(center_cross)[support_pointwise]).sum()
-                + np.abs(diagonal[support_pointwise]).sum()
+            pointwise_radius = float(
+                scale
+                * measure
+                * (
+                    np.abs(2.0 * np.asarray(center_cross)[support_pointwise]).sum()
+                    + 0.5 * np.abs(diagonal[support_pointwise]).sum()
+                )
             )
             symbolic_radius_unscaled = float(
                 np.abs(2.0 * np.asarray(center_cross)[support_symbolic]).sum()
@@ -434,16 +501,26 @@ def _integrate_numpy_twojet_square(
                 support_symbolic[row_indices]
                 & support_symbolic[column_indices]
             )
-            pointwise_radius_unscaled += float(
-                np.abs(off_diagonal[pair_pointwise]).sum()
+            pair_has_domain = (
+                support_domain[row_indices]
+                | support_domain[column_indices]
+            )
+            pointwise_pair_moments = np.where(
+                pair_has_domain[pair_pointwise],
+                0.5 * measure,
+                measure,
+            )
+            pointwise_radius += float(
+                scale
+                * np.sum(
+                    np.abs(off_diagonal[pair_pointwise])
+                    * pointwise_pair_moments
+                )
             )
             symbolic_radius_unscaled += float(
                 np.abs(off_diagonal[pair_symbolic]).sum()
             )
 
-            pointwise_radius = float(
-                scale * measure * pointwise_radius_unscaled
-            )
             symbolic_radius = float(
                 scale * measure * symbolic_radius_unscaled
             )
@@ -549,7 +626,48 @@ def _integrate_numpy_twojet_square(
         pointwise_mask = np.any(canonical_exponents[:, pointwise_indices] != 0, axis=1)
     else:
         pointwise_mask = np.zeros(len(canonical_exponents), dtype=bool)
-    radius = float(scale * measure * np.abs(canonical_coefficients[pointwise_mask]).sum())
+    pointwise_exponents = canonical_exponents[pointwise_mask]
+    pointwise_coefficients = canonical_coefficients[pointwise_mask]
+    if len(pointwise_coefficients):
+        if domain_indices:
+            pointwise_domain_exponents = pointwise_exponents[:, domain_indices]
+            pointwise_absolute_moments = np.prod(
+                2.0 / (pointwise_domain_exponents + 1.0), axis=1
+            )
+            pointwise_domain_even = np.all(
+                pointwise_domain_exponents % 2 == 0, axis=1
+            )
+        else:
+            pointwise_absolute_moments = np.ones(len(pointwise_coefficients), dtype=float)
+            pointwise_domain_even = np.ones(len(pointwise_coefficients), dtype=bool)
+        if retained_indices:
+            pointwise_uncertainty_even = np.all(
+                pointwise_exponents[:, retained_indices] % 2 == 0, axis=1
+            )
+        else:
+            pointwise_uncertainty_even = np.ones(len(pointwise_coefficients), dtype=bool)
+        pointwise_half_mask = pointwise_uncertainty_even
+        pointwise_one_sided = pointwise_uncertainty_even & pointwise_domain_even
+        radius_factors = np.where(pointwise_half_mask, 0.5, 1.0)
+        radius = float(
+            scale
+            * np.sum(
+                np.abs(pointwise_coefficients)
+                * pointwise_absolute_moments
+                * radius_factors
+            )
+        )
+        pointwise_center_shift = float(
+            0.5
+            * scale
+            * np.sum(
+                pointwise_coefficients[pointwise_one_sided]
+                * pointwise_absolute_moments[pointwise_one_sided]
+            )
+        )
+    else:
+        radius = 0.0
+        pointwise_center_shift = 0.0
 
     exact_exponents = canonical_exponents[~pointwise_mask]
     exact_coefficients = canonical_coefficients[~pointwise_mask]
@@ -603,10 +721,10 @@ def _integrate_numpy_twojet_square(
             if encoded_retained
             else np.all(canonical_retained == 0, axis=1)
         )
-        center = float(canonical_integrated[zero_mask].sum())
+        center = float(canonical_integrated[zero_mask].sum()) + pointwise_center_shift
         symbolic_radius = float(np.abs(canonical_integrated[~zero_mask]).sum())
     else:
-        center = float(integrated_coefficients.sum())
+        center = float(integrated_coefficients.sum()) + pointwise_center_shift
         symbolic_radius = 0.0
         canonical_retained = np.zeros((1, 0), dtype=np.int64)
         canonical_integrated = np.asarray((center,), dtype=float)
@@ -803,8 +921,15 @@ def integrate_pz_twojet_squared(
 
     center = retained.pop(zero_retained, _zero_like(centers[0]))
     radius = _zero_like(center)
-    for coefficient in pointwise.values():
-        radius = _add_coeff(radius, _mul_coeff(_abs_coeff(coefficient), measure))
+    for exponent, coefficient in pointwise.items():
+        midpoint, term_radius = _pointwise_term_midpoint_radius(
+            exponent,
+            coefficient,
+            domain_indices,
+            retained_indices,
+        )
+        center = _add_coeff(center, midpoint)
+        radius = _add_coeff(radius, term_radius)
     result = IntegratedPZResult(
         polynomial=PolynomialZonotope(center, retained, num_noise=len(retained_indices), noise_kinds=retained_kinds),
         interval_radius=radius,

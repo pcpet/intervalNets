@@ -82,15 +82,20 @@ def _shallow_layers(module: Any):
 def _affine_domain_coefficients(x: PolynomialZonotope) -> tuple[list[tuple[int, ...]], Any]:
     if len(x.shape) != 1:
         raise ValueError("The shallow reverse path requires a flat input PZ.")
-    support = sorted(x.terms)
-    if not support:
-        return support, torch.empty((0, x.shape[0]), dtype=x.center.dtype, device=x.center.device)
-    for exponent in support:
+    def active_noise_index(exponent: tuple[int, ...]) -> int:
         active = [index for index, power in enumerate(exponent) if power]
         if len(active) != 1 or exponent[active[0]] != 1:
             raise ValueError("The shallow reverse path requires an affine input PZ.")
         if x.noise_kinds[active[0]] != "domain":
             raise ValueError("Every active input symbol must be a domain noise symbol.")
+        return active[0]
+
+    # The dense coefficient columns and external noise vectors both follow
+    # noise-index order.  Lexicographic exponent order reverses the standard
+    # basis for boxes (e.g. (0,1) precedes (1,0)) and breaks exact evaluation.
+    support = sorted(x.terms, key=active_noise_index)
+    if not support:
+        return support, torch.empty((0, x.shape[0]), dtype=x.center.dtype, device=x.center.device)
     return support, torch.stack([x.terms[exponent] for exponent in support])
 
 
@@ -287,7 +292,7 @@ def shallow_scalar_hybrid_onejet_reverse(
     else:
         quadratic_slopes = z_coefficients.new_empty((0, len(support)))
         quadratic_vectors = z_coefficients.new_empty((0, input_dim))
-        gradient_quadratic = z_coefficients.new_empty((len(pair_rows), input_dim))
+        gradient_quadratic = z_coefficients.new_zeros((len(pair_rows), input_dim))
 
     derivative_error_generators = (weight_out * radii).unsqueeze(1) * weight_in
     domain_coefficients = torch.cat((gradient_linear, gradient_quadratic), dim=0)
@@ -362,22 +367,31 @@ def shallow_scalar_hybrid_onejet_reverse(
 
 
 def _value_squared_components(result: ShallowHybridOneJetResult) -> tuple[Any, Any]:
-    """Return normalized center/radius for the scalar value square."""
+    """Return the refined normalized center/radius for the scalar value square."""
 
     center = result.value_center
     linear = result.value_domain_coefficients
     errors = result.value_error_generators
-    normalized_center = center.square() + torch.sum(linear.square()) / 3.0
+    # eta_i**2 is pointwise but non-negative, hence it contributes the
+    # one-sided interval [0, e_i**2].  Store this as midpoint plus radius.
+    error_diagonal = errors.square()
+    normalized_center = (
+        center.square()
+        + torch.sum(linear.square()) / 3.0
+        + 0.5 * torch.sum(error_diagonal)
+    )
 
-    domain_with_center = torch.cat((center.reshape(1), linear))
-    domain_error_cross = 2.0 * domain_with_center[:, None] * errors[None, :]
+    center_error_cross = 2.0 * center * errors
+    # E|alpha_j| = 1/2, so the coefficient 2*l_j*e_i has radius |l_j*e_i|.
+    domain_error_cross = linear[:, None] * errors[None, :]
     error_gram = errors[:, None] * errors[None, :]
     off_rows, off_columns = torch.triu_indices(
         len(errors), len(errors), offset=1, device=errors.device
     )
     normalized_radius = (
-        torch.sum(torch.abs(domain_error_cross))
-        + torch.sum(torch.abs(torch.diagonal(error_gram)))
+        torch.sum(torch.abs(center_error_cross))
+        + torch.sum(torch.abs(domain_error_cross))
+        + 0.5 * torch.sum(torch.abs(torch.diagonal(error_gram)))
         + 2.0 * torch.sum(torch.abs(error_gram[off_rows, off_columns]))
     )
     return normalized_center, normalized_radius
@@ -413,20 +427,76 @@ def _gradient_squared_components(
         )
 
     # Canonicalize each alpha^beta eta_i coefficient by one dense contraction
-    # before taking absolute values.  The center is the beta=0 row.
+    # before taking absolute values.  The rows are constant, linear, then the
+    # upper-triangular quadratic domain monomials.  Their normalized absolute
+    # moments are 1, 1/2, 1/3 (diagonal), and 1/4 (off diagonal).
     domain_with_center = torch.cat((center.unsqueeze(0), coefficients), dim=0)
     domain_error_cross = 2.0 * (domain_with_center @ errors.T)
+    pair_rows, pair_columns = torch.triu_indices(
+        input_dim, input_dim, device=center.device
+    )
+    quadratic_absolute_moments = torch.where(
+        pair_rows == pair_columns,
+        torch.full_like(pair_rows, 1.0 / 3.0, dtype=center.dtype),
+        torch.full_like(pair_rows, 1.0 / 4.0, dtype=center.dtype),
+    )
+    absolute_moments = torch.cat(
+        (
+            torch.ones(1, dtype=center.dtype, device=center.device),
+            torch.full(
+                (input_dim,), 0.5, dtype=center.dtype, device=center.device
+            ),
+            quadratic_absolute_moments,
+        )
+    )
     error_gram = errors @ errors.T
     diagonal = torch.diagonal(error_gram)
     off_rows, off_columns = torch.triu_indices(
         len(errors), len(errors), offset=1, device=errors.device
     )
     normalized_radius = (
-        torch.sum(torch.abs(domain_error_cross))
-        + torch.sum(torch.abs(diagonal))
+        torch.sum(torch.abs(domain_error_cross) * absolute_moments.unsqueeze(1))
+        + 0.5 * torch.sum(torch.abs(diagonal))
         + 2.0 * torch.sum(torch.abs(error_gram[off_rows, off_columns]))
     )
+    normalized_center = normalized_center + 0.5 * torch.sum(diagonal)
     return normalized_center, normalized_radius
+
+
+def _scaled_interval_from_components(
+    center: Any,
+    radius: Any,
+    cell: PZIntegrationCell,
+    *,
+    output: Literal["interval", "pz"],
+):
+    if output not in {"interval", "pz"}:
+        raise ValueError("output must be either 'interval' or 'pz'.")
+    if not isinstance(cell.volume, (int, float)):
+        raise NotImplementedError("The shallow direct integral requires a scalar cell volume.")
+    integrated_center = float(cell.volume) * float(center.detach().cpu().item())
+    integrated_radius = float(cell.volume) * float(radius.detach().cpu().item())
+    total = Interval.from_bounds(
+        nextafter(integrated_center - integrated_radius, -inf),
+        nextafter(integrated_center + integrated_radius, inf),
+    )
+    if output == "interval":
+        return total
+    return PolynomialZonotope.constant(total.midpoint).add_independent_error(
+        total.radius, kind="global_symbolic_residual"
+    )
+
+
+def integrate_shallow_hybrid_value_squared(
+    result: ShallowHybridOneJetResult,
+    cell: PZIntegrationCell,
+    *,
+    output: Literal["interval", "pz"] = "interval",
+):
+    """Direct refined pointwise integral of ``|Y|^2``."""
+
+    center, radius = _value_squared_components(result)
+    return _scaled_interval_from_components(center, radius, cell, output=output)
 
 
 def integrate_shallow_hybrid_onejet_squared(
@@ -443,10 +513,6 @@ def integrate_shallow_hybrid_onejet_squared(
     products and use the established pointwise-noise integration semantics.
     """
 
-    if output not in {"interval", "pz"}:
-        raise ValueError("output must be either 'interval' or 'pz'.")
-    if not isinstance(cell.volume, (int, float)):
-        raise NotImplementedError("The shallow direct integral requires a scalar cell volume.")
     value_center, value_radius = _value_squared_components(result)
     gradient_center, gradient_radius = _gradient_squared_components(result)
 
@@ -457,20 +523,6 @@ def integrate_shallow_hybrid_onejet_squared(
     # integrated-square algorithm.
     normalized_center = value_center + gradient_center
     normalized_radius = value_radius + gradient_radius
-    integrated_center = float(cell.volume) * float(
-        normalized_center.detach().cpu().item()
-    )
-    integrated_radius = float(cell.volume) * float(
-        normalized_radius.detach().cpu().item()
-    )
-    total = Interval.from_bounds(
-        nextafter(integrated_center - integrated_radius, -inf),
-        nextafter(integrated_center + integrated_radius, inf),
-    )
-    if output == "interval":
-        return total
-    center = total.midpoint
-    radius = total.radius
-    return PolynomialZonotope.constant(center).add_independent_error(
-        radius, kind="global_symbolic_residual"
+    return _scaled_interval_from_components(
+        normalized_center, normalized_radius, cell, output=output
     )

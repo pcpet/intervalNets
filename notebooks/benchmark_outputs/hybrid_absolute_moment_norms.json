@@ -1,0 +1,121 @@
+[
+  {
+    "checkpoint": "notebooks/checkpoints/pinn_100d_poisson_shallow_300.pt",
+    "architecture": [
+      100,
+      300,
+      1
+    ],
+    "physical_domain_volume": 1.267650600228237e-70,
+    "integration_semantics": "pointwise_residual_absolute_moments_parity",
+    "l2": {
+      "squared_lower": 0.0,
+      "squared_upper": 9.197848680735796e-70,
+      "squared_absolute_width": 9.197848680735796e-70,
+      "squared_relative_width": 1.0,
+      "lower": 0.0,
+      "upper": 3.0327955224076346e-35,
+      "absolute_width": 3.0327955224076346e-35,
+      "relative_width": 1.0,
+      "domain_volume_normalized_squared_lower": 0.0,
+      "domain_volume_normalized_squared_upper": 7.255823236371086,
+      "domain_volume_normalized_squared_width": 7.255823236371086,
+      "domain_volume_normalized_lower": 0.0,
+      "domain_volume_normalized_upper": 2.6936635343656206,
+      "domain_volume_normalized_width": 2.6936635343656206,
+      "sampled_domain_volume_normalized": 0.37534850060946906
+    },
+    "w12": {
+      "squared_lower": 0.0,
+      "squared_upper": 2.514338731349524e-69,
+      "squared_absolute_width": 2.514338731349524e-69,
+      "squared_relative_width": 1.0,
+      "lower": 0.0,
+      "upper": 5.014318230177981e-35,
+      "absolute_width": 5.014318230177981e-35,
+      "relative_width": 1.0,
+      "domain_volume_normalized_squared_lower": 0.0,
+      "domain_volume_normalized_squared_upper": 19.834635276446242,
+      "domain_volume_normalized_squared_width": 19.834635276446242,
+      "domain_volume_normalized_lower": 0.0,
+      "domain_volume_normalized_upper": 4.453609241552995,
+      "domain_volume_normalized_width": 4.453609241552995,
+      "sampled_domain_volume_normalized": 2.502463016256655
+    },
+    "timings_seconds_median": {
+      "onejet_construction": 0.4144969779999883,
+      "l2_integration": 0.0007419970002047194,
+      "w12_integration": 0.014756518000012875,
+      "construction_plus_l2_plus_w12": 0.43423196599997027
+    },
+    "sample_soundness_violations": {
+      "value": 0,
+      "jacobian_entries": 0
+    },
+    "quadratic_neurons_per_layer": [
+      4
+    ]
+  },
+  {
+    "checkpoint": "notebooks/checkpoints/pinn_100d_poisson.pt",
+    "architecture": [
+      100,
+      50,
+      50,
+      50,
+      1
+    ],
+    "physical_domain_volume": 1.267650600228237e-70,
+    "integration_semantics": "pointwise_residual_absolute_moments_parity",
+    "l2": {
+      "squared_lower": 0.0,
+      "squared_upper": 6.94805877613216e-70,
+      "squared_absolute_width": 6.94805877613216e-70,
+      "squared_relative_width": 1.0,
+      "lower": 0.0,
+      "upper": 2.6359170654882446e-35,
+      "absolute_width": 2.6359170654882446e-35,
+      "relative_width": 1.0,
+      "domain_volume_normalized_squared_lower": 0.0,
+      "domain_volume_normalized_squared_upper": 5.481051935668378,
+      "domain_volume_normalized_squared_width": 5.481051935668378,
+      "domain_volume_normalized_lower": 0.0,
+      "domain_volume_normalized_upper": 2.341164653685934,
+      "domain_volume_normalized_width": 2.341164653685934,
+      "sampled_domain_volume_normalized": 0.3751917686933238
+    },
+    "w12": {
+      "squared_lower": 0.0,
+      "squared_upper": 1.0919842252396966e-68,
+      "squared_absolute_width": 1.0919842252396966e-68,
+      "squared_relative_width": 1.0,
+      "lower": 0.0,
+      "upper": 1.0449804903631916e-34,
+      "absolute_width": 1.0449804903631916e-34,
+      "relative_width": 1.0,
+      "domain_volume_normalized_squared_lower": 0.0,
+      "domain_volume_normalized_squared_upper": 86.14236644096472,
+      "domain_volume_normalized_squared_width": 86.14236644096472,
+      "domain_volume_normalized_lower": 0.0,
+      "domain_volume_normalized_upper": 9.281291205482388,
+      "domain_volume_normalized_width": 9.281291205482388,
+      "sampled_domain_volume_normalized": 2.5046520721968255
+    },
+    "timings_seconds_median": {
+      "onejet_construction": 0.017707030000110535,
+      "l2_integration": 0.00021356500019464875,
+      "w12_integration": 0.00019914399990739184,
+      "construction_plus_l2_plus_w12": 0.018125288000192086
+    },
+    "sample_soundness_violations": {
+      "value": 0,
+      "jacobian_entries": 0
+    },
+    "quadratic_neurons_per_layer": [
+      1,
+      6,
+      3
+    ],
+    "deep_w12_integration_note": "absolute moments and parity are applied after the exact factored Jacobian is collapsed to its affine core plus certified pointwise remainder"
+  }
+]
