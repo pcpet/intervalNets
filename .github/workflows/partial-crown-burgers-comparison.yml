@@ -1,0 +1,133 @@
+name: partial-CROWN Burgers comparison
+
+on:
+  push:
+    branches:
+      - partial-crown-burgers-comparison
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "quick validates the pipeline; standard trains and certifies more deeply"
+        required: true
+        default: quick
+        type: choice
+        options:
+          - quick
+          - standard
+      budgets:
+        description: "Optional comma-separated cell-evaluation budgets (1+4k are exact)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      OUTPUT_DIR: notebooks/benchmark_outputs/partial_crown_burgers
+      CHECKPOINT: notebooks/benchmark_outputs/partial_crown_burgers/replacement_burgers.pt
+      PARTIAL_CROWN_DIR: ${{ github.workspace }}/.external/partial_crown
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[torch]' scipy tqdm gurobipy nbformat nbclient nbconvert matplotlib pandas
+
+      - name: Fetch pinned partial-CROWN source
+        run: |
+          git clone https://github.com/fgirbal/partial_crown.git "$PARTIAL_CROWN_DIR"
+          git -C "$PARTIAL_CROWN_DIR" checkout 161377048ee92b4c09faf5ce41628168c7e01556
+          test "$(git -C "$PARTIAL_CROWN_DIR" rev-parse HEAD)" = "161377048ee92b4c09faf5ce41628168c7e01556"
+
+      - name: Select experiment budget
+        id: config
+        shell: bash
+        run: |
+          if [[ "${{ inputs.profile || 'quick' }}" == "standard" ]]; then
+            echo "adam_steps=3000" >> "$GITHUB_OUTPUT"
+            echo "lbfgs_steps=500" >> "$GITHUB_OUTPUT"
+            echo "collocation_points=4096" >> "$GITHUB_OUTPUT"
+            echo "default_budgets=1,5,17,65,257" >> "$GITHUB_OUTPUT"
+            echo "grid_size=301" >> "$GITHUB_OUTPUT"
+          else
+            echo "adam_steps=800" >> "$GITHUB_OUTPUT"
+            echo "lbfgs_steps=50" >> "$GITHUB_OUTPUT"
+            echo "collocation_points=2048" >> "$GITHUB_OUTPUT"
+            echo "default_budgets=1,5,17" >> "$GITHUB_OUTPUT"
+            echo "grid_size=151" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Train deterministic replacement PINN
+        run: |
+          python -m intervalnets.burgers_comparison train \
+            --output "$CHECKPOINT" \
+            --seed 0 \
+            --adam-steps "${{ steps.config.outputs.adam_steps }}" \
+            --lbfgs-steps "${{ steps.config.outputs.lbfgs_steps }}" \
+            --collocation-points "${{ steps.config.outputs.collocation_points }}"
+
+      - name: Run matched certification comparison
+        shell: bash
+        run: |
+          requested="${{ inputs.budgets || '' }}"
+          if [[ -z "$requested" ]]; then
+            requested="${{ steps.config.outputs.default_budgets }}"
+          fi
+          python -m intervalnets.burgers_comparison compare \
+            --checkpoint "$CHECKPOINT" \
+            --output-dir "$OUTPUT_DIR" \
+            --partial-crown-dir "$PARTIAL_CROWN_DIR" \
+            --budgets "$requested" \
+            --sample-grid-size "${{ steps.config.outputs.grid_size }}"
+
+      - name: Execute comparison notebook
+        run: |
+          jupyter nbconvert \
+            --to notebook \
+            --execute notebooks/partial_crown_burgers_comparison.ipynb \
+            --ExecutePreprocessor.timeout=600 \
+            --output-dir "$OUTPUT_DIR" \
+            --output partial_crown_burgers_comparison_executed.ipynb
+
+      - name: Record runner provenance
+        run: |
+          python - <<'PY'
+          import json, os, platform, sys, torch
+          from pathlib import Path
+          output = Path(os.environ["OUTPUT_DIR"])
+          payload = {
+              "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+              "github_sha": os.environ.get("GITHUB_SHA"),
+              "runner_os": os.environ.get("RUNNER_OS"),
+              "machine": platform.machine(),
+              "processor": platform.processor(),
+              "python": sys.version,
+              "torch": torch.__version__,
+              "torch_threads": torch.get_num_threads(),
+          }
+          (output / "runner_provenance.json").write_text(json.dumps(payload, indent=2) + "\n")
+          PY
+
+      - name: Upload checkpoint, results, and executed notebook
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: partial-crown-burgers-${{ inputs.profile || 'quick' }}-${{ github.run_id }}
+          path: notebooks/benchmark_outputs/partial_crown_burgers/
+          if-no-files-found: error
+          retention-days: 30
