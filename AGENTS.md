@@ -19,6 +19,7 @@ Inspect the existing implementation and tests before editing it. Use the documen
 - `docs/affine_tanh_enclosures.tex`: certified affine enclosures for `tanh`, `tanh'`, and `tanh''`;
 - `docs/certified_polynomial_zonotope_integration.tex`: geometric PZ integration and approximation-noise semantics;
 - `docs/direct_integrated_twojet_squares.tex`: direct certified integration of squared PZ two-jets without constructing the squared integrand.
+- `docs/dependency_preserving_graph_hilbert_integration.tex`: immutable graph moments, certified Hilbert compression, reverse-triangle bounds, and Neumann dual witnesses for scalable positive lower certificates.
 - `docs/diagnostics_and_metrics_glossary.tex`: ground-truth metric definitions, aggregation rules, canonical CSV/JSON schemas, and mandatory mini- and medium-benchmark outputs; consult this before adding or changing benchmark diagnostics or output columns.
 
 The current source code and tests define the implemented public behavior. When a design document and the implementation differ, identify the discrepancy explicitly instead of silently changing semantics.

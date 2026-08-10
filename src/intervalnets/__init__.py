@@ -63,6 +63,21 @@ from .deep_hybrid import (
     integrate_hybrid_value_squared,
     scalar_hybrid_onejet_reverse,
 )
+from .graph_hilbert import (
+    ArithmeticGraph,
+    DualWitnessCertificate,
+    GraphNode,
+    GraphNormCertificate,
+    HilbertGradientCertificate,
+    HilbertLayerDiagnostic,
+    HilbertValueCertificate,
+    SparseReferenceMomentBackend,
+    build_factored_jacobian_graph,
+    build_hilbert_value_certificate,
+    build_hilbert_gradient_certificate,
+    certify_hybrid_graph_norms,
+    neumann_polynomial_witness,
+)
 
 __all__ = [
     "Interval",
@@ -115,6 +130,19 @@ __all__ = [
     "integrate_deep_hybrid_value_squared",
     "integrate_hybrid_onejet_squared",
     "integrate_hybrid_value_squared",
+    "GraphNode",
+    "ArithmeticGraph",
+    "SparseReferenceMomentBackend",
+    "HilbertLayerDiagnostic",
+    "HilbertValueCertificate",
+    "DualWitnessCertificate",
+    "GraphNormCertificate",
+    "HilbertGradientCertificate",
+    "build_factored_jacobian_graph",
+    "build_hilbert_value_certificate",
+    "build_hilbert_gradient_certificate",
+    "neumann_polynomial_witness",
+    "certify_hybrid_graph_norms",
 ]
 
 try:

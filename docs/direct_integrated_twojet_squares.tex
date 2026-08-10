@@ -992,4 +992,13 @@ before their absolute values are taken.  Thus the algorithm avoids the squared
 coefficient aggregation.  This is precisely what distinguishes the method
 from a faster but potentially looser pairwise-radius bound.
 
+For deep graphs where the exact canonical support is itself prohibitive, the
+separate note
+\texttt{dependency\_preserving\_graph\_hilbert\_integration.tex} specifies
+the implemented certified-compression backend.  That method keeps an immutable
+shared arithmetic graph, validates small cases against exact sparse moments,
+and replaces large intermediate fields by an orthogonal affine projection plus
+an explicit $L^2$ remainder.  It is not claimed to reproduce this direct
+coefficientwise functional exactly.
+
 \end{document}
