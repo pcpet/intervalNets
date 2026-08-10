@@ -1,0 +1,4 @@
+run_id,quantity,n_alpha,n_eta,n_monomials,n_mixed_monomials,max_degree,n_coefficients,status
+pinn100d_shallow300_medium_hybrid_pz_uncompressed_reverse_symbolic,Y,100.0,600.0,400.0,0.0,1.0,400.0,ok
+pinn100d_shallow300_medium_hybrid_pz_uncompressed_reverse_symbolic,J,100.0,600.0,5450.0,0.0,2.0,545000.0,ok
+pinn100d_shallow300_medium_hybrid_pz_uncompressed_reverse_symbolic,H,NA,NA,NA,NA,NA,NA,not_implemented

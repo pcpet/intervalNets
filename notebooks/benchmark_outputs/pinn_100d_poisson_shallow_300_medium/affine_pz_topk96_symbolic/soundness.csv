@@ -1,0 +1,3 @@
+run_id,quantity,sample_count,failure_count,max_violation,invalid_interval_count,nan_endpoint_count,infinite_endpoint_count,status
+pinn100d_shallow300_medium_affine_pz_topk96_symbolic,Y,16384,0,0.0,0,0,0,ok
+pinn100d_shallow300_medium_affine_pz_topk96_symbolic,J,16384,0,0.0,0,0,0,ok

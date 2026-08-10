@@ -13,7 +13,58 @@ from intervalnets import (
     interval_forward,
     interval_forward_refine,
 )
-from intervalnets.pytorch import _eval_jacobian_bounds, _interval_pow_scalar
+from intervalnets.pytorch import (
+    PZReductionConfig,
+    _CertifiedTermReducer,
+    _eval_hessian_bounds,
+    _eval_jacobian_bounds,
+    _interval_pow_scalar,
+    _lookahead_sobolev_split_dimension,
+)
+
+
+def _finish_reference_reducer(variant: str, generator_budget: int = 0):
+    center = torch.zeros(2, dtype=torch.float64)
+    reducer = _CertifiedTermReducer(
+        PZReductionConfig(
+            strategy="topk",
+            max_terms=1,
+            reduction_variant=variant,
+            generator_budget=generator_budget,
+        ),
+        tuple(center.shape),
+        center,
+    )
+    reducer.offer((1,), torch.tensor([10.0, 0.0], dtype=torch.float64))
+    reducer.offer((2,), torch.tensor([2.0, -4.0], dtype=torch.float64))
+    return reducer.finish(center, num_noise=1, noise_kinds=("domain",))
+
+
+def test_reference_reduction_variants_use_even_monomial_range() -> None:
+    reduced_a, radius_a = _finish_reference_reducer("A")
+    reduced_b, radius_b = _finish_reference_reducer("B")
+    reduced_c0, radius_c0 = _finish_reference_reducer("C", generator_budget=0)
+
+    assert torch.equal(reduced_a.center, torch.tensor([0.0, 0.0], dtype=torch.float64))
+    assert torch.allclose(radius_a, torch.tensor([2.0, 4.0], dtype=torch.float64))
+    assert torch.equal(reduced_b.center, torch.tensor([1.0, -2.0], dtype=torch.float64))
+    assert torch.allclose(radius_b, torch.tensor([1.0, 2.0], dtype=torch.float64))
+    assert torch.equal(reduced_c0.center, reduced_b.center)
+    assert torch.equal(radius_c0, radius_b)
+
+
+def test_reference_variant_c_retains_fresh_correlated_generator() -> None:
+    reduced, radius = _finish_reference_reducer("C", generator_budget=1)
+
+    assert torch.equal(reduced.center, torch.tensor([1.0, -2.0], dtype=torch.float64))
+    assert torch.equal(radius, torch.zeros(2, dtype=torch.float64))
+    assert reduced.num_noise == 2
+    assert reduced.noise_kinds == ("domain", "approximation_pointwise")
+    assert any(
+        exponent == (0, 1)
+        and torch.equal(coefficient, torch.tensor([1.0, -2.0], dtype=torch.float64))
+        for exponent, coefficient in reduced.terms.items()
+    )
 
 
 def test_relu_negative_interval_rounds_outward_to_zero() -> None:
@@ -97,6 +148,24 @@ def test_slope_enclosure_tightens_relu_dependency_example() -> None:
     assert slope_bounds.lower[0] >= box_bounds.lower[0]
     assert slope_bounds.upper[0] <= box_bounds.upper[0]
     assert slope_bounds.upper[0] <= 1.0 + 1e-6
+
+
+def test_lookahead_sobolev_split_selects_the_influential_coordinate() -> None:
+    enable_interval_eval()
+    model = nn.Linear(2, 1, bias=False).to(dtype=torch.float64)
+    with torch.no_grad():
+        model.weight.copy_(torch.tensor([[1.0, 0.0]], dtype=torch.float64))
+    box = IntervalTensor.from_bounds([0.0, -1.0], [2.0, 1.0])
+
+    split_dim, children, contributions, candidates = (
+        _lookahead_sobolev_split_dimension(model, box)
+    )
+
+    assert split_dim == 0
+    assert len(children) == len(contributions) == 2
+    assert [row["split_dim"] for row in candidates] == [0, 1]
+    assert candidates[0]["children_width_sum"] < candidates[1]["children_width_sum"]
+    assert candidates[0]["predicted_width_reduction"] > 0.0
 
 
 def test_slope_enclosure_remains_valid_on_sampled_points() -> None:
@@ -218,24 +287,6 @@ def test_enable_interval_eval_defaults_to_slope_mode() -> None:
     assert result.upper[0] <= 1.0 + 1e-6
 
 
-def test_linear_interval_matches_expected_affine_bounds() -> None:
-    layer = nn.Linear(2, 1)
-    with torch.no_grad():
-        layer.weight.copy_(torch.tensor([[2.0, -3.0]]))
-        layer.bias.copy_(torch.tensor([0.5]))
-
-    interval = IntervalTensor.from_bounds([1.0, 2.0], [1.5, 2.5])
-    output = interval_forward(layer, interval)
-
-    candidates = [
-        2.0 * x1 - 3.0 * x2 + 0.5
-        for x1 in [1.0, 1.5]
-        for x2 in [2.0, 2.5]
-    ]
-    assert output.lower[0] <= min(candidates)
-    assert output.upper[0] >= max(candidates)
-
-
 def test_zero_network_contains_zero_with_rounding_margin() -> None:
     layer = nn.Linear(3, 2)
     with torch.no_grad():
@@ -278,7 +329,6 @@ def test_eval_overload_runs_interval_propagation() -> None:
     assert len(result.upper) == 1
     assert result.lower[0] <= 1.0
     assert result.upper[0] >= 1.125
-
 
 
 def test_softmax_bounds_match_closed_form_in_two_dimensions() -> None:
@@ -694,6 +744,52 @@ def test_eval_jacobian_dead_relu_path_stays_exact_zero() -> None:
     assert jacobian.upper[0][0] == 0.0
 
 
+def test_eval_hessian_linear_layer_is_exact_zero_tensor() -> None:
+    enable_interval_eval()
+    layer = nn.Linear(2, 1)
+    with torch.no_grad():
+        layer.weight.copy_(torch.tensor([[1.5, -0.5]]))
+        layer.bias.copy_(torch.tensor([0.2]))
+
+    domain = IntervalTensor.from_bounds([-1.0, -2.0], [0.5, 3.0])
+    hessian = layer.eval_hessian(domain)
+
+    assert hessian.lower[0][0][0] == 0.0
+    assert hessian.upper[0][0][0] == 0.0
+    assert hessian.lower[0][0][1] == 0.0
+    assert hessian.upper[0][0][1] == 0.0
+    assert hessian.lower[0][1][0] == 0.0
+    assert hessian.upper[0][1][0] == 0.0
+    assert hessian.lower[0][1][1] == 0.0
+    assert hessian.upper[0][1][1] == 0.0
+
+
+def test_eval_hessian_tanh_network_encloses_corner_second_derivatives() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(2, 1, bias=False), nn.Tanh())
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.25, -0.75]]))
+
+    domain = IntervalTensor.from_bounds([-0.4, -0.2], [0.5, 0.6])
+    hessian = _eval_hessian_bounds(model, domain, enclosure_mode="slope")
+
+    # For z = w·x and y=tanh(z), Hessian(y) = tanh''(z) * (w ⊗ w)
+    weights = model[0].weight.detach().to(torch.float64)[0]
+    for x0 in (domain.lower[0], domain.upper[0]):
+        for x1 in (domain.lower[1], domain.upper[1]):
+            z = float(weights[0]) * x0 + float(weights[1]) * x1
+            tanh_z = math.tanh(z)
+            tanh_second = -2.0 * tanh_z * (1.0 - tanh_z * tanh_z)
+            expected_00 = tanh_second * float(weights[0]) * float(weights[0])
+            expected_01 = tanh_second * float(weights[0]) * float(weights[1])
+            expected_11 = tanh_second * float(weights[1]) * float(weights[1])
+
+            assert hessian.lower[0][0][0] <= expected_00 <= hessian.upper[0][0][0]
+            assert hessian.lower[0][0][1] <= expected_01 <= hessian.upper[0][0][1]
+            assert hessian.lower[0][1][0] <= expected_01 <= hessian.upper[0][1][0]
+            assert hessian.lower[0][1][1] <= expected_11 <= hessian.upper[0][1][1]
+
+
 def test_sobolev_norm_constant_network_matches_closed_form() -> None:
     enable_interval_eval()
     model = nn.Sequential(nn.Linear(1, 1))
@@ -707,6 +803,36 @@ def test_sobolev_norm_constant_network_matches_closed_form() -> None:
 
     assert bounds.lower <= exact <= bounds.upper
     assert (bounds.upper - bounds.lower) < 1e-10
+
+
+def test_sobolev_norm_order_one_matches_default_behavior() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[0.75]]))
+        model[0].bias.copy_(torch.tensor([0.1]))
+
+    domain = IntervalTensor.from_bounds([-1.0], [1.0])
+    default_order = model.sobolev_norm(domain, p=2.0, iterations=3)
+    order_one = model.sobolev_norm(domain, p=2.0, order=1, iterations=3)
+
+    assert order_one.lower <= default_order.upper
+    assert default_order.lower <= order_one.upper
+
+
+def test_sobolev_norm_order_two_is_at_least_order_one_for_tanh_model() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1), nn.Tanh())
+    with torch.no_grad():
+        model[0].weight.copy_(torch.tensor([[1.2]]))
+        model[0].bias.copy_(torch.tensor([0.0]))
+
+    domain = IntervalTensor.from_bounds([-0.7], [0.9])
+    w12 = model.sobolev_norm(domain, p=2.0, order=1, iterations=4)
+    w22 = model.sobolev_norm(domain, p=2.0, order=2, iterations=4)
+
+    assert w22.lower >= w12.lower
+    assert w22.upper >= w12.upper
 
 
 def test_sobolev_norm_refinement_tightens_interval() -> None:
@@ -849,6 +975,8 @@ def test_sobolev_norm_rejects_invalid_parameters() -> None:
     with pytest.raises(ValueError):
         _ = model.sobolev_norm(domain, p=2.0, iterations=-1)
     with pytest.raises(ValueError):
+        _ = model.sobolev_norm(domain, p=2.0, order=3, iterations=0)
+    with pytest.raises(ValueError):
         _ = model.sobolev_norm(domain, p=2.0, iterations=0, forward_refine_splits=0)
 
 
@@ -871,6 +999,13 @@ def test_eval_jacobian_requires_interval_tensor_domain() -> None:
     model = nn.Sequential(nn.Linear(1, 1))
     with pytest.raises(TypeError):
         _ = model.eval_jacobian([0.0, 1.0])
+
+
+def test_eval_hessian_requires_interval_tensor_domain() -> None:
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(1, 1), nn.Tanh())
+    with pytest.raises(TypeError):
+        _ = model.eval_hessian([0.0, 1.0])
 
 
 def test_softmax_jacobian_encloses_autograd_corner_gradients() -> None:
@@ -937,3 +1072,390 @@ def test_tanh_jacobian_encloses_autograd_corner_gradients() -> None:
                 for col in range(2):
                     exact = float(grad[col].item())
                     assert jacobian.lower[row][col] <= exact <= jacobian.upper[row][col]
+
+
+def test_pz_twojet_forward_sequential_linear_tanh_identity_returns_twojet() -> None:
+    from intervalnets import PZTwoJet, PolynomialZonotope, pz_twojet_forward
+
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Identity(), nn.Linear(2, 3), nn.Tanh(), nn.Linear(3, 1))
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.2, 0.1], dtype=torch.float64),
+        torch.tensor([0.3, 0.4], dtype=torch.float64),
+    )
+
+    out = pz_twojet_forward(model.double(), domain, residual_subdivisions=32)
+
+    assert isinstance(out, PZTwoJet)
+    assert out.Y.shape == (1,)
+    assert out.J.shape == (1, 2)
+    assert out.H.shape == (1, 2, 2)
+
+
+def test_pz_value_forward_matches_twojet_value_enclosure() -> None:
+    from intervalnets import PolynomialZonotope, pz_twojet_forward, pz_value_forward
+
+    torch.manual_seed(0)
+    model = nn.Sequential(
+        nn.Identity(),
+        nn.Linear(2, 3),
+        nn.Tanh(),
+        nn.Linear(3, 1),
+    ).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.2, 0.1], dtype=torch.float64),
+        torch.tensor([0.3, 0.4], dtype=torch.float64),
+    )
+
+    value = pz_value_forward(model, domain)
+    twojet_value = pz_twojet_forward(model, domain).Y
+    value_interval = value.interval_enclosure()
+    twojet_interval = twojet_value.interval_enclosure()
+
+    assert value.shape == (1,)
+    assert len(value.terms) == len(twojet_value.terms)
+    assert value.num_noise == 2 + 3
+    assert torch.allclose(
+        torch.tensor(value_interval.lower),
+        torch.tensor(twojet_interval.lower),
+    )
+    assert torch.allclose(
+        torch.tensor(value_interval.upper),
+        torch.tensor(twojet_interval.upper),
+    )
+    assert value.num_noise < twojet_value.num_noise
+
+
+def test_pz_value_forward_trace_reports_each_layer() -> None:
+    from intervalnets import PZValueTraceResult, PolynomialZonotope, pz_value_forward
+
+    model = nn.Sequential(nn.Linear(2, 3), nn.Tanh(), nn.Linear(3, 1)).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-1.0, -0.5], dtype=torch.float64),
+        torch.tensor([1.0, 0.5], dtype=torch.float64),
+    )
+
+    traced = pz_value_forward(model, domain, return_trace=True)
+
+    assert isinstance(traced, PZValueTraceResult)
+    assert traced.final.shape == (1,)
+    assert [record.layer_type for record in traced.records] == [
+        "Input",
+        "Linear",
+        "Tanh",
+        "Linear",
+    ]
+    assert traced.records[-1].summary["term_count"] == len(traced.final.terms)
+
+
+def test_enable_interval_eval_adds_eval_pz_twojet_method() -> None:
+    from intervalnets import PZTwoJet, PolynomialZonotope
+
+    enable_interval_eval()
+    layer = nn.Linear(2, 1).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-1.0, -0.5], dtype=torch.float64),
+        torch.tensor([1.0, 0.5], dtype=torch.float64),
+    )
+
+    out = layer.eval_pz_twojet(domain)
+
+    assert isinstance(out, PZTwoJet)
+    assert out.Y.shape == (1,)
+    assert out.J.shape == (1, 2)
+    assert out.H.shape == (1, 2, 2)
+
+
+def test_enable_interval_eval_adds_eval_pz_value_method() -> None:
+    from intervalnets import PolynomialZonotope
+
+    enable_interval_eval()
+    layer = nn.Linear(2, 1).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-1.0, -0.5], dtype=torch.float64),
+        torch.tensor([1.0, 0.5], dtype=torch.float64),
+    )
+
+    out = layer.eval_pz_value(domain)
+
+    assert out.shape == (1,)
+    assert out.num_noise == 2
+
+
+def test_pz_onejet_forward_encloses_sampled_jacobians() -> None:
+    from intervalnets import PZOneJet, PolynomialZonotope, pz_onejet_forward
+
+    torch.manual_seed(17)
+    model = nn.Sequential(
+        nn.Linear(3, 5),
+        nn.Tanh(),
+        nn.Linear(5, 4),
+        nn.Tanh(),
+        nn.Linear(4, 1),
+    ).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.2, -0.1, 0.0], dtype=torch.float64),
+        torch.tensor([0.3, 0.2, 0.4], dtype=torch.float64),
+    )
+
+    onejet = pz_onejet_forward(model, domain)
+    enclosure = onejet.J.interval_enclosure()
+
+    assert isinstance(onejet, PZOneJet)
+    assert onejet.Y.shape == (1,)
+    assert onejet.J.shape == (1, 3)
+    assert onejet.Y.num_noise == onejet.J.num_noise
+    for _ in range(32):
+        point = torch.empty(3, dtype=torch.float64).uniform_(-1.0, 1.0)
+        point = 0.5 * (
+            torch.tensor(domain.interval_enclosure().lower)
+            + torch.tensor(domain.interval_enclosure().upper)
+        ) + 0.5 * (
+            torch.tensor(domain.interval_enclosure().upper)
+            - torch.tensor(domain.interval_enclosure().lower)
+        ) * point
+        point.requires_grad_(True)
+        gradient = torch.autograd.grad(model(point).sum(), point)[0]
+        for column in range(3):
+            assert enclosure.lower[0][column] <= float(gradient[column])
+            assert float(gradient[column]) <= enclosure.upper[0][column]
+
+
+def test_pz_onejet_trace_is_lightweight_and_reports_layer_timings() -> None:
+    from intervalnets import PZOneJetTraceResult, PolynomialZonotope, pz_onejet_forward
+
+    model = nn.Sequential(nn.Linear(2, 3), nn.Tanh(), nn.Linear(3, 1)).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.2, -0.1], dtype=torch.float64),
+        torch.tensor([0.3, 0.2], dtype=torch.float64),
+    )
+
+    traced = pz_onejet_forward(model, domain, return_trace=True)
+
+    assert isinstance(traced, PZOneJetTraceResult)
+    assert [record.layer_type for record in traced.records] == [
+        "Input",
+        "Linear",
+        "Tanh",
+        "Linear",
+    ]
+    assert all(record.elapsed_s >= 0.0 for record in traced.records)
+    assert traced.records[-1].summary["J"]["shape"] == (1, 2)
+    activation = traced.records[2].summary
+    preactivation_lower = activation["preactivation_lower"]
+    preactivation_upper = activation["preactivation_upper"]
+    expected_preactivation = traced.records[1].value.interval_enclosure()
+    assert torch.equal(
+        preactivation_lower,
+        torch.as_tensor(expected_preactivation.lower, dtype=preactivation_lower.dtype),
+    )
+    assert torch.equal(
+        preactivation_upper,
+        torch.as_tensor(expected_preactivation.upper, dtype=preactivation_upper.dtype),
+    )
+    assert bool(torch.all(preactivation_lower <= preactivation_upper))
+    value_radii = activation["tanh_approximation_radii"]
+    assert tuple(value_radii.shape) == (3,)
+    assert bool(torch.all(value_radii >= 0.0))
+    assert activation["tanh_approximation_radius_min"] == pytest.approx(
+        float(value_radii.min())
+    )
+    assert activation["tanh_approximation_radius_mean"] == pytest.approx(
+        float(value_radii.mean())
+    )
+    assert activation["tanh_approximation_radius_max"] == pytest.approx(
+        float(value_radii.max())
+    )
+    activation_value = traced.records[2].value
+    for neuron, radius in enumerate(value_radii):
+        exponent = tuple(
+            1 if index == domain.num_noise + neuron else 0
+            for index in range(activation_value.num_noise)
+        )
+        coefficient = activation_value.terms[exponent]
+        assert coefficient[neuron] == pytest.approx(float(radius))
+        assert torch.count_nonzero(coefficient).item() == 1
+    radii = activation["tanh_prime_approximation_radii"]
+    assert tuple(radii.shape) == (3,)
+    assert bool(torch.all(radii >= 0.0))
+    assert activation["tanh_prime_approximation_radius_min"] == pytest.approx(
+        float(radii.min())
+    )
+    assert activation["tanh_prime_approximation_radius_mean"] == pytest.approx(
+        float(radii.mean())
+    )
+    assert activation["tanh_prime_approximation_radius_max"] == pytest.approx(
+        float(radii.max())
+    )
+    assert "tanh_approximation_radii" not in traced.records[1].summary
+    assert "tanh_prime_approximation_radii" not in traced.records[1].summary
+    assert "preactivation_lower" not in traced.records[1].summary
+    assert "preactivation_upper" not in traced.records[1].summary
+
+
+def test_enable_interval_eval_adds_eval_pz_onejet_method() -> None:
+    from intervalnets import PZOneJet, PolynomialZonotope
+
+    enable_interval_eval()
+    model = nn.Sequential(nn.Linear(2, 3), nn.Tanh(), nn.Linear(3, 1)).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.2, -0.1], dtype=torch.float64),
+        torch.tensor([0.3, 0.2], dtype=torch.float64),
+    )
+
+    out = model.eval_pz_onejet(domain)
+
+    assert isinstance(out, PZOneJet)
+    assert out.Y.shape == (1,)
+    assert out.J.shape == (1, 2)
+
+
+@pytest.mark.parametrize("strategy", ["topk", "degree", "pca"])
+def test_polynomial_onejet_reductions_enclose_sampled_jacobians(strategy) -> None:
+    from intervalnets import PolynomialZonotope, pz_onejet_forward
+
+    torch.manual_seed(2718)
+    model = nn.Sequential(
+        nn.Linear(3, 6), nn.Tanh(), nn.Linear(6, 5), nn.Tanh(), nn.Linear(5, 1)
+    ).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.25, -0.15, -0.1], dtype=torch.float64),
+        torch.tensor([0.2, 0.3, 0.25], dtype=torch.float64),
+    )
+    jet = pz_onejet_forward(
+        model,
+        domain,
+        reduction_strategy=strategy,
+        max_terms=8,
+        max_degree=2,
+        pca_rank=2,
+        pca_candidates=8,
+    )
+    enclosure = jet.J.interval_enclosure()
+
+    assert any(
+        any(power and jet.J.noise_kinds[index] == "domain" for index, power in enumerate(exponent))
+        for exponent in jet.J.terms
+    ), "the retained Jacobian must still be a domain-dependent polynomial"
+    for _ in range(32):
+        point = torch.tensor(
+            [
+                torch.empty((), dtype=torch.float64).uniform_(lo, hi).item()
+                for lo, hi in zip(domain.interval_enclosure().lower, domain.interval_enclosure().upper)
+            ],
+            dtype=torch.float64,
+            requires_grad=True,
+        )
+        gradient = torch.autograd.grad(model(point).sum(), point)[0]
+        for column in range(3):
+            assert enclosure.lower[0][column] <= float(gradient[column])
+            assert float(gradient[column]) <= enclosure.upper[0][column]
+
+
+def test_quadratic_flat_onejet_switches_and_encloses_sampled_jacobians() -> None:
+    from intervalnets import PolynomialZonotope, pz_onejet_forward
+
+    torch.manual_seed(31415)
+    model = nn.Sequential(
+        nn.Linear(2, 4), nn.Tanh(), nn.Linear(4, 1)
+    ).double()
+    with torch.no_grad():
+        model[0].bias.zero_()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-1.0, -1.0], dtype=torch.float64),
+        torch.tensor([1.0, 1.0], dtype=torch.float64),
+    )
+    traced = pz_onejet_forward(
+        model,
+        domain,
+        reduction_strategy="topk",
+        max_terms=32,
+        derivative_enclosure="quadratic_flat",
+        derivative_flatness_threshold=1.0,
+        quadratic_compression_guard=False,
+        return_trace=True,
+    )
+    activation = traced.records[2].summary
+    degrees = activation["tanh_prime_approximation_degrees"]
+    assert bool(torch.all(degrees == 2))
+    assert activation["tanh_prime_quadratic_count"] == 4
+    assert bool(
+        torch.all(
+            activation["tanh_prime_approximation_radii"]
+            < activation["tanh_prime_affine_radii"]
+        )
+    )
+
+    enclosure = traced.final.J.interval_enclosure()
+    for _ in range(64):
+        point = torch.empty(2, dtype=torch.float64).uniform_(-1.0, 1.0)
+        point.requires_grad_(True)
+        gradient = torch.autograd.grad(model(point).sum(), point)[0]
+        for column in range(2):
+            assert enclosure.lower[0][column] <= float(gradient[column])
+            assert float(gradient[column]) <= enclosure.upper[0][column]
+
+
+@pytest.mark.parametrize(("variant", "generator_budget"), [("B", 0), ("C", 2)])
+def test_parity_aware_onejet_reductions_enclose_sampled_jacobians(
+    variant, generator_budget
+) -> None:
+    from intervalnets import PolynomialZonotope, pz_onejet_forward
+
+    torch.manual_seed(1618)
+    model = nn.Sequential(
+        nn.Linear(2, 4), nn.Tanh(), nn.Linear(4, 3), nn.Tanh(), nn.Linear(3, 1)
+    ).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.4, -0.3], dtype=torch.float64),
+        torch.tensor([0.4, 0.3], dtype=torch.float64),
+    )
+    jet = pz_onejet_forward(
+        model,
+        domain,
+        reduction_strategy="topk",
+        max_terms=6,
+        reduction_variant=variant,
+        generator_budget=generator_budget,
+        derivative_enclosure="quadratic_flat",
+        derivative_flatness_threshold=1.0,
+        quadratic_compression_guard=False,
+    )
+    enclosure = jet.J.interval_enclosure()
+    for _ in range(32):
+        point = torch.tensor(
+            [
+                torch.empty((), dtype=torch.float64).uniform_(lo, hi).item()
+                for lo, hi in zip(
+                    domain.interval_enclosure().lower,
+                    domain.interval_enclosure().upper,
+                )
+            ],
+            dtype=torch.float64,
+            requires_grad=True,
+        )
+        gradient = torch.autograd.grad(model(point).sum(), point)[0]
+        for column in range(2):
+            assert enclosure.lower[0][column] <= float(gradient[column])
+            assert float(gradient[column]) <= enclosure.upper[0][column]
+
+
+def test_unreduced_onejet_preserves_polynomial_chain_rule_terms() -> None:
+    from intervalnets import PolynomialZonotope, pz_onejet_forward
+
+    model = nn.Sequential(nn.Linear(2, 3), nn.Tanh(), nn.Linear(3, 1)).double()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([-0.2, -0.1], dtype=torch.float64),
+        torch.tensor([0.2, 0.1], dtype=torch.float64),
+    )
+    jet = pz_onejet_forward(model, domain, reduce=False)
+    assert jet.J.terms
+    assert any(sum(exponent) >= 1 for exponent in jet.J.terms)
+
+
+def test_eval_pz_twojet_rejects_non_polynomial_zonotope_input() -> None:
+    enable_interval_eval()
+    layer = nn.Identity()
+
+    with pytest.raises(TypeError, match="PolynomialZonotope"):
+        layer.eval_pz_twojet(torch.zeros(1))

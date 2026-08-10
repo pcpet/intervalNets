@@ -1,0 +1,948 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{enumitem}
+\usepackage{hyperref}
+
+\title{Blueprint for Polynomial-Zonotope Two-Jet Enclosures in \texttt{intervalNets}}
+\author{Technical implementation specification}
+\date{\today}
+
+\newtheorem{definition}{Definition}[section]
+\newtheorem{proposition}[definition]{Proposition}
+\newtheorem{theorem}[definition]{Theorem}
+\newtheorem{remark}[definition]{Remark}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\PZ}{\mathrm{PZ}}
+\newcommand{\eps}{\varepsilon}
+\newcommand{\Id}{\mathrm{Id}}
+\newcommand{\roundup}{\operatorname{round}_{\uparrow}}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document is a technical blueprint for adding polynomial-zonotope based forward-mode two-jet enclosure propagation to the PyTorch interval arithmetic repository \texttt{intervalNets}. The target networks are feedforward neural networks built from affine linear layers and componentwise hyperbolic tangent activations. Given an input polynomial zonotope, the implementation should compute rigorous polynomial-zonotope enclosures for the network output, Jacobian field, and Hessian field over the input set. The activation enclosure is based on a Remez/minimax polynomial approximation of \(\tanh\), with a certified residual error obtained by interval root isolation or interval residual bounding.
+\end{abstract}
+
+\tableofcontents
+
+\section{Overview and implementation objective}
+
+The repository \texttt{intervalNets} already provides interval arithmetic and certified interval propagation through PyTorch models. The goal of this extension is different: instead of only propagating boxes, we want to propagate polynomial-zonotope enclosures of the two-jet field of a neural network.
+
+Let
+\[
+    \Phi:\R^{d_{\mathrm{in}}}\to\R^{d_{\mathrm{out}}}
+\]
+be a feedforward neural network built from affine linear layers and componentwise \(\tanh\) activations. Let the input set be represented by a polynomial zonotope
+\[
+    X(\eps)
+    =
+    c+\sum_{\alpha\in A}g_\alpha\eps^\alpha,
+    \qquad
+    \eps\in[-1,1]^p.
+\]
+Here \(c\in\R^{d_{\mathrm{in}}}\), \(g_\alpha\in\R^{d_{\mathrm{in}}}\), and
+\[
+    \eps^\alpha
+    =
+    \eps_1^{\alpha_1}\cdots\eps_p^{\alpha_p}.
+\]
+The represented input set is
+\[
+    Z_X
+    :=
+    X([-1,1]^p)
+    =
+    \left\{X(\eps):\eps\in[-1,1]^p\right\}.
+\]
+
+The implementation goal is to compute validated enclosures for
+\[
+    \Phi(x),
+    \qquad
+    D\Phi|_x,
+    \qquad
+    D^2\Phi|_x
+\]
+for all \(x\in Z_X\). Thus the output should consist of:
+\begin{enumerate}[label=(\roman*)]
+    \item a vector-valued polynomial zonotope enclosing \(\Phi(Z_X)\);
+    \item a matrix-valued polynomial zonotope enclosing the Jacobian field \(D\Phi(Z_X)\);
+    \item a third-order tensor-valued polynomial zonotope enclosing the Hessian field \(D^2\Phi(Z_X)\).
+\end{enumerate}
+
+This is not pointwise automatic differentiation. Pointwise automatic differentiation evaluates \(D\Phi|_x\) and \(D^2\Phi|_x\) for one fixed point \(x\). Here, the goal is set-valued and validated:
+\[
+    \forall x\in Z_X:
+    \qquad
+    \Phi(x)\in Y,
+    \quad
+    D\Phi|_x\in J,
+    \quad
+    D^2\Phi|_x\in H.
+\]
+The objects \(Y\), \(J\), and \(H\) should preserve polynomial dependence on shared noise variables whenever feasible.
+
+\section{Polynomial zonotope representation}
+
+\begin{definition}[Polynomial zonotope]
+Let \(V\) be a finite-dimensional real vector space and let \(A\subset\N_0^p\) be a finite exponent set. A polynomial zonotope with coefficients in \(V\) is a set of the form
+\[
+    Z
+    =
+    \left\{
+        c+\sum_{\alpha\in A}g_\alpha\eps^\alpha
+        :
+        \eps\in[-1,1]^p
+    \right\},
+\]
+where \(c\in V\), \(g_\alpha\in V\), and
+\[
+    \eps^\alpha
+    =
+    \eps_1^{\alpha_1}\cdots\eps_p^{\alpha_p}.
+\]
+We write
+\[
+    Z=\PZ\bigl(c,\{(\alpha,g_\alpha)\}_{\alpha\in A}\bigr).
+\]
+\end{definition}
+
+The implementation should support polynomial zonotopes whose coefficients lie in
+\[
+    V=\R^n,
+    \qquad
+    V=\R^{m\times n},
+    \qquad
+    V=\R^{m\times n\times n}.
+\]
+The same noise variables \(\eps_1,\ldots,\eps_p\) should be shared across vector-, matrix-, and tensor-valued polynomial zonotopes. This is essential for dependency preservation.
+
+\begin{remark}[Noise variables]
+A polynomial zonotope stores dependence on uncertainty variables. If a new approximation error is introduced, for example from a certified \(\tanh\) approximation
+\[
+    \tanh(t)\in p(t)+\Delta[-1,1],
+\]
+the implementation should add a new noise variable \(\eta\in[-1,1]\). Nonlinear powers such as \(\eta^2\) and \(\eta^3\) should be preserved if the degree budget allows it.
+\end{remark}
+
+\section{Core polynomial-zonotope arithmetic}
+
+Codex should implement a core class, tentatively named \texttt{PolynomialZonotope}. A polynomial zonotope should store:
+\begin{enumerate}[label=(\roman*)]
+    \item the center coefficient \(c\);
+    \item a dictionary or structured tensor of exponent vectors \(\alpha\in\N_0^p\);
+    \item one coefficient tensor \(g_\alpha\) for each exponent vector;
+    \item metadata for the number of noise variables \(p\), coefficient shape, dtype, and device.
+\end{enumerate}
+
+\subsection{Required arithmetic operations}
+
+\paragraph{Addition.}
+For two polynomial zonotopes with the same coefficient shape,
+\[
+    Z_1=c_1+\sum_\alpha g_\alpha\eps^\alpha,
+    \qquad
+    Z_2=c_2+\sum_\alpha h_\alpha\eps^\alpha,
+\]
+define
+\[
+    Z_1+Z_2
+    =
+    c_1+c_2+\sum_\alpha(g_\alpha+h_\alpha)\eps^\alpha.
+\]
+The implementation must merge equal exponent vectors.
+
+\paragraph{Scalar multiplication.}
+For \(\lambda\in\R\),
+\[
+    \lambda Z
+    =
+    \lambda c+\sum_\alpha \lambda g_\alpha\eps^\alpha.
+\]
+
+\paragraph{Linear maps.}
+For \(A\in\R^{m\times n}\) and \(Z\in\PZ(\R^n)\),
+\[
+    AZ
+    =
+    Ac+\sum_\alpha A g_\alpha\eps^\alpha.
+\]
+For matrix-valued or tensor-valued coefficients, the corresponding contraction should be applied along the output dimension.
+
+\paragraph{Multiplication of scalar polynomial zonotopes.}
+For scalar-valued polynomial zonotopes
+\[
+    P=a+\sum_\alpha p_\alpha\eps^\alpha,
+    \qquad
+    Q=b+\sum_\beta q_\beta\eps^\beta,
+\]
+define
+\[
+\begin{aligned}
+    PQ
+    &=
+    ab
+    +
+    \sum_\beta a q_\beta\eps^\beta
+    +
+    \sum_\alpha b p_\alpha\eps^\alpha
+    +
+    \sum_{\alpha,\beta}p_\alpha q_\beta\eps^{\alpha+\beta}.
+\end{aligned}
+\]
+Equal exponents must be merged.
+
+\paragraph{Scalar multiplication of vector-, matrix-, and tensor-valued polynomial zonotopes.}
+If \(P\in\PZ(\R)\) and \(Z\in\PZ(V)\), define \(PZ\in\PZ(V)\) by the same convolution rule, replacing scalar products by scalar multiplication of \(V\)-valued coefficients.
+
+\paragraph{Tensor products.}
+For Hessian propagation, the implementation needs products of the form
+\[
+    u\otimes u,
+\]
+where \(u\in\PZ(\R^{d_{\mathrm{in}}})\). If
+\[
+    u=c+\sum_\alpha u_\alpha\eps^\alpha,
+\]
+then
+\[
+\begin{aligned}
+    u\otimes u
+    &=
+    c\otimes c
+    +
+    \sum_\alpha
+    \bigl(c\otimes u_\alpha+u_\alpha\otimes c\bigr)\eps^\alpha \\
+    &\quad+
+    \sum_{\alpha,\beta}
+    \bigl(u_\alpha\otimes u_\beta\bigr)\eps^{\alpha+\beta}.
+\end{aligned}
+\]
+This produces a matrix-valued polynomial zonotope in \(\PZ(\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}})\).
+
+\paragraph{Degree truncation and reduction.}
+Polynomial multiplication causes representation growth. The implementation should support a configurable reduction operation
+\[
+    \mathrm{reduce}\bigl(Z;\texttt{max\_degree},\texttt{max\_terms}\bigr).
+\]
+Reduction must be inclusion-preserving. A safe baseline is:
+\begin{enumerate}[label=(\alph*)]
+    \item keep selected low-degree or large-magnitude terms explicitly;
+    \item convert discarded terms to a box or independent error zonotope;
+    \item add new independent noise variables for discarded remainder components.
+\end{enumerate}
+If reduction is not implemented initially, Codex should allow an option \texttt{reduce=False} and raise a clear error when the representation becomes too large.
+
+\paragraph{Interval enclosure.}
+A simple interval enclosure of
+\[
+    Z=c+\sum_\alpha g_\alpha\eps^\alpha
+\]
+is given componentwise by
+\[
+    Z
+    \subseteq
+    c+
+    \left[
+        -\sum_\alpha |g_\alpha|,
+        \sum_\alpha |g_\alpha|
+    \right],
+\]
+where absolute values and sums are taken componentwise. This enclosure is conservative but simple and dependency-safe.
+
+All interval bounds must be outward-rounded. If the current codebase has an interval tensor type with outward rounding, the polynomial-zonotope code should reuse it.
+
+\section{Two-jet object}
+
+\begin{definition}[Polynomial-zonotope two-jet object]
+At layer \(\ell\), a two-jet enclosure object is a triple
+\[
+    \mathcal{J}^\ell=(Y^\ell,J^\ell,H^\ell),
+\]
+where
+\[
+    Y^\ell\in\PZ(\R^{n_\ell}),
+\]
+\[
+    J^\ell\in\PZ(\R^{n_\ell\times d_{\mathrm{in}}}),
+\]
+and
+\[
+    H^\ell\in\PZ(\R^{n_\ell\times d_{\mathrm{in}}\times d_{\mathrm{in}}}).
+\]
+Here \(Y^\ell\) encloses the layer output, \(J^\ell\) encloses the Jacobian field with respect to the original physical input \(x\in\R^{d_{\mathrm{in}}}\), and \(H^\ell\) encloses the Hessian field with respect to \(x\).
+\end{definition}
+
+Codex should implement this as a class, tentatively named \texttt{PZTwoJet}. It should contain:
+\begin{verbatim}
+class PZTwoJet:
+    Y: PolynomialZonotope   # shape (n_layer,)
+    J: PolynomialZonotope   # shape (n_layer, d_in)
+    H: PolynomialZonotope   # shape (n_layer, d_in, d_in)
+\end{verbatim}
+
+\subsection{Initialization}
+
+For an input polynomial zonotope \(X(\eps)\in\PZ(\R^{d_{\mathrm{in}}})\), initialize
+\[
+    Y^0=X(\eps),
+    \qquad
+    J^0=\Id_{d_{\mathrm{in}}},
+    \qquad
+    H^0=0.
+\]
+Here \(J^0\) and \(H^0\) are constant polynomial zonotopes. The propagated jet is the jet of the network with respect to the physical input variable \(x\), evaluated over \(x\in Z_X\). It is not the jet with respect to the noise variables \(\eps\). Thus even if \(X(\eps)\) is nonlinear in \(\eps\), the correct initialization for the network map \(\Phi(x)\) is still
+\[
+    D_xx=\Id,
+    \qquad
+    D_x^2x=0.
+\]
+
+\section{Affine layer propagation}
+
+Consider an affine layer
+\[
+    z=Ay+b,
+\]
+where \(A\in\R^{n_\ell\times n_{\ell-1}}\) and \(b\in\R^{n_\ell}\). The two-jet propagation is exact:
+\[
+    Y_z=AY+b,
+    \qquad
+    J_z=AJ,
+    \qquad
+    H_z=AH.
+\]
+In coordinates:
+\[
+    (Y_z)_i
+    =
+    b_i+\sum_j A_{ij}Y_j,
+\]
+\[
+    (J_z)_{ia}
+    =
+    \sum_j A_{ij}J_{ja},
+\]
+\[
+    (H_z)_{iab}
+    =
+    \sum_j A_{ij}H_{jab}.
+\]
+
+Implementation notes:
+\begin{enumerate}[label=(\roman*)]
+    \item For \(Y\), this is ordinary matrix-vector multiplication on the coefficient tensors.
+    \item For \(J\), contract the layer weight matrix with the first axis of the matrix-valued coefficients.
+    \item For \(H\), contract the layer weight matrix with the first axis of the tensor-valued coefficients.
+    \item Bias \(b\) affects only the center of \(Y\), not \(J\) or \(H\).
+\end{enumerate}
+
+\section{Tanh activation enclosure}
+
+Consider a scalar preactivation polynomial zonotope \(Z_i\in\PZ(\R)\). First compute an interval enclosure
+\[
+    I_i=[\ell_i,u_i]
+    \supseteq
+    Z_i([-1,1]^p).
+\]
+On \(I_i\), compute a rigorous polynomial approximation of \(\tanh\):
+\[
+    \forall t\in I_i:
+    \qquad
+    \tanh(t)\in p_i(t)+[-\Delta_i,\Delta_i].
+\]
+
+\subsection{Remez/minimax polynomial}
+
+The preferred polynomial \(p_i\) is a degree-\(q\) minimax or near-minimax polynomial:
+\[
+    p_i
+    \approx
+    \operatorname*{argmin}_{p\in\mathbb{P}_q}
+    \sup_{t\in I_i}|\tanh(t)-p(t)|.
+\]
+The implementation may compute \(p_i\) numerically using a Remez algorithm or a reliable approximation backend. The numerical Remez result is not by itself a proof. It only proposes a good polynomial. A separate validation step must certify the error.
+
+The degree \(q\) must be user-configurable, for example by an argument named \texttt{remez\_degree}. The implementation must not hard-code a first-degree approximation. Larger \(q\) typically decreases the certified approximation error \(\Delta_i\), but it also increases the polynomial degree and the number of monomials after evaluating \(p_i(Z_i)\).
+
+\subsection{Certified residual error}
+
+Define the residual
+\[
+    r_i(t)=\tanh(t)-p_i(t).
+\]
+We need a rigorous number \(\Delta_i\) such that
+\[
+    \Delta_i
+    \geq
+    \sup_{t\in I_i}|r_i(t)|.
+\]
+The preferred certification method is residual root isolation. Since maxima of \(|r_i|\) occur at endpoints or critical points of \(r_i\), compute
+\[
+    r_i'(t)=1-\tanh(t)^2-p_i'(t).
+\]
+Then:
+\begin{enumerate}[label=(\roman*)]
+    \item isolate all roots of \(r_i'\) in \(I_i\) using interval Newton and interval bisection;
+    \item obtain small certified intervals \(C_{i,1},\ldots,C_{i,m}\) containing all critical points;
+    \item evaluate \(r_i\) with outward-rounded interval arithmetic on \([\ell_i,\ell_i]\), \([u_i,u_i]\), and every \(C_{i,k}\);
+    \item set \(\Delta_i\) to the upward-rounded maximum of the resulting absolute interval bounds.
+\end{enumerate}
+Formally,
+\[
+    \Delta_i
+    :=
+    \roundup
+    \max\left\{
+        |r_i(\ell_i)|,
+        |r_i(u_i)|,
+        \sup |r_i(C_{i,1})|,
+        \ldots,
+        \sup |r_i(C_{i,m})|
+    \right\}.
+\]
+
+\subsection{Fallback residual certification}
+
+If root isolation is not implemented initially, use adaptive subdivision:
+\[
+    I_i=\bigcup_{k=1}^M I_{i,k}.
+\]
+On each subinterval, evaluate
+\[
+    r_i(I_{i,k})
+    =
+    \tanh(I_{i,k})-p_i(I_{i,k})
+\]
+using outward-rounded interval arithmetic. Then set
+\[
+    \Delta_i
+    :=
+    \roundup
+    \max_k \sup |r_i(I_{i,k})|.
+\]
+This may be less sharp but is easier to implement and still rigorous if all interval operations are outward-rounded.
+
+\section{Derivative enclosures for \texorpdfstring{\(\tanh\)}{tanh} from the same approximation}
+
+Once the certified approximation
+\[
+    \tanh(t)\in p(t)+\Delta\eta,
+    \qquad
+    \eta\in[-1,1],
+\]
+is available, do not compute separate Remez approximations for \(\tanh'\) and \(\tanh''\). Instead use the recursive derivative identities.
+
+Define polynomials \(q_k\) by
+\[
+    q_0(y)=y,
+\]
+\[
+    q_{k+1}(y)=(1-y^2)q_k'(y).
+\]
+Then
+\[
+    \tanh^{(k)}(t)=q_k(\tanh(t)).
+\]
+For the two-jet case:
+\[
+    q_1(y)=1-y^2,
+\]
+\[
+    q_2(y)=-2y+2y^3.
+\]
+For neuron \(i\), introduce a fresh error noise variable \(\eta_i\in[-1,1]\) and define
+\[
+    S_i:=p_i(Z_i)+\Delta_i\eta_i.
+\]
+Then
+\[
+    S_i' := 1-S_i^2
+\]
+is a polynomial-zonotope enclosure of \(\tanh'(Z_i)\), and
+\[
+    S_i'' := -2S_i+2S_i^3
+\]
+is a polynomial-zonotope enclosure of \(\tanh''(Z_i)\).
+
+The implementation should preserve powers such as \(\eta_i^2\) and \(\eta_i^3\) whenever the degree budget allows it. Replacing these powers by new affine error variables is a reduction step, not the primary representation.
+
+\section{Componentwise tanh two-jet propagation}
+
+Let
+\[
+    y_i=\tanh(z_i)
+\]
+be the \(i\)-th scalar activation. Suppose the preactivation two-jet data are
+\[
+    Z_i,
+    \qquad
+    J_{z,i}\in\PZ(\R^{d_{\mathrm{in}}}),
+    \qquad
+    H_{z,i}\in\PZ(\R^{d_{\mathrm{in}}\times d_{\mathrm{in}}}).
+\]
+Let \(S_i\), \(S_i'\), and \(S_i''\) be the activation enclosures from the previous section. Then the forward-mode two-jet propagation is
+\[
+    Y_i=S_i,
+\]
+\[
+    J_i=S_i'J_{z,i},
+\]
+\[
+    H_i=S_i''\,J_{z,i}\otimes J_{z,i}+S_i'H_{z,i}.
+\]
+In coordinates:
+\[
+    \partial_a y_i
+    =
+    S_i'\,\partial_a z_i,
+\]
+\[
+    \partial_{ab}^2y_i
+    =
+    S_i''(\partial_a z_i)(\partial_b z_i)
+    +
+    S_i'\partial_{ab}^2z_i.
+\]
+Implementation notes:
+\begin{enumerate}[label=(\roman*)]
+    \item \(S_i'\) is scalar-valued and multiplies the vector-valued polynomial zonotope \(J_{z,i}\).
+    \item \(S_i''\) is scalar-valued and multiplies the matrix-valued polynomial zonotope \(J_{z,i}\otimes J_{z,i}\).
+    \item \(S_i'H_{z,i}\) is scalar times matrix-valued polynomial zonotope.
+    \item The Hessian \(H_i\) should be symmetric in the last two indices. The implementation may either store the full matrix or store only the upper triangular part. The first implementation should store the full tensor for simplicity.
+\end{enumerate}
+
+\section{Full network propagation algorithm}
+
+\subsection{Inputs}
+
+The main user-facing method should accept:
+\begin{enumerate}[label=(\roman*)]
+    \item a PyTorch \texttt{nn.Sequential} model with supported layers;
+    \item an input polynomial zonotope \(X\);
+    \item a configurable Remez degree \(q\), for example \texttt{remez\_degree};
+    \item a maximum polynomial degree or maximum number of terms;
+    \item root-isolation and residual-certification tolerances;
+    \item reduction options.
+\end{enumerate}
+
+\subsection{Pseudocode}
+
+\begin{verbatim}
+def eval_pz_twojet(model, X, chebyshev_degree, options):
+    # X is a PolynomialZonotope with shape (d_in,)
+    d_in = X.shape[0]
+
+    Y = X
+    J = PolynomialZonotope.constant(identity(d_in), shape=(d_in, d_in))
+    H = PolynomialZonotope.constant(zeros(d_in, d_in, d_in),
+                                    shape=(d_in, d_in, d_in))
+
+    jet = PZTwoJet(Y=Y, J=J, H=H)
+
+    for layer in model:
+        if isinstance(layer, nn.Linear):
+            jet = pz_twojet_linear(layer, jet)
+
+        elif isinstance(layer, nn.Tanh):
+            jet = pz_twojet_tanh(layer, jet,
+                                  chebyshev_degree=chebyshev_degree,
+                                  options=options)
+
+        else:
+            raise NotImplementedError(
+                "Polynomial-zonotope two-jet propagation "
+                "does not yet support this layer."
+            )
+
+        if options.reduce:
+            jet = jet.reduce(options)
+
+    return jet
+\end{verbatim}
+
+\subsection{Tanh layer pseudocode}
+
+\begin{verbatim}
+def pz_twojet_tanh(layer, jet, chebyshev_degree, options):
+    Z = jet.Y
+    Jz = jet.J
+    Hz = jet.H
+
+    Ys = []
+    Js = []
+    Hs = []
+
+    for i in range(Z.output_dim):
+        Zi = Z.component(i)
+        Jzi = Jz.component(i)       # shape (d_in,)
+        Hzi = Hz.component(i)       # shape (d_in, d_in)
+
+        Ii = Zi.interval_enclosure(outward=True)
+
+        p_i = compute_chebyshev_tanh(Ii, degree=chebyshev_degree)
+        Delta_i = certify_tanh_residual(Ii, p_i, options)
+
+        eta_i = new_noise_symbol()
+
+        Si = evaluate_polynomial_on_pz(p_i, Zi) + Delta_i * eta_i
+        Sip = 1 - Si * Si
+        Sipp = -2 * Si + 2 * Si * Si * Si
+
+        Yi = Si
+        Ji = Sip * Jzi
+        Hi = Sipp * tensor_outer(Jzi, Jzi) + Sip * Hzi
+
+        Ys.append(Yi)
+        Js.append(Ji)
+        Hs.append(Hi)
+
+    return PZTwoJet(
+        Y=stack_pz(Ys),
+        J=stack_pz(Js),
+        H=stack_pz(Hs)
+    )
+\end{verbatim}
+
+\section{Soundness theorem}
+
+\begin{theorem}[Soundness of polynomial-zonotope two-jet propagation]
+Assume the following:
+\begin{enumerate}[label=(\roman*)]
+    \item every polynomial-zonotope arithmetic operation used by the implementation is inclusion-preserving;
+    \item every reduction or re-enclosure step is inclusion-preserving;
+    \item for every tanh activation neuron \(i\), the certified approximation satisfies
+    \[
+        \forall t\in I_i:
+        \qquad
+        \tanh(t)\in p_i(t)+[-\Delta_i,\Delta_i];
+    \]
+    \item every scalar preactivation polynomial zonotope \(Z_i\) satisfies
+    \[
+        Z_i([-1,1]^p)\subseteq I_i.
+    \]
+\end{enumerate}
+Then the final propagated objects
+\[
+    Y^L\in\PZ(\R^{d_{\mathrm{out}}}),
+    \qquad
+    J^L\in\PZ(\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}),
+    \qquad
+    H^L\in\PZ(\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}\times d_{\mathrm{in}}})
+\]
+satisfy
+\[
+    \forall x\in Z_X:
+    \qquad
+    \Phi(x)\in Y^L,
+\]
+\[
+    D\Phi|_x\in J^L,
+\]
+and
+\[
+    D^2\Phi|_x\in H^L.
+\]
+\end{theorem}
+
+\begin{proof}
+The proof is by induction over layers. At the input layer,
+\[
+    Y^0=X,
+    \qquad
+    J^0=\Id,
+    \qquad
+    H^0=0,
+\]
+so the statement is exact.
+
+For an affine layer \(z=Ay+b\), the chain rule gives
+\[
+    Dz=A\,Dy,
+    \qquad
+    D^2z=A\,D^2y.
+\]
+The implemented propagation
+\[
+    Y_z=AY+b,
+    \qquad
+    J_z=AJ,
+    \qquad
+    H_z=AH
+\]
+therefore gives exact enclosures, assuming polynomial-zonotope linear maps are implemented inclusion-preservingly.
+
+For a tanh layer, consider one neuron \(i\). By assumption,
+\[
+    \tanh(z_i)\in p_i(z_i)+\Delta_i\eta_i=:S_i.
+\]
+The identities
+\[
+    \tanh'(t)=1-\tanh(t)^2,
+\]
+\[
+    \tanh''(t)=-2\tanh(t)+2\tanh(t)^3
+\]
+imply that
+\[
+    S_i'=1-S_i^2
+\]
+encloses \(\tanh'(z_i)\), and
+\[
+    S_i''=-2S_i+2S_i^3
+\]
+encloses \(\tanh''(z_i)\), provided polynomial-zonotope multiplication is inclusion-preserving. The second-order chain rule gives
+\[
+    Dy_i=\tanh'(z_i)Dz_i,
+\]
+\[
+    D^2y_i=\tanh''(z_i)Dz_i\otimes Dz_i+\tanh'(z_i)D^2z_i.
+\]
+Thus the implemented formulas
+\[
+    J_i=S_i'J_{z,i},
+\]
+\[
+    H_i=S_i''J_{z,i}\otimes J_{z,i}+S_i'H_{z,i}
+\]
+are valid enclosures. This proves the induction step. The conclusion follows after the last layer.
+\end{proof}
+
+\section{Practical implementation plan for \texttt{intervalNets}}
+
+The following modules and classes are suggested.
+
+\subsection{\texttt{PolynomialZonotope}}
+
+A core file such as \path{src/intervalnets/pz.py} should define the class \texttt{PolynomialZonotope}. Responsibilities:
+\begin{enumerate}[label=(\roman*)]
+    \item store center and monomial coefficients;
+    \item store exponent vectors;
+    \item support vector-, matrix-, and tensor-valued coefficients;
+    \item implement addition, scalar multiplication, multiplication, linear maps, tensor products, stacking, slicing, and component extraction;
+    \item provide interval enclosure through existing outward-rounded interval types;
+    \item provide optional reduction.
+\end{enumerate}
+
+\subsection{\texttt{PZTwoJet}}
+
+A file such as \path{src/intervalnets/pz_twojet.py} should define \texttt{PZTwoJet}. Responsibilities:
+\begin{enumerate}[label=(\roman*)]
+    \item carry \texttt{Y}, \texttt{J}, and \texttt{H};
+    \item expose shape checks;
+    \item expose reduction;
+    \item expose conversion to interval enclosures for debugging and testing.
+\end{enumerate}
+
+\subsection{Activation approximation}
+
+A file such as \path{src/intervalnets/activation_approx.py} should implement:
+\begin{enumerate}[label=(\roman*)]
+    \item \texttt{compute\_remez\_tanh(interval, degree)};
+    \item \texttt{certify\_tanh\_residual(interval, polynomial, options)};
+    \item fallback adaptive interval residual certification.
+\end{enumerate}
+
+\subsection{Residual certification}
+
+A file such as \path{src/intervalnets/residual_certification.py} should implement:
+\begin{enumerate}[label=(\roman*)]
+    \item interval evaluation of \(r(t)=\tanh(t)-p(t)\);
+    \item interval evaluation of \(r'(t)=1-\tanh(t)^2-p'(t)\);
+    \item interval Newton or bisection root isolation for \(r'\);
+    \item upward-rounded residual maximum computation.
+\end{enumerate}
+
+\subsection{Layer propagation}
+
+A file such as \path{src/intervalnets/pz_layers.py} should implement:
+\begin{enumerate}[label=(\roman*)]
+    \item \texttt{pz\_twojet\_linear(layer, jet)};
+    \item \texttt{pz\_twojet\_tanh(layer, jet, remez\_degree, options)};
+    \item optional support dispatch for \texttt{nn.Sequential}.
+\end{enumerate}
+
+\subsection{User-facing integration}
+
+The repository already uses opt-in monkey patching for interval evaluation. The new functionality should follow the same style. For example, one could add \texttt{enable\_pz\_jet\_eval()}. After enabling, a user should be able to call:
+\begin{verbatim}
+from intervalnets import PolynomialZonotope, enable_pz_jet_eval
+
+enable_pz_jet_eval()
+
+X = PolynomialZonotope.from_generators(center, generators, exponents)
+jet = model.eval_pz_twojet(X, chebyshev_degree=5)
+
+Y = jet.Y
+J = jet.J
+H = jet.H
+\end{verbatim}
+
+\section{Testing plan}
+
+\subsection{Unit tests for polynomial-zonotope arithmetic}
+
+Implement tests for:
+\begin{enumerate}[label=(\roman*)]
+    \item addition with exponent merging;
+    \item scalar multiplication;
+    \item scalar polynomial-zonotope multiplication;
+    \item scalar times vector-valued polynomial zonotope;
+    \item scalar times matrix-valued polynomial zonotope;
+    \item tensor products;
+    \item stacking and component extraction;
+    \item reduction preserving enclosure.
+\end{enumerate}
+For each operation, compare against dense sampling over \(\eps\in[-1,1]^p\) as a sanity check. Sampling is not a proof but is useful for detecting implementation bugs.
+
+\subsection{Unit tests for interval enclosure}
+
+For random polynomial zonotopes \(Z\), verify numerically that sampled values lie inside the computed interval enclosure. Also test degenerate cases:
+\begin{enumerate}[label=(\roman*)]
+    \item no generators;
+    \item zero generators;
+    \item repeated exponents;
+    \item high-degree monomials;
+    \item mixed tensor-valued coefficients.
+\end{enumerate}
+
+\subsection{Tests for tanh residual certification}
+
+For random intervals \(I\) and degrees \(q\):
+\begin{enumerate}[label=(\roman*)]
+    \item compute \(p\) by Remez or fallback approximation;
+    \item certify \(\Delta\);
+    \item verify by dense sampling that \(|\tanh(t)-p(t)|\leq\Delta\);
+    \item test wide, narrow, positive, negative, and symmetric intervals.
+\end{enumerate}
+The dense sampling check is only a sanity test; the actual guarantee comes from interval certification.
+
+\subsection{Tests against PyTorch autograd}
+
+For small networks and random input polynomial zonotopes:
+\begin{enumerate}[label=(\roman*)]
+    \item compute \((Y,J,H)=\texttt{model.eval\_pz\_twojet}(X)\);
+    \item sample \(x=X(\eps)\);
+    \item compute \(\Phi(x)\), \(D\Phi|_x\), and \(D^2\Phi|_x\) using PyTorch autograd;
+    \item verify that the sampled pointwise values are contained in the corresponding polynomial-zonotope interval enclosures.
+\end{enumerate}
+
+\subsection{Exact small-network tests}
+
+Use networks where the exact formulas are simple:
+\[
+    \Phi(x)=Ax+b,
+\]
+\[
+    \Phi(x)=\tanh(ax+b),
+\]
+\[
+    \Phi(x)=\tanh(Ax+b)
+\]
+in low dimensions. For affine networks, the Hessian enclosure must be exactly zero.
+
+\subsection{Shape tests}
+
+Verify that:
+\[
+    \texttt{Y.shape}=(d_{\mathrm{out}},),
+\]
+\[
+    \texttt{J.shape}=(d_{\mathrm{out}},d_{\mathrm{in}}),
+\]
+\[
+    \texttt{H.shape}=(d_{\mathrm{out}},d_{\mathrm{in}},d_{\mathrm{in}}).
+\]
+Also test batched or unsupported inputs explicitly and fail with clear error messages if batching is not supported initially.
+
+\subsection{Regression tests after reduction}
+
+If reduction is implemented, test that reduction never invalidates sampled containment. For randomly generated polynomial zonotopes, compare the interval enclosure before and after reduction:
+\[
+    Z_{\mathrm{before}}\subseteq Z_{\mathrm{after}}.
+\]
+This should hold as a set enclosure, at least as verified by interval bounds and dense sampling sanity checks.
+
+\section{Limitations and future extensions}
+
+\subsection{Representation growth}
+
+Polynomial multiplication causes rapid growth in the number of monomials. The two-jet propagation through tanh layers introduces additional noise variables and powers of these variables. Therefore reduction strategies are essential for deeper networks.
+
+\subsection{Dependency preservation versus re-enclosure}
+
+Keeping polynomial dependence is sharper but more expensive. Re-enclosing discarded terms by intervals or independent noise variables is cheaper but increases overestimation. The implementation should make this tradeoff explicit through user options.
+
+\subsection{Higher-order jets}
+
+The same strategy extends to higher-order jets. The activation derivatives can be generated recursively by
+\[
+    q_{k+1}(y)=(1-y^2)q_k'(y).
+\]
+However, higher-order tensors grow quickly. The first implementation should focus on the two-jet.
+
+\subsection{Other activations}
+
+The framework can be extended to other smooth activations if one can provide:
+\begin{enumerate}[label=(\roman*)]
+    \item a certified polynomial approximation for the activation;
+    \item certified derivative enclosures, preferably derived algebraically from the activation enclosure.
+\end{enumerate}
+
+\subsection{Chebyshev interpolation fallback}
+
+If Remez is unavailable or unstable, Chebyshev interpolation can be used to obtain a good polynomial candidate. The residual must still be certified rigorously by root isolation or interval residual subdivision.
+
+\subsection{Certified operator norm bounds}
+
+The final Hessian polynomial zonotope can be converted into certified interval tensor bounds. From these, one can derive scalar operator norm or Frobenius norm bounds. For example, if
+\[
+    \boldsymbol H_{iab}=[\ell_{iab},u_{iab}]
+\]
+is an interval enclosure of the Hessian tensor components, then
+\[
+    \left(
+        \sum_{i,a,b}
+        \max\{|\ell_{iab}|,|u_{iab}|\}^2
+    \right)^{1/2}
+\]
+is a valid Frobenius-type upper bound, and hence also an upper bound for the corresponding operator norm.
+
+\section{Minimal implementation milestones}
+
+The recommended order of implementation is:
+\begin{enumerate}[label=\textbf{M\arabic*.}]
+    \item Implement \texttt{PolynomialZonotope} with addition, scalar multiplication, multiplication, stacking, slicing, and interval enclosure.
+    \item Implement \texttt{PZTwoJet}.
+    \item Implement affine layer propagation.
+    \item Implement a simple tanh approximation with conservative interval residual subdivision.
+    \item Implement tanh two-jet propagation.
+    \item Add \texttt{model.eval\_pz\_twojet(...)} for \texttt{nn.Sequential}.
+    \item Add Remez/minimax polynomial generation with configurable degree \(q\).
+    \item Add residual root isolation for sharper certified \(\Delta\).
+    \item Add reduction strategies for polynomial-zonotope growth.
+    \item Add full test coverage and examples.
+\end{enumerate}
+
+\section{Summary}
+
+This extension adds a validated forward-mode two-jet propagation engine to \texttt{intervalNets}. The core object is a triple
+\[
+    (Y,J,H),
+\]
+where \(Y\) encloses the network output, \(J\) encloses the Jacobian field, and \(H\) encloses the Hessian field over a polynomial-zonotope input set. Affine layers are propagated exactly. Tanh layers are handled by a certified polynomial approximation of \(\tanh\), together with algebraic derivative enclosures
+\[
+    \tanh'(t)=1-\tanh(t)^2,
+    \qquad
+    \tanh''(t)=-2\tanh(t)+2\tanh(t)^3.
+\]
+The implementation should preserve polynomial dependence on uncertainty variables whenever possible, while providing rigorous reduction and interval re-enclosure mechanisms to control growth.
+
+\end{document}

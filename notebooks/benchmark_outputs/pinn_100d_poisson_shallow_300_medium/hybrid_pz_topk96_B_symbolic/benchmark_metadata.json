@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.2",
+  "benchmark_level": "medium",
+  "problem_id": "poisson_100d_ridge",
+  "model_id": "pinn_100d_poisson_shallow_300_seed_20260804",
+  "method_id": "hybrid_pz_topk96_B_symbolic",
+  "git_commit": "fb576a55aed822c24764f8d4db93e38495445e37",
+  "dtype": "float64",
+  "device": "cpu",
+  "quantile_interpolation": "linear",
+  "cell_average": "volume_weighted",
+  "timestamp_utc": "2026-08-04T11:32:53.044341+00:00"
+}
