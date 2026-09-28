@@ -8,6 +8,7 @@ from time import perf_counter
 from typing import Any
 
 from .interval import Interval
+from .activations import tanh_double_prime_bounds
 from .polynomial_zonotope import PZOneJet, PZTwoJet, PolynomialZonotope
 from .pz_tanh import (
     affine_tanh_double_prime_enclosure,
@@ -2178,11 +2179,17 @@ def _interval_second_derivative_bounds_sigmoid(value: Interval) -> Interval:
 
 
 def _interval_second_derivative_bounds_tanh(value: Interval) -> Interval:
-    tanh_bounds = _apply_monotone_bounds(IntervalTensor((value.lower,), (value.upper,)), tanh)
-    tanh_interval = Interval(tanh_bounds.lower[0], tanh_bounds.upper[0])
-    one = Interval.point(1.0)
-    two = Interval.point(2.0)
-    return -(two * tanh_interval * (one - (tanh_interval * tanh_interval)))
+    bounds = tanh_double_prime_bounds(value)
+    if bounds.lower == bounds.upper == 0.0:
+        return bounds
+    # Retain the PyTorch interval backend's extra float32 outward padding.
+    lower = _pad_outward(bounds.lower, -inf, include_float32=True)
+    upper = _pad_outward(bounds.upper, inf, include_float32=True)
+    if value.lower >= 0.0:
+        upper = min(upper, 0.0)
+    if value.upper <= 0.0:
+        lower = max(lower, 0.0)
+    return Interval.from_bounds(lower, upper)
 
 
 def _matrix_multiply(left: list[list[Interval]], right: list[list[Interval]]) -> list[list[Interval]]:

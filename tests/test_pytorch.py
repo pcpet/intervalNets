@@ -790,6 +790,30 @@ def test_eval_hessian_tanh_network_encloses_corner_second_derivatives() -> None:
             assert hessian.lower[0][1][1] <= expected_11 <= hessian.upper[0][1][1]
 
 
+@pytest.mark.parametrize(
+    "lower,upper,maximum_width",
+    [(0.5, 1.0, 0.130102), (-1.0, -0.5, 0.130102), (-1.0, 1.0, 1.539602)],
+)
+def test_tanh_hessian_includes_interior_extrema_with_tight_bounds(
+    lower, upper, maximum_width
+) -> None:
+    domain = IntervalTensor([lower], [upper])
+    hessian = _eval_hessian_bounds(nn.Tanh(), domain)
+    lo, hi = hessian.lower[0][0][0], hessian.upper[0][0][0]
+    critical = math.atanh(1.0 / math.sqrt(3.0))
+    maximum = 4.0 / (3.0 * math.sqrt(3.0))
+    if lower <= critical <= upper:
+        assert lo <= -maximum <= hi
+    if lower <= -critical <= upper:
+        assert lo <= maximum <= hi
+    assert hi - lo < maximum_width
+
+
+def test_tanh_hessian_at_zero_is_exact_zero() -> None:
+    hessian = _eval_hessian_bounds(nn.Tanh(), IntervalTensor([0.0], [0.0]))
+    assert hessian.lower[0][0][0] == hessian.upper[0][0][0] == 0.0
+
+
 def test_sobolev_norm_constant_network_matches_closed_form() -> None:
     enable_interval_eval()
     model = nn.Sequential(nn.Linear(1, 1))
