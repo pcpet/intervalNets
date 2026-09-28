@@ -26,6 +26,7 @@ from time import perf_counter
 from typing import Any, Literal
 
 from .interval import Interval
+from .activations import tanh_prime_bounds
 from .polynomial_zonotope import PolynomialZonotope
 from .pz_integration import PZIntegrationCell
 from .shallow_hybrid import (
@@ -414,21 +415,29 @@ def deep_scalar_hybrid_onejet_reverse(
         derivative_linear_coefficients = (
             derivative_linears + 2.0 * quadratics * z_center
         ).unsqueeze(1) * z_coefficients
-        endpoint_lower = 1.0 - torch.tanh(lower).square()
-        endpoint_upper = 1.0 - torch.tanh(upper).square()
-        derivative_lower = torch.minimum(endpoint_lower, endpoint_upper)
-        crosses_zero = (lower <= 0.0) & (upper >= 0.0)
-        derivative_upper = torch.where(
-            crosses_zero,
-            torch.ones_like(lower),
-            torch.maximum(endpoint_lower, endpoint_upper),
+        derivative_bounds = [
+            tanh_prime_bounds(Interval(float(lo), float(hi)))
+            for lo, hi in zip(
+                lower.detach().cpu().tolist(), upper.detach().cpu().tolist()
+            )
+        ]
+        derivative_lower = torch.tensor(
+            [bounds.lower for bounds in derivative_bounds],
+            dtype=lower.dtype,
+            device=lower.device,
         )
+        derivative_upper = torch.tensor(
+            [bounds.upper for bounds in derivative_bounds],
+            dtype=upper.dtype,
+            device=upper.device,
+        )
+        # Round outward again after conversion to the factor's tensor dtype.
         derivative_lower = torch.nextafter(
             derivative_lower, torch.full_like(derivative_lower, -torch.inf)
-        )
+        ).clamp(min=0.0, max=1.0)
         derivative_upper = torch.nextafter(
             derivative_upper, torch.full_like(derivative_upper, torch.inf)
-        )
+        ).clamp(min=0.0, max=1.0)
         raw_factors.append(
             {
                 "preactivation_center": z_center,

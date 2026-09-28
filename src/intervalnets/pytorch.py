@@ -8,7 +8,7 @@ from time import perf_counter
 from typing import Any
 
 from .interval import Interval
-from .activations import tanh_double_prime_bounds
+from .activations import tanh_double_prime_bounds, tanh_prime_bounds
 from .polynomial_zonotope import PZOneJet, PZTwoJet, PolynomialZonotope
 from .pz_tanh import (
     affine_tanh_double_prime_enclosure,
@@ -280,9 +280,10 @@ def _pz_onejet_trace_record(
 try:
     import torch
     from torch import nn
-except ImportError:  # pragma: no cover - environment dependent
-    torch = None
-    nn = None
+except ImportError as exc:  # pragma: no cover - environment dependent
+    # The package's optional-import guard must receive ImportError before
+    # class definitions attempt to inherit from nn.Module.
+    raise ImportError("PyTorch is required for intervalnets.pytorch.") from exc
 
 
 class IntervalTensor(Interval):
@@ -2148,20 +2149,12 @@ def _interval_derivative_bounds_sigmoid(value: Interval) -> Interval:
 
 
 def _interval_derivative_bounds_tanh(value: Interval) -> Interval:
-    lower = float(value.lower)
-    upper = float(value.upper)
-    tanh_lower = tanh(lower)
-    tanh_upper = tanh(upper)
-
-    derivative_lower_endpoint = 1.0 - tanh_lower * tanh_lower
-    derivative_upper_endpoint = 1.0 - tanh_upper * tanh_upper
-
-    maximum = max(derivative_lower_endpoint, derivative_upper_endpoint)
-    if lower <= 0.0 <= upper:
-        maximum = 1.0
-    minimum = min(derivative_lower_endpoint, derivative_upper_endpoint)
-    lower_out = _pad_outward(minimum, -inf, include_float32=True)
-    upper_out = _pad_outward(maximum, inf, include_float32=True)
+    bounds = tanh_prime_bounds(value)
+    if bounds.lower == bounds.upper and bounds.lower in (0.0, 1.0):
+        return bounds
+    # Retain float32 padding, intersected with the exact global range [0,1].
+    lower_out = max(0.0, _pad_outward(bounds.lower, -inf, include_float32=True))
+    upper_out = min(1.0, _pad_outward(bounds.upper, inf, include_float32=True))
     return Interval.from_bounds(lower_out, upper_out)
 
 

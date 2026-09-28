@@ -111,6 +111,41 @@ def test_deep_factored_hybrid_retains_all_factors_and_is_sound() -> None:
     assert torch.all(gradients <= enclosure_upper)
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("lower,upper", [(-1.0, 1.0), (20.0, 21.0), (60.0, 61.0)])
+def test_deep_derivative_intervals_enclose_real_values_including_saturation(
+    dtype, lower, upper
+) -> None:
+    from decimal import Decimal, localcontext
+
+    model = nn.Sequential(
+        nn.Linear(1, 1), nn.Tanh(), nn.Linear(1, 1), nn.Tanh(), nn.Linear(1, 1)
+    ).to(dtype=dtype)
+    with torch.no_grad():
+        for layer in (model[0], model[2], model[4]):
+            layer.weight.fill_(1.0)
+            layer.bias.zero_()
+    domain = PolynomialZonotope.from_box(
+        torch.tensor([lower], dtype=dtype), torch.tensor([upper], dtype=dtype)
+    )
+    result = scalar_hybrid_onejet_reverse(model, domain)
+    for factor in result.factors:
+        assert torch.all(factor.derivative_lower >= 0)
+        assert torch.all(factor.derivative_upper <= 1)
+        a, b = factor.preactivation_lower.item(), factor.preactivation_upper.item()
+        lo, hi = factor.derivative_lower.item(), factor.derivative_upper.item()
+        assert factor.derivative_lower.dtype == factor.center.dtype
+        if a <= 0 <= b:
+            assert hi == 1.0
+        with localcontext() as ctx:
+            ctx.prec = 100
+            for x in (a, (a+b)/2, b):
+                z = Decimal.from_float(x)
+                cosh = (z.exp() + (-z).exp()) / 2
+                real = 1 / cosh**2
+                assert Decimal.from_float(lo) <= real <= Decimal.from_float(hi)
+
+
 def test_deep_factored_integral_encloses_sampled_w12() -> None:
     model = _deep_model()
     box = IntervalTensor.from_bounds([-0.35, -0.35], [0.35, 0.35])
