@@ -42,6 +42,59 @@ _CRITICAL_LO, _CRITICAL_HI, _MAXIMUM_HI = _critical_bounds()
 _MIN_SUBNORMAL = nextafter(0.0, inf)
 
 
+def _tanh_prime_point_bounds(x: float) -> tuple[float, float]:
+    if x == 0.0:
+        return 1.0, 1.0
+    if isinf(x):
+        return 0.0, 0.0
+    if abs(x) >= 400.0:
+        # 0 < tanh'(x) <= 4*exp(-800) < 2**-1074 at finite endpoints.
+        return 0.0, _MIN_SUBNORMAL
+
+    down, up = _contexts()
+    magnitude = Decimal.from_float(abs(x))
+    exponent_lo = down.multiply(-2, magnitude)
+    exponent_hi = up.multiply(-2, magnitude)
+    q_lo = max(Decimal(0), down.next_minus(down.exp(exponent_lo)))
+    q_hi = min(Decimal(1), up.next_plus(up.exp(exponent_hi)))
+
+    # h(q)=4*q/(1+q)**2 is increasing for q in [0,1]. Evaluate h(q_lo)
+    # downward and h(q_hi) upward, rather than subtracting tanh(x)**2
+    # from 1. This also avoids cancellation near zero.
+    base_lo_upper = up.add(1, q_lo)
+    base_hi_lower = down.add(1, q_hi)
+    lower = down.divide(
+        down.multiply(4, q_lo), up.multiply(base_lo_upper, base_lo_upper)
+    )
+    upper = up.divide(
+        up.multiply(4, q_hi), down.multiply(base_hi_lower, base_hi_lower)
+    )
+    return max(0.0, _float_lower(lower)), min(1.0, _float_upper(upper))
+
+
+def tanh_prime_bounds(value: Interval) -> Interval:
+    """Enclose the mathematical ``tanh'`` on a scalar interval.
+
+    ``tanh'`` is even and decreases with distance from zero. Evaluate the
+    largest distance for the minimum and the smallest for the maximum;
+    a domain containing zero has maximum exactly 1. Endpoint values use
+    outward-rounded Decimal arithmetic for 4*q/(1+q)**2 with q=exp(-2|x|).
+    Bounds stay within [0,1], including subnormal/underflow cases. Infinite
+    endpoints use limits. No assumption about libm accuracy is needed.
+    """
+    if not isinstance(value, Interval) or value.shape != ():
+        raise TypeError("tanh_prime_bounds requires a scalar Interval.")
+    a, b = float(value.lower), float(value.upper)
+    if isnan(a) or isnan(b):
+        raise ValueError("tanh_prime_bounds does not accept NaN endpoints.")
+
+    far = max(abs(a), abs(b))
+    near = 0.0 if a <= 0.0 <= b else min(abs(a), abs(b))
+    far_bounds = _tanh_prime_point_bounds(far)
+    upper = far_bounds[1] if near == far else _tanh_prime_point_bounds(near)[1]
+    return Interval.from_bounds(far_bounds[0], upper)
+
+
 def _tanh_double_prime_point_bounds(x: float) -> tuple[float, float]:
     if x == 0.0 or isinf(x):
         # The values at infinite endpoints are the limits at infinity.

@@ -1080,6 +1080,26 @@ def test_sigmoid_jacobian_encloses_autograd_corner_gradients() -> None:
                     assert jacobian.lower[row][col] <= exact <= jacobian.upper[row][col]
 
 
+def test_tanh_jacobian_at_zero_is_exact_identity() -> None:
+    jacobian = _eval_jacobian_bounds(nn.Tanh(), IntervalTensor([0.0], [0.0]))
+    assert jacobian.lower[0][0] == jacobian.upper[0][0] == 1.0
+
+
+def test_tanh_jacobian_encloses_real_derivative_in_saturated_tail() -> None:
+    from decimal import Decimal, localcontext
+
+    jacobian = _eval_jacobian_bounds(nn.Tanh(), IntervalTensor([20.0], [21.0]))
+    lo, hi = jacobian.lower[0][0], jacobian.upper[0][0]
+    assert 0.0 < lo <= hi < 2e-17
+    with localcontext() as ctx:
+        ctx.prec = 100
+        for x in [20, 20.5, 21]:
+            z = Decimal(str(x))
+            cosh = (z.exp() + (-z).exp()) / 2
+            real = 1 / cosh**2
+            assert Decimal.from_float(lo) <= real <= Decimal.from_float(hi)
+
+
 def test_tanh_jacobian_encloses_autograd_corner_gradients() -> None:
     enable_interval_eval()
     tanh = nn.Tanh()

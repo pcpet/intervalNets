@@ -42,6 +42,34 @@ optimal/tightest interval boxes for every operation.
 - Scalar division by an interval containing `0` raises `ZeroDivisionError`.
 - Vector interval division is intentionally not implemented and raises `NotImplementedError`.
 
+## Scalar first derivative of tanh
+
+`tanh_prime_bounds(value: Interval) -> Interval` is available directly from
+`intervalnets`, without PyTorch. It encloses the mathematical derivative on a
+scalar interval using its evenness and monotonic decrease with distance from
+zero:
+
+```python
+from intervalnets import Interval, tanh_prime_bounds
+
+bounds = tanh_prime_bounds(Interval(20.0, 21.0))
+# Approximately [2.299808905717424e-18, 1.699341702116636e-17].
+```
+
+Endpoint values use the stable expression `4*q/(1+q)**2`, where
+`q = exp(-2*abs(x))`, with outward-rounded Decimal arithmetic. This avoids
+the cancellation and saturation error in `1-tanh(x)**2`. The exact maximum
+is 1 on intervals containing zero, and the point interval at zero returns
+`[1,1]`. All results lie in `[0,1]`; finite saturated/underflow cases keep a
+positive upper bound, and infinite endpoints use limits. NaN endpoints and
+nonscalar inputs are rejected. See [the rounding argument](tanh_prime_bounds.md).
+
+The interval Jacobian/Hessian backend uses this helper with its extra float32
+padding, clipped to `[0,1]`. The deep hybrid derivative interval factors also
+use it and round outward after conversion to their tensor dtype. The scalar
+API encloses the real derivative rather than arbitrary floating-point
+autograd errors.
+
 ## Scalar second derivative of tanh
 
 `tanh_double_prime_bounds(value: Interval) -> Interval` is available directly
