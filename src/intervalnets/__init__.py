@@ -1,8 +1,9 @@
 """Interval arithmetic utilities for neural network evaluation."""
 
 from .interval import Interval
+from .activations import tanh_double_prime_bounds
 
-__all__ = ["Interval"]
+__all__ = ["Interval", "tanh_double_prime_bounds"]
 
 try:
     from .pytorch import (

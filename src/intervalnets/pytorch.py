@@ -5,6 +5,7 @@ from math import exp, inf, isfinite, log, nextafter, tanh
 from typing import Any
 
 from .interval import Interval
+from .activations import tanh_double_prime_bounds
 
 try:
     import torch
@@ -695,6 +696,20 @@ def _interval_derivative_bounds_tanh(value: Interval) -> Interval:
     lower_out = _pad_outward(minimum, -inf, include_float32=True)
     upper_out = _pad_outward(maximum, inf, include_float32=True)
     return Interval.from_bounds(lower_out, upper_out)
+
+
+def _interval_second_derivative_bounds_tanh(value: Interval) -> Interval:
+    bounds = tanh_double_prime_bounds(value)
+    if bounds.lower == bounds.upper == 0.0:
+        return bounds
+    # Retain the PyTorch interval backend's extra float32 outward padding.
+    lower = _pad_outward(bounds.lower, -inf, include_float32=True)
+    upper = _pad_outward(bounds.upper, inf, include_float32=True)
+    if value.lower >= 0.0:
+        upper = min(upper, 0.0)
+    if value.upper <= 0.0:
+        lower = max(lower, 0.0)
+    return Interval.from_bounds(lower, upper)
 
 
 def _matrix_multiply(left: list[list[Interval]], right: list[list[Interval]]) -> list[list[Interval]]:
