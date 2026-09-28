@@ -1,0 +1,5 @@
+run_id,norm,squared,lower,upper,width,relative_width,value_contribution_upper,gradient_contribution_upper,hessian_contribution_upper,value_contribution_width,gradient_contribution_width,hessian_contribution_width,status,domain_volume,domain_volume_normalized_lower,domain_volume_normalized_upper,domain_volume_normalized_width
+pinn100d_shallow300_medium_interval,L2,1,0.0,3.1882186888590865e-68,3.1882186888590865e-68,1.0,NA,NA,NA,NA,NA,NA,ok,1.2676506002282363e-70,0.0,251.50610809359125,251.50610809359125
+pinn100d_shallow300_medium_interval,L2,0,0.0,1.7855583689308748e-34,1.7855583689308748e-34,1.0,NA,NA,NA,NA,NA,NA,ok,1.2676506002282363e-70,0.0,15.858944103993533,15.858944103993533
+pinn100d_shallow300_medium_interval,W12,1,0.0,4.013416448073769e-68,4.013416448073769e-68,1.0,NA,NA,NA,NA,NA,NA,ok,1.2676506002282363e-70,0.0,316.6027332256354,316.6027332256354
+pinn100d_shallow300_medium_interval,W12,0,0.0,2.0033513042084675e-34,2.0033513042084675e-34,1.0,NA,NA,NA,NA,NA,NA,ok,1.2676506002282363e-70,0.0,17.793333954760566,17.793333954760566

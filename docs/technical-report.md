@@ -5,7 +5,7 @@
 
 ## Executive Summary
 
-intervalNets provides interval arithmetic and interval-aware neural-network evaluation with outward rounding. The repository combines a compact mathematical core (`interval.py`) with a PyTorch integration layer (`pytorch.py`) that overloads model evaluation on interval inputs and adds certified bounds for Jacobians, $L^p$ norms, and Sobolev-style norms. This document focuses on those two files.
+intervalNets provides interval arithmetic and interval-aware neural-network evaluation with outward rounding. The repository combines a compact mathematical core (`interval.py`) with a PyTorch integration layer (`pytorch.py`) that overloads model evaluation on interval inputs and adds certified bounds for Jacobians/Hessians, $L^p$ norms, and Sobolev-style norms (orders 1 and 2). This document focuses on those two files.
 
 The current implementation emphasizes **fast conservative enclosures** for neural-network workloads,
 especially matrix-by-interval-vector propagation and Jacobian composition. It does not attempt to
@@ -16,7 +16,7 @@ compute globally tightest interval enclosures in every step.
 At a high level, the codebase separates concerns:
 
 - `src/intervalnets/interval.py`: scalar and nested-tuple interval representation, shape-aware operations, and outward-rounded arithmetic primitives.
-- `src/intervalnets/pytorch.py`: PyTorch-facing interval tensor wrapper, layer-wise interval forward propagation, interval Jacobian propagation, and adaptive box refinement for norm enclosures.
+- `src/intervalnets/pytorch.py`: PyTorch-facing interval tensor wrapper, layer-wise interval forward propagation, interval Jacobian/Hessian propagation, and adaptive box refinement for norm enclosures.
 
 The architectural pattern is: **core numeric enclosure logic first**, then **framework adaptation**.
 
@@ -141,7 +141,7 @@ $
 
 ### 1) Purpose
 
-`pytorch.py` bridges the pure interval core to PyTorch modules. It introduces `IntervalTensor`, interval forward propagation for supported layers, Jacobian interval bounds, and adaptive interval integration for $L^p$ and Sobolev norms. It monkey-patches `nn.Module` to expose `model.eval(interval)`, `model.lpnorm(...)`, `model.eval_jacobian(...)`, and `model.sobolev_norm(...)`.
+`pytorch.py` bridges the pure interval core to PyTorch modules. It introduces `IntervalTensor`, interval forward propagation for supported layers, Jacobian/Hessian interval bounds, and adaptive interval integration for $L^p$ and Sobolev norms. It monkey-patches `nn.Module` to expose `model.eval(interval)`, `model.lpnorm(...)`, `model.eval_jacobian(...)`, `model.eval_hessian(...)`, and `model.sobolev_norm(...)`.
 
 ### 2) Structured Code Breakdown
 
@@ -150,11 +150,11 @@ $
 Core orchestration and helpers include:
 
 - Environment and conversion: `_require_torch`, `IntervalTensor.point`, `IntervalTensor.from_bounds`, `IntervalTensor.to_torch`.
-- Layer forward helpers: `_linear_forward`, `_relu_forward`, `_sigmoid_forward`, `_tanh_forward`, `_softplus_forward`, `_leaky_relu_forward`, `_softmax_forward`, plus slope-aware affine-relaxation helpers (`_concretize_affine_bounds`, `_linear_relaxation_step`, `_relu_relaxation_step`, `_sequential_linear_relu_relaxation`).
+- Layer forward helpers: `_linear_forward`, `_relu_forward`, `_sigmoid_forward`, `_tanh_forward`, `_softplus_forward`, `_leaky_relu_forward`, `_softmax_forward`, plus slope-aware linear-relaxation helpers (`_concretize_affine_bounds`, `_linear_relaxation_step`, `_relu_relaxation_step`, `_sequential_linear_relu_relaxation`).
 - Composite helpers: `_interval_add`, `_interval_cat`, `_logsumexp`, `_softmax_component_bounds`.
 - Norm machinery: `_box_volume`, `_lp_pointwise_power_bounds`, `_split_box`, `_lpnorm_bounds`.
-- Jacobian machinery: `_identity_jacobian`, `_matrix_multiply`, `_jacobian_for_layer`, `_eval_jacobian_bounds`.
-- Sobolev machinery: `_sobolev_pointwise_power_bounds`, `_sobolev_norm_bounds`.
+- Jacobian/Hessian machinery: `_identity_jacobian`, `_matrix_multiply`, `_jacobian_for_layer`, `_hessian_for_layer`, `_hessian_compose`, `_eval_jacobian_bounds`, `_eval_hessian_bounds`.
+- Sobolev machinery: `_sobolev_pointwise_power_bounds`, `_sobolev_norm_bounds` with `order ∈ {1,2}`.
 - Public dispatch/patch: `interval_forward(module, x, enclosure_mode=...)`, `enable_interval_eval(enclosure_mode=...)`.
 
 #### Classes and methods
@@ -174,7 +174,7 @@ Core orchestration and helpers include:
 - `_relu_forward`: specialized ReLU propagation that preserves exact `[0, 0]` images on non-positive intervals.
 - `_interval_abs_bounds` and `_interval_pow_scalar`: scalar interval transformations used in integral bounds.
 - `_split_box`: adaptive refinement by bisecting widest coordinate.
-- Slope-aware helpers keep lower/upper affine forms in the input variables and concretize with outward rounding to preserve certified enclosure guarantees.
+- Slope-aware helpers keep lower/upper linear relaxation forms in the input variables and concretize with outward rounding to preserve certified enclosure guarantees.
 
 #### Important imports and dependencies
 
@@ -191,10 +191,10 @@ Core orchestration and helpers include:
                                        [monkey patch nn.Module]
                                       /b         |c         \d
                                      v           v           v
-                            [eval(interval)] [lpnorm] [eval_jacobian/sobolev_norm]
+                            [eval(interval)] [lpnorm] [eval_jacobian/eval_hessian/sobolev_norm]
                                    |e           |f                 |g
                                    v            v                  v
-                              [interval_forward] [_lpnorm_bounds] [_eval_jacobian_bounds/_sobolev_norm_bounds]
+                              [interval_forward] [_lpnorm_bounds] [_eval_jacobian_bounds/_eval_hessian_bounds/_sobolev_norm_bounds]
                            /h   |i   |j   |k\        |l                    |m
                           v     v    v    v  v       v                     v
                      [Linear][Acts][Softmax][Add/Cat][Identity] [_split_box + _box_volume] [_jacobian_for_layer]
@@ -211,16 +211,16 @@ Core orchestration and helpers include:
 - (a) `enable_interval_eval` is the single entry for activating interval behavior.
 - (b) Patched `eval(interval)` routes interval input to interval forward propagation.
 - (c) Patched `lpnorm` routes to adaptive integral enclosure.
-- (d) Patched Jacobian and Sobolev APIs route to derivative-aware enclosure routines.
+- (d) Patched Jacobian/Hessian and Sobolev APIs route to derivative-aware enclosure routines.
 - (e) `eval(interval)` invokes `interval_forward` dispatch by module type.
 - (f) `lpnorm` invokes `_lpnorm_bounds`.
-- (g) Jacobian/Sobolev patched methods invoke `_eval_jacobian_bounds` / `_sobolev_norm_bounds`.
+- (g) Jacobian/Hessian/Sobolev patched methods invoke `_eval_jacobian_bounds` / `_eval_hessian_bounds` / `_sobolev_norm_bounds`.
 - (h) `interval_forward` delegates linear layers to `_linear_forward`.
 - (i) `interval_forward` delegates monotone activations to dedicated helpers.
 - (j) `interval_forward` delegates Softmax to specialized bound logic.
 - (k) branch combinators (`IntervalAdd`, `IntervalCat`) route to structural interval helpers.
 - (l) `_lpnorm_bounds` repeatedly uses `_split_box` and `_box_volume` for adaptive refinement.
-- (m) Jacobian/Sobolev flows rely on `_jacobian_for_layer` (and then aggregation).
+- (m) Jacobian/Hessian/Sobolev flows rely on `_jacobian_for_layer` / `_hessian_for_layer` (and then aggregation).
 - (n) `_linear_forward` uses `_scalar_interval_from_weight` per coefficient/bias term.
 - (o) activation helpers share `_apply_monotone_bounds` when monotonicity applies.
 - (p) Softmax helper computes component extrema via `_softmax_component_bounds`.
@@ -251,7 +251,9 @@ $
   $
   \|f\|_{L^p} = \left(\int |f(x)|^p\,dx\right)^{1/p}.
 $
-- Sobolev-style enclosure similarly accumulates powers of function outputs and Jacobian entries before integration.
+- Sobolev-style enclosure accumulates powers of function outputs and derivative entries before integration:
+  - `order=1`: outputs + Jacobian entries,
+  - `order=2`: outputs + Jacobian + Hessian entries.
 
 ### 6) Implementation Notes
 
@@ -259,10 +261,10 @@ $
 - Optional PyTorch dependency is guarded (`try/except ImportError`) and validated via `_require_torch`.
 - Monkey patching is global (`nn.Module`), one-way for process lifetime, and guarded by `_PATCHED`.
 - Adaptive integration chooses the box with largest indicator `(integrand width) * (box volume)` for bisection.
-- Sobolev refinement avoids over-refining rigorously constant boxes by detecting exact-constant outputs paired with exact-zero Jacobian enclosures and assigning zero refinement indicators to those boxes.
+- Sobolev refinement avoids over-refining rigorously constant boxes by detecting exact-constant outputs paired with exact-zero Jacobian enclosures (and exact-zero Hessian enclosures for `order=2`) and assigning zero refinement indicators to those boxes.
 - Forward enclosure mode is configurable:
   - `"box"`: baseline midpoint-radius propagation.
-  - `"slope"`: slope-aware affine relaxation for `nn.Sequential` chains of `nn.Linear` and `nn.ReLU`; when an unsupported layer appears, bounds are first concretized and propagation conservatively continues in `"box"` mode.
+  - `"slope"`: slope-aware linear relaxation for `nn.Sequential` chains of `nn.Linear` and `nn.ReLU`; when an unsupported layer appears, bounds are first concretized and propagation conservatively continues in `"box"` mode.
 
 ---
 

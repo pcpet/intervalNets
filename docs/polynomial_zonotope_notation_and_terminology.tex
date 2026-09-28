@@ -1,0 +1,143 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,tabularx,array}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\eps}{\varepsilon}
+\newcommand{\Sym}{\operatorname{Sym}}
+
+\title{Notation and Terminology for Polynomial-Zonotope Neural-Network Certification}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+This note fixes the notation used in the accompanying references.  There are
+exactly two classes of noise symbols: domain noise symbols \(\alpha\) and
+approximation noise symbols \(\eta\).  Their combined vector is
+\(\eps=(\alpha,\eta)\).  The word \emph{residual} is reserved for the actual
+approximation difference, not used as a second name for \(\eta\).
+
+\section{Basic objects}
+
+\renewcommand{\arraystretch}{1.25}
+\small
+\noindent\begin{tabularx}{\textwidth}{@{}>{$}l<{$} X@{}}
+\toprule
+\text{Symbol} & \text{Meaning} \\
+\midrule
+x & Physical input point in the domain of the neural network. \\
+\mathcal X\subseteq\R^{d_0} & Physical input set. \\
+X(\alpha) & Polynomial-zonotope parametrization of \(\mathcal X\). \\
+\alpha=(\alpha_1,\ldots,\alpha_p) & Domain noise symbols, with \(\alpha\in[-1,1]^p\). \\
+\eta=(\eta_1,\ldots,\eta_q) & Approximation noise symbols introduced by certified activation enclosures, with \(\eta\in[-1,1]^q\). \\
+\eps=(\alpha,\eta) & Combined vector of all polynomial variables after propagation. \\
+\lambda & Generic multi-index in \(\mathbb N_0^{p+q}\). \\
+\lambda=(\lambda^\alpha,\lambda^\eta) & Split into domain and approximation components. \\
+\eps^\lambda=\alpha^{\lambda^\alpha}\eta^{\lambda^\eta} & Monomial associated with \(\lambda\). \\
+\Lambda_P & Finite exponent support of a sparse polynomial \(P\). \\
+\bottomrule
+\end{tabularx}
+
+The input polynomial zonotope and a general \(U\)-valued propagated
+polynomial are written as
+\[
+ X(\alpha)=x_0+\sum_{\lambda\in\Lambda_X}x_\lambda\alpha^\lambda,
+ \qquad
+ P(\eps)=\sum_{\lambda\in\Lambda_P}P_\lambda\eps^\lambda,
+ \quad P_\lambda\in U.
+\]
+When several multi-indices occur in one formula, auxiliary letters such as
+\(\kappa\) and \(\gamma\) may be used; \(\lambda\) remains the canonical
+generic multi-index.
+
+\section{Network and two-jet notation}
+
+\noindent\begin{tabularx}{\textwidth}{@{}>{$}l<{$} X@{}}
+\toprule
+\text{Symbol} & \text{Meaning} \\
+\midrule
+\Phi & Complete neural network. \\
+A_\ell(y)=W_\ell y+b_\ell & Affine layer, with weight matrix \(W_\ell\) and bias \(b_\ell\). \\
+\sigma & Scalar activation function. \\
+\sigma_\ell & Componentwise activation layer. \\
+z_\ell,\ y_\ell & Preactivation and postactivation at hidden layer \(\ell\). \\
+Z_\ell(\eps),\ Y_\ell(\eps) & Corresponding polynomial enclosures. \\
+J_\ell(\eps),\ H_\ell(\eps) & Polynomial enclosures of the first and second physical-input derivatives. \\
+\left.\partial F\right|_x & First derivative of \(F\) evaluated at \(x\). \\
+\left.\partial^2F\right|_x & Second derivative of \(F\) evaluated at \(x\). \\
+\left.\partial_aF^i\right|_x,\ \left.\partial_{ab}F^i\right|_x & Coordinate entries of these derivatives. \\
+J_X(\alpha)=\left|\det\left.\partial X\right|_\alpha\right| & Nonnegative geometric Jacobian density of the domain parametrization. \\
+\bottomrule
+\end{tabularx}
+
+We use
+\[
+ \Phi=A_L\circ\sigma_L\circ\cdots\circ A_1\circ\sigma_1\circ A_0,
+\]
+and the propagated output coefficients have types
+\[
+ Y_\lambda\in\R^{d_{\rm out}},\qquad
+ J_\lambda\in\R^{d_{\rm out}}\otimes\R^{d_0*},\qquad
+ H_\lambda\in\R^{d_{\rm out}}\otimes\Sym^2(\R^{d_0*}).
+\]
+The derivatives are always with respect to the physical input \(x\); the
+dependence on \(\alpha\) only records evaluation along \(X(\alpha)\).
+
+\section{Activation enclosures and terminology}
+
+For \(r\in\{0,1,2\}\), with \(\sigma^{(0)}=\sigma\), the standard enclosure is
+\[
+ \sigma^{(r)}(t)
+ \in \widehat\sigma_{\ell i}^{(r)}(t)
+     +\rho_{\ell i}^{(r)}\eta_{\ell i}^{(r)},
+ \qquad \eta_{\ell i}^{(r)}\in[-1,1].
+\]
+
+\noindent\begin{tabularx}{\textwidth}{@{}>{$}l<{$} X@{}}
+\toprule
+\text{Symbol or term} & \text{Meaning} \\
+\midrule
+\widehat\sigma^{(r)} & Polynomial or affine approximation of \(\sigma^{(r)}\) on the certified preactivation interval. \\
+\rho\geq0 & Certified approximation-error radius. \\
+\eta^{(r)} & Approximation noise symbol. \\
+\rho\eta & Approximation noise term; indices are added when needed. \\
+r(t) & Residual function, defined by
+\(r(t)=\sigma^{(r)}(t)-\widehat\sigma^{(r)}(t)\). \\
+\bottomrule
+\end{tabularx}
+\normalsize
+
+A fresh approximation noise symbol is introduced for every independently
+certified scalar enclosure.  In the general two-jet construction this gives
+\(\eta_{\ell i}^{(0)},\eta_{\ell i}^{(1)},\eta_{\ell i}^{(2)}\) per neuron.
+The same \(\eta_{\ell i}^{(1)}\) is reused wherever the same enclosure of
+\(\sigma'\) occurs, including both the Jacobian and Hessian recurrences.
+Special constructions may instead derive all activation derivatives from one
+shared enclosure; such dependency sharing must be stated explicitly.
+
+\section{Canonical vocabulary}
+
+\noindent\begin{tabularx}{\textwidth}{@{}l X@{}}
+\toprule
+Preferred term & Usage \\
+\midrule
+Domain noise symbol & A component of \(\alpha\). \\
+Approximation noise symbol & A component of \(\eta\); this is the canonical name. \\
+Approximation-error radius & The nonnegative coefficient \(\rho\). \\
+Approximation noise term & The product \(\rho\eta\). \\
+Residual function & The actual difference between a function and its approximation. \\
+Polynomial enclosure & A polynomial together with its approximation noise terms. \\
+\bottomrule
+\end{tabularx}
+
+The terms \emph{residual symbol}, \emph{remainder symbol}, and
+\emph{pointwise-error variable} are avoided as alternative names for \(\eta\).
+The approximation noise symbol is a formal enclosure variable; its coefficient
+is the certified uniform bound on the residual over the relevant interval.
+
+\end{document}

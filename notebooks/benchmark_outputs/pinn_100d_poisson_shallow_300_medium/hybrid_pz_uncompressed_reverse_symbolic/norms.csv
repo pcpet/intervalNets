@@ -1,0 +1,5 @@
+run_id,norm,squared,lower,upper,width,relative_width,value_contribution_upper,gradient_contribution_upper,hessian_contribution_upper,value_contribution_width,gradient_contribution_width,hessian_contribution_width,status,domain_volume,domain_volume_normalized_lower,domain_volume_normalized_upper,domain_volume_normalized_width
+pinn100d_shallow300_medium_hybrid_pz_uncompressed_reverse_symbolic,L2,1,0.0,1.244073696539206e-69,1.244073696539206e-69,1.0,NA,NA,NA,NA,NA,NA,ok,1.2676506002282363e-70,0.0,9.81401102413563,9.81401102413563
+pinn100d_shallow300_medium_hybrid_pz_uncompressed_reverse_symbolic,L2,0,0.0,3.527142889846123e-35,3.527142889846123e-35,1.0,NA,NA,NA,NA,NA,NA,ok,1.2676506002282363e-70,0.0,3.1327321979600535,3.1327321979600535
+pinn100d_shallow300_medium_hybrid_pz_uncompressed_reverse_symbolic,W12,1,0.0,2.883487903430552e-69,2.883487903430552e-69,1.0,NA,NA,NA,NA,NA,NA,ok,1.2676506002282363e-70,0.0,22.7467087769405,22.7467087769405
+pinn100d_shallow300_medium_hybrid_pz_uncompressed_reverse_symbolic,W12,0,0.0,5.369811824850617e-35,5.369811824850617e-35,1.0,NA,NA,NA,NA,NA,NA,ok,1.2676506002282363e-70,0.0,4.769350980682853,4.769350980682853

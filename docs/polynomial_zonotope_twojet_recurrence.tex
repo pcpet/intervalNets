@@ -1,0 +1,290 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\eps}{\varepsilon}
+\newcommand{\etaapp}{\eta}
+\newcommand{\Sym}{\operatorname{Sym}}
+\newcommand{\diag}{\operatorname{diag}}
+
+\title{Recurrence Formulas for Polynomial-Zonotope\\
+Two-Jet Enclosures of Neural Networks}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Network, input, and enclosure convention}
+
+Consider the neural network
+\begin{equation}
+    \Phi
+    =A_L\circ\sigma_L\circ\cdots\circ A_1\circ\sigma_1\circ A_0
+    :\R^{d_0}\longrightarrow\R^{d_{L+1}},
+    \label{eq:network}
+\end{equation}
+where
+\[
+    A_\ell(y)=W_\ell y+b_\ell,
+    \qquad
+    W_\ell\in\R^{d_{\ell+1}\times d_\ell},
+    \qquad \ell=0,\ldots,L,
+\]
+and each activation is applied componentwise,
+\[
+    \sigma_\ell(z)_i=\sigma(z_i),
+    \qquad z\in\R^{d_\ell}.
+\]
+
+The input set is given parametrically by a polynomial zonotope
+\begin{equation}
+    X:[-1,1]^p\longrightarrow\R^{d_0},
+    \qquad
+    X(\alpha)=x_0+\sum_{\lambda\in\Lambda_X}x_\lambda\alpha^\lambda,
+    \label{eq:input-pz}
+\end{equation}
+where \(\Lambda_X\subset\N_0^p\setminus\{0\}\) is finite and
+\(\alpha^\lambda=\prod_{r=1}^p\alpha_r^{\lambda_r}\).
+The variables \(\alpha\) are the \emph{domain noise symbols}.
+
+For every activation layer \(\ell\), neuron \(i\), and derivative order
+\(r\in\{0,1,2\}\), first compute a certified preactivation interval
+\(I_{\ell i}\) and choose a polynomial \(\widehat\sigma_{\ell i}^{(r)}\)
+and an approximation-error radius \(\rho_{\ell i}^{(r)}\geq0\) such that
+\begin{equation}
+    \sigma^{(r)}(t)
+    \in
+    \widehat\sigma_{\ell i}^{(r)}(t)
+    +\rho_{\ell i}^{(r)}[-1,1]
+    \qquad\text{for every }t\in I_{\ell i}.
+    \label{eq:scalar-enclosure}
+\end{equation}
+Equivalently, at each point one may write
+\begin{equation}
+    \sigma^{(r)}(t)
+    =\widehat\sigma_{\ell i}^{(r)}(t)
+     +\rho_{\ell i}^{(r)}\eta_{\ell i}^{(r)},
+    \qquad \eta_{\ell i}^{(r)}\in[-1,1].
+    \label{eq:scalar-noise}
+\end{equation}
+These \(\eta_{\ell i}^{(r)}\) are the \emph{approximation noise symbols}.
+Their coefficients are certified uniform bounds for the corresponding
+residual functions.  There are no further kinds of noise symbols.
+
+If the activation satisfies an autonomous polynomial ODE
+\(\sigma'=g(\sigma)\), then
+\[
+    \sigma''=g'(\sigma)g(\sigma).
+\]
+These identities may be used to construct or certify the polynomials for the
+first and second derivatives.  The recurrence below does not depend on how the
+three certified scalar enclosures are obtained.
+
+The goal is to propagate the input parametrization immediately and obtain
+polynomial enclosures
+\[
+    Y(\eps),\qquad
+    J(\eps),\qquad
+    H(\eps),
+    \qquad \eps=(\alpha,\eta),
+\]
+for
+\[
+    \Phi(X(\alpha)),\qquad
+    \left.\partial\Phi\right|_{X(\alpha)},\qquad
+    \left.\partial^2\Phi\right|_{X(\alpha)},
+\]
+respectively.  Thus \(J\) and \(H\) are derivatives with respect to the
+physical network input \(x\in\R^{d_0}\), not derivatives with respect to
+the parameter \(\alpha\).  The parameter \(\alpha\) merely records where
+the two-jet is evaluated.
+
+\section{Initialization}
+
+Initialize the two-jet of the identity map, already evaluated on the input
+polynomial zonotope, by
+\begin{equation}
+    Y^{\mathrm{in}}(\alpha)=X(\alpha),
+    \qquad
+    J^{\mathrm{in}}=I_{d_0},
+    \qquad
+    H^{\mathrm{in}}=0.
+    \label{eq:initialization}
+\end{equation}
+Here
+\[
+    Y^{\mathrm{in}}\in\R^{d_0},\qquad
+    J^{\mathrm{in}}\in\R^{d_0\times d_0},\qquad
+    H^{\mathrm{in}}\in\R^{d_0\times d_0\times d_0}.
+\]
+All entries are polynomials in \(\alpha\); initially no approximation noise
+symbols are present.
+
+\section{The two recurrence steps}
+
+The complete algorithm consists only of an affine step and a componentwise
+activation step.
+
+\subsection{Affine step}
+
+Suppose \((Y,J,H)\) encloses the two-jet of a map with values in \(\R^m\),
+and let \(A(y)=Wy+b\) with \(W\in\R^{n\times m}\).  Then set
+\begin{equation}
+    \boxed{
+    \begin{aligned}
+        Z_i      &= b_i+\sum_{j=1}^m W_{ij}Y_j,\\
+        J^Z_{ia} &= \sum_{j=1}^m W_{ij}J_{ja},\\
+        H^Z_{iab}&= \sum_{j=1}^m W_{ij}H_{jab}.
+    \end{aligned}}
+    \label{eq:affine-recurrence}
+\end{equation}
+Equivalently, \(Z=WY+b\), \(J^Z=WJ\), and \(H^Z=WH\), where \(W\)
+contracts the output index of \(H\).  An affine layer introduces no new
+noise symbols and no approximation error.
+
+\subsection{Componentwise activation step}
+
+Assume that \((Z,J^Z,H^Z)\) is the preactivation two-jet at activation layer
+\(\ell\), with \(Z\in\R^{d_\ell}\).  Introduce the scalar polynomial
+enclosures
+\begin{equation}
+    S_{\ell i}^{(r)}
+    :=\widehat\sigma_{\ell i}^{(r)}(Z_i)
+      +\rho_{\ell i}^{(r)}\eta_{\ell i}^{(r)},
+    \qquad r=0,1,2.
+    \label{eq:substituted-enclosure}
+\end{equation}
+Because \(Z_i\) is already a polynomial in the domain and previously
+introduced approximation symbols, the substitution
+\(\widehat\sigma_{\ell i}^{(r)}(Z_i)\) is again a polynomial in those symbols.
+
+The activated two-jet is
+\begin{equation}
+    \boxed{
+    \begin{aligned}
+        Y_i
+        &=S_{\ell i}^{(0)},\\
+        J_{ia}
+        &=S_{\ell i}^{(1)}J^Z_{ia},\\
+        H_{iab}
+        &=S_{\ell i}^{(2)}J^Z_{ia}J^Z_{ib}
+          +S_{\ell i}^{(1)}H^Z_{iab}.
+    \end{aligned}}
+    \label{eq:activation-recurrence}
+\end{equation}
+The indices range over
+\[
+    i=1,\ldots,d_\ell,
+    \qquad
+    a,b=1,\ldots,d_0.
+\]
+Formula \eqref{eq:activation-recurrence} is exactly the componentwise
+second-order chain rule with \(\sigma\), \(\sigma'\), and \(\sigma''\)
+replaced by their certified polynomial enclosures.
+
+The same symbol \(\eta_{\ell i}^{(1)}\), and hence the same polynomial
+\(S_{\ell i}^{(1)}\), should be reused in the Jacobian formula and in the
+second term of the Hessian formula.  This preserves the dependency created
+by the repeated occurrence of the same quantity \(\sigma'(Z_i)\).
+The symbols for derivative orders \(r=0,1,2\) remain distinct because they
+certify three different scalar residuals.
+
+For reference, in compact tensor notation let
+\[
+    D_\ell=\diag(S_\ell^{(1)}),
+    \qquad
+    E_\ell=\diag(S_\ell^{(2)}).
+\]
+Then
+\begin{equation}
+    J=D_\ell J^Z,
+    \qquad
+    H_{iab}
+    =(E_\ell)_{ii}J^Z_{ia}J^Z_{ib}
+      +(D_\ell)_{ii}H^Z_{iab}.
+    \label{eq:compact-activation}
+\end{equation}
+
+\section{Layerwise algorithm}
+
+Starting from \eqref{eq:initialization}, perform the following operations:
+\begin{enumerate}
+    \item Apply the affine recurrence \eqref{eq:affine-recurrence} with
+          \(A_0\).
+    \item For \(\ell=1,\ldots,L\):
+          \begin{enumerate}
+              \item apply the activation recurrence
+                    \eqref{eq:activation-recurrence} for \(\sigma_\ell\);
+              \item apply the affine recurrence
+                    \eqref{eq:affine-recurrence} with \(A_\ell\).
+          \end{enumerate}
+\end{enumerate}
+After the final affine map \(A_L\), the resulting arrays have shapes
+\begin{equation}
+    Y\in\R^{d_{L+1}},
+    \qquad
+    J\in\R^{d_{L+1}\times d_0},
+    \qquad
+    H\in\R^{d_{L+1}\times d_0\times d_0},
+    \label{eq:output-shapes}
+\end{equation}
+and every entry is a polynomial in
+\begin{equation}
+    \eps=(\alpha,\eta),
+    \qquad
+    \alpha\in[-1,1]^p,
+    \quad
+    \eta\in[-1,1]^q,
+    \label{eq:all-noises}
+\end{equation}
+for the total number \(q\) of introduced approximation symbols.  Consequently,
+\((Y,J,H)\) is itself a polynomial-zonotope enclosure of the two-jet of
+\(\Phi\) over \(X([-1,1]^p)\).
+
+\section{Ground-truth identities and implementation invariants}
+
+The recurrence is justified by the exact identities
+\begin{align}
+    \left.\partial(A\circ f)\right|_x
+        &=W\left.\partial f\right|_x,\\
+    \left.\partial^2(A\circ f)\right|_x
+        &=W\left.\partial^2 f\right|_x,\\
+    \left.\partial_a(\sigma\circ f)_i\right|_x
+        &=\sigma'(f_i(x))\left.\partial_a f_i\right|_x,\\
+    \left.\partial_{ab}(\sigma\circ f)_i\right|_x
+        &=\sigma''(f_i(x))
+          \left.\partial_a f_i\right|_x
+          \left.\partial_b f_i\right|_x
+          +\sigma'(f_i(x))\left.\partial_{ab} f_i\right|_x.
+    \label{eq:exact-identities}
+\end{align}
+Replacing the three scalar activation quantities in these identities by
+\eqref{eq:scalar-noise} gives \eqref{eq:activation-recurrence}.  Induction over
+the layers therefore yields a pointwise enclosure of the value, Jacobian, and
+Hessian, provided every interval \(I_{\ell i}\) contains the corresponding
+preactivation range and every scalar bound \eqref{eq:scalar-enclosure} is
+certified (with outward rounding in floating-point arithmetic).
+
+The following are useful implementation invariants:
+\begin{itemize}
+    \item \(H_{iab}=H_{iba}\); only one triangular half need be stored if the
+          remaining code respects this convention.
+    \item Domain symbols are created only by the input parametrization.
+          Activation layers create only approximation symbols.
+    \item Polynomial coefficients are vector-, matrix-, or tensor-valued, but
+          the exponent keys belong to the single common variable vector
+          \(\eps=(\alpha,\eta)\).
+    \item Canonicalize equal exponent vectors after polynomial products and
+          substitutions; this does not alter the enclosure.
+    \item Degree or term truncation is not part of the recurrence above.  If
+          used, every discarded contribution must be transferred to a fresh
+          certified approximation enclosure.
+\end{itemize}
+
+\end{document}

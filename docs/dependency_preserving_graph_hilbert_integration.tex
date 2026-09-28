@@ -1,0 +1,170 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath,amssymb,booktabs,geometry,hyperref}
+\geometry{margin=1in}
+
+\title{Dependency-Preserving Graph Integration and Hilbert Lower Certificates}
+\author{intervalNets implementation note}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Scope and semantics}
+
+This note specifies the graph/Hilbert certification path implemented in
+\texttt{graph\_hilbert.py}.  It supplements, rather than replaces, the
+coefficientwise pointwise-residual functional in
+\texttt{certified\_polynomial\_zonotope\_integration.tex}.  Approximation
+noise remains pointwise: its value may vary with the domain point.  The new
+method does not integrate such a symbol as one global constant.
+
+All formulas below use normalized measure
+\[
+ d\mu(x)=|\Omega|^{-1}\,dx.
+\]
+Raw squared integrals are recovered by multiplication with \(|\Omega|\).
+For the affine box parameterization \(x=c+G\alpha\), the implemented scalable
+backend currently requires an axis-aligned \(G\) for the Neumann witness, while
+the exact reference moment backend works on the reference box directly.
+
+\section{Immutable arithmetic graph}
+
+The exact factored Jacobian is translated to immutable nodes for constants,
+noise slices, addition, linear maps, Hadamard products, componentwise squares,
+and diagonal scaling.  Every node records its domain and approximation-noise
+support.  Nodes are hash-consed, so repeated occurrences of one approximation
+symbol refer to the same graph input.  For every fixed noise vector,
+\[
+ \operatorname{Eval}(\mathcal G;\alpha,\eta)
+ =\operatorname{Eval}(J_{\rm factored};\alpha,\eta).
+\]
+
+The \texttt{SparseReferenceMomentBackend} expands a small domain-only graph to
+canonical exponent maps and computes
+\[
+ \mathbb E_\mu\!\left[\sum_k P_k(\alpha)^2\right]
+ =\sum_{k,\beta,\gamma}
+ c_{k,\beta}c_{k,\gamma}\,
+ \mathbb E[\alpha^{\beta+\gamma}].
+\]
+It is an exact regression oracle, not the scalable 100-dimensional backend.
+Trying to expand a degree-six dense graph in 100 variables would merely hide
+the original combinatorial problem.
+
+\section{Certified Hilbert compression}
+
+At every activation boundary, the scalable backend stores
+\[
+ y(\alpha)=\widehat y(\alpha)+e(\alpha),\qquad
+ \widehat y(\alpha)=a_0+A\alpha,qquad
+ \|e\|_{L^2_\mu(\ell_2)}\leq\varepsilon.
+\]
+The discarded function is a single certified Hilbert remainder.  It is not
+replaced by independent pointwise symbols.
+
+For an affine preactivation \(q=c+a^\top\alpha\), a certified polynomial
+enclosure
+\[
+ \tanh(q)\in p(q)+[-\delta,\delta]
+\]
+is projected orthogonally onto
+\(\operatorname{span}\{1,\alpha_1,\ldots,\alpha_d\}\).  The implementation
+computes the required moments of \(q^k\) without monomial expansion, by
+convolving the one-dimensional uniform moments of the independent summands.
+The projection remainder is
+\[
+ \varepsilon_{\rm proj}^2
+ =\mathbb E[p(q)^2]-|\Pi_1p(q)|^2_{L^2_\mu},
+\]
+with an explicit floating-point padding.  Consequently,
+\[
+ \|\tanh(q)-\Pi_1p(q)\|_{L^2_\mu}
+ \leq \varepsilon_{\rm proj}+\delta.
+\]
+If the incoming preactivation has Hilbert error \(\varepsilon_z\), the
+one-Lipschitz property of \(\tanh\) gives the vector bound
+\[
+ \varepsilon_y\leq \varepsilon_z+
+ \left(\sum_i(\varepsilon_{{\rm proj},i}+\delta_i)^2\right)^{1/2}.
+\]
+Affine layers use a padded spectral-norm upper bound.
+
+For the reverse derivative graph, \(\tanh'\) is treated by its certified
+quadratic enclosure.  Products of affine graph nodes are projected without
+expansion.  If
+\(u=c+a^\top\alpha\) and \(v=d+b^\top\alpha\), their affine projection is
+\[
+ \Pi_1(uv)=cd+\tfrac13a^\top b+(cb+da)^\top\alpha.
+\]
+Its exact fourth-moment energy is used to certify the discarded quadratic
+part.  The reverse error recurrence uses
+\[
+ aD-\widehat a\widehat D=(a-\widehat a)D
+ +\widehat a(D-\widehat D),
+\]
+the exact bound \(0\leq\tanh'\leq1\), an affine supremum for
+\(\widehat a\), and padded spectral norms at linear maps.
+
+\section{Reverse-triangle certificates}
+
+For either the value field or the stacked value/gradient field, let
+\(G=P+R\) with exact affine nominal energy \(A=\|P\|_\mu^2\) and
+\(\|R\|_\mu\leq E\).  Then
+\[
+ \max\{0,\sqrt A-E\}\leq\|G\|_\mu\leq\sqrt A+E.
+\]
+The result is intersected with the previous absolute-moment/parity interval.
+Thus the new upper endpoint cannot increase and the lower endpoint cannot
+decrease.
+
+\section{Neumann dual lower bound}
+
+For \(H=W^{1,2}(\Omega)\), any scalar witness \(v\) yields
+\[
+ \|f\|_H\geq
+ \frac{|\langle f,v\rangle_H|}{\|v\|_H}.
+\]
+The implemented basis is
+\[
+ \phi_0=1,\qquad
+ \phi_i(\alpha)=\frac{\alpha_i^3}{3}-\alpha_i.
+\]
+It satisfies \(\partial_n\phi_i=0\) on the boundary of an axis-aligned box.
+Integration by parts therefore gives
+\[
+ \langle f,v\rangle_{W^{1,2}_\mu}
+ =\int_\Omega f(v-\Delta_xv)\,d\mu.
+\]
+For \(f=P+R\) and \(\|R\|_{L^2_\mu}\leq E\),
+\[
+ \|f\|_{W^{1,2}_\mu}\geq
+ \frac{\max\{0,|\langle P,v-\Delta v\rangle|-E\|v-\Delta v\|\}}
+ {\|v\|_{W^{1,2}_\mu}}.
+\]
+All Gram matrices are diagonal and analytic for this basis.  A deterministic
+one-parameter family of coefficient directions is searched numerically; only
+the final candidate is used in the outward-padded certificate.  Optimizer
+optimality is never assumed.
+
+\section{Soundness and limitations}
+
+\begin{itemize}
+ \item The exact graph backend is used to verify graph evaluation and moment
+ equivalence on small cases.
+ \item The scalable backend is a certified compression, not exact integration
+ of the full 100-dimensional degree-six nominal graph.
+ \item Polynomial proposals are not proofs.  Their uniform residuals are
+ certified by the repository's outward-rounded subdivision routine.
+ \item A larger moment budget or subdivision count is accepted only through
+ explicit recomputation; sampled values are diagnostics, never certificates.
+ \item The combined result always intersects the pre-existing certificate.
+\end{itemize}
+
+The diagnostic decomposition
+\[
+ \|P\|_\mu\quad\hbox{versus}\quad E
+\]
+must be reported for both value and gradient fields.  This distinguishes
+moment/projection loss from activation-residual and graph-remainder loss.
+
+\end{document}

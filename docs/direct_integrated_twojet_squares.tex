@@ -1,0 +1,1004 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+\newtheorem{warning}{Important implementation warning}
+\newtheorem{algorithmblock}{Algorithm}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\abs}[1]{\left\lvert #1\right\rvert}
+\newcommand{\norm}[1]{\left\lVert #1\right\rVert}
+\newcommand{\ip}[2]{\left\langle #1,#2\right\rangle}
+\newcommand{\eps}{\varepsilon}
+\newcommand{\supp}{\operatorname{supp}}
+\newcommand{\diag}{\operatorname{diag}}
+
+\title{Direct Certified Integration of Squared Polynomial-Zonotope Two-Jets\\
+\large A drop-in optimization without constructing the squared integrand}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note specifies a drop-in optimization for the computation of certified
+\(L^2\), \(W^{1,2}\), and \(W^{2,2}\) norm enclosures from a
+polynomial-zonotope two-jet.  The current implementation first constructs the
+complete polynomial zonotope representing the squared norm integrand and only
+then integrates it.  For the Hessian contribution, this entails a costly sparse
+polynomial convolution.
+
+The proposed routine fuses squaring, canonicalization, and integration.  It
+uses symmetry twice: only the upper-triangular Hessian entries are retained,
+with weight two on the off-diagonal entries, and only unordered pairs of input
+monomials are processed.  More importantly, all selected two-jet coordinates
+are contracted simultaneously through a weighted Gram matrix.  The complete
+squared polynomial zonotope is never constructed.
+
+The proposed method is algebraically exact: with the same approximation-noise
+semantics and the same final interval-enclosure rule, it returns the same
+mathematical enclosure as the existing pipeline.  It is therefore distinct
+from a remainder-norm relaxation such as an \(L^2\) triangle inequality; no
+additional overestimation is introduced.
+\end{abstract}
+
+\tableofcontents
+
+\section{Purpose and scope}
+
+The target computation is the certified integral of one of the squared
+two-jet quantities
+\begin{align}
+    \mathcal{S}_{0}(Y,J,H)
+    &:= \norm{Y}_2^2, \label{eq:s0}\\
+    \mathcal{S}_{1}(Y,J,H)
+    &:= \norm{Y}_2^2+\norm{J}_F^2, \label{eq:s1}\\
+    \mathcal{S}_{2}(Y,J,H)
+    &:= \norm{Y}_2^2+\norm{J}_F^2+\norm{H}_F^2. \label{eq:s2}
+\end{align}
+For a vector-valued map \(f:\R^n\to\R^r\), the dense two-jet convention is
+\[
+    Y\in\R^r,\qquad
+    J\in\R^{r\times n},\qquad
+    H\in\R^{r\times n\times n},
+\]
+where \(H_{oab}=H_{oba}\).  Consequently,
+\begin{equation}
+    \norm{H}_F^2
+    =
+    \sum_{o=1}^{r}
+    \left(
+        \sum_{a=1}^{n}H_{oaa}^2
+        +2\sum_{1\leq a<b\leq n}H_{oab}^2
+    \right).
+    \label{eq:hessian-symmetric-square}
+\end{equation}
+
+The immediate target is the affine integration-cell path used by the adaptive
+polynomial-zonotope norm routines.  The cell map is
+\[
+    X(\alpha)=c+G\alpha,\qquad
+    \alpha\in[-1,1]^d,
+\]
+and its nonnegative geometric Jacobian density
+\[
+    J_X:=\abs{\det\left.\partial X\right|_\alpha}
+        =\abs{\det G}
+\]
+is constant.  For an axis-aligned box, \(J_X\) is the product of the
+coordinate radii.  The physical integral is therefore
+\begin{equation}
+    \int_{X([-1,1]^d)}
+    \mathcal{S}_{k}(Y,J,H)(x)\,dx
+    =
+    J_X
+    \int_{[-1,1]^d}
+    \mathcal{S}_{k}(Y,J,H)(\alpha)\,d\alpha.
+    \label{eq:physical-integral}
+\end{equation}
+
+The optimization described here applies to \texttt{output="interval"}.  If a
+caller explicitly requests the complete squared polynomial zonotope itself,
+then that object must, by definition, still be constructed.
+
+\section{The current pipeline and its bottleneck}
+
+Conceptually, the existing \(W^{2,2}\) path performs
+\begin{equation}
+\boxed{
+\begin{aligned}
+    &(Y,J,H)
+    \\
+    &\quad\longrightarrow
+    Q(\eps)
+    :=
+    \norm{Y(\eps)}_2^2
+    +\norm{J(\eps)}_F^2
+    +\norm{H(\eps)}_F^2
+    \\
+    &\quad\longrightarrow
+    J_X Q(\eps)
+    \\
+    &\quad\longrightarrow
+    \text{integrate domain noises and enclose the remaining uncertainty}.
+\end{aligned}
+}
+\label{eq:old-pipeline}
+\end{equation}
+The expensive step is the explicit construction of \(Q\).
+
+For one scalar polynomial-zonotope entry
+\[
+    z(\eps)=c+\sum_{\beta\in\mathcal{B}}a_\beta\eps^\beta,
+    \qquad
+    \eps^\beta:=\prod_{i=1}^{p}\eps_i^{\beta_i},
+\]
+the generic multiplication routine computes
+\begin{align}
+    z(\eps)^2
+    &=
+    c^2
+    +2c\sum_{\beta\in\mathcal{B}}a_\beta\eps^\beta
+    +\sum_{\beta,\delta\in\mathcal{B}}
+        a_\beta a_\delta\eps^{\beta+\delta}.
+    \label{eq:scalar-square}
+\end{align}
+A naive sparse product visits all \(m^2\) ordered pairs
+\((\beta,\delta)\), where \(m=\abs{\mathcal{B}}\), even though
+\((\beta,\delta)\) and \((\delta,\beta)\) give the same contribution.
+
+In the motivating example, the tensor-valued Hessian has \(m=524\) distinct
+exponent keys.  Squaring the three symmetry-distinct entries of a scalar-output
+\(2\times2\) Hessian entails approximately
+\[
+    3m^2=3\cdot524^2=823{,}728
+\]
+ordered scalar term pairs.  The measured Hessian-squaring time was about
+\(27.27\) seconds, whereas two-jet construction took about \(0.15\) seconds
+and integration of the already constructed integrand took about \(0.87\)
+seconds.
+
+\section{Polynomial-zonotope noise semantics}
+\label{sec:noise-semantics}
+
+Let
+\[
+    \eps=(\alpha,\eta)
+\]
+collect the two classes of noise symbols used throughout these notes:
+\begin{enumerate}[label=\arabic*.]
+    \item \(\alpha\): domain noise symbols, integrated over \([-1,1]^d\);
+    \item \(\eta\): approximation noise symbols introduced by certified
+    activation enclosures.
+\end{enumerate}
+The actual implementation identifies these roles from two pieces of metadata:
+\texttt{noise\_kinds} and the cell's domain-noise index tuple.  The variables
+need not occur in contiguous blocks.
+
+A generic monomial is written as
+\[
+    \eps^\lambda
+    =\alpha^{\lambda^\alpha}\eta^{\lambda^\eta},
+    \qquad
+    \lambda=(\lambda^\alpha,\lambda^\eta).
+\]
+Letters such as \(\beta,\delta,\gamma\) below denote additional
+multi-indices when several exponent keys occur in the same formula.
+
+There is no additional class of residual or pointwise-error symbols: the
+approximation noise symbols \(\eta\) carry precisely the certified activation
+approximation uncertainty.  Under the integration semantics used here, their
+values may represent the residual function at each physical point.
+Consequently, a monomial containing approximation noise is not integrated by
+the ordinary signed monomial-moment formula.
+
+Let
+\[
+    Q(\eps)=q_0+\sum_{\gamma\neq0}q_\gamma\eps^\gamma
+\]
+be the scalar squared integrand after multiplication by neither the cell
+density nor the reference measure.  Write
+\[
+    D:=\{\text{domain indices}\},
+    \qquad
+    P:=\{\text{pointwise approximation-noise indices}\},
+\]
+and let \(U:=\{1,\ldots,p\}\setminus D\) collect all non-domain uncertainty
+indices.  Retained global symbolic indices may belong to \(U\setminus P\); in
+the common two-class convention, \(U=P\).  For an exponent \(\gamma\), denote
+by \(\gamma_D\) and \(\gamma_U\) the corresponding restrictions.
+
+For terms containing no approximation noise, define the box moment
+\begin{equation}
+    \mu_{\gamma_D}
+    :=
+    \int_{[-1,1]^d}\alpha^{\gamma_D}\,d\alpha
+    =
+    \begin{cases}
+    \displaystyle
+    \prod_{i\in D}\frac{2}{\gamma_i+1},
+        &\gamma_i\text{ even for every }i\in D,\\[3mm]
+    0,&\text{otherwise}.
+    \end{cases}
+    \label{eq:moment}
+\end{equation}
+The reference measure is
+\[
+    M:=2^d.
+\]
+For pointwise terms, the relevant domain functional is instead the absolute
+box moment
+\begin{equation}
+    \mu^{\mathrm{abs}}_{\gamma_D}
+    :=
+    \int_{[-1,1]^d}\abs{\alpha^{\gamma_D}}\,d\alpha
+    =
+    \prod_{i\in D}\frac{2}{\gamma_i+1}.
+    \label{eq:absolute-moment}
+\end{equation}
+There is no parity cancellation in \eqref{eq:absolute-moment}.
+
+Canonical coefficients with the same full exponent \(\gamma\) are combined
+before the following rule is applied.  If a term contains pointwise
+approximation noise, let \(m_\gamma\) and \(r_\gamma\) denote its integrated
+midpoint and symmetric radius.  With \(U=\{1,\ldots,p\}\setminus D\), the
+parity-aware coefficientwise rule is
+\begin{equation}
+ (m_\gamma,r_\gamma)
+ =J_X\begin{cases}
+ \left(\frac12q_\gamma\mu^{\mathrm{abs}}_{\gamma_D},
+       \frac12\abs{q_\gamma}\mu^{\mathrm{abs}}_{\gamma_D}\right),
+ &\gamma_i\text{ even for every }i\in U
+  \text{ and every }i\in D,\\[2mm]
+ \left(0,
+       \frac12\abs{q_\gamma}\mu^{\mathrm{abs}}_{\gamma_D}\right),
+ &\gamma_i\text{ even for every }i\in U
+  \text{ and some }\gamma_i, i\in D,\text{ is odd},\\[2mm]
+ \left(0,
+       \abs{q_\gamma}\mu^{\mathrm{abs}}_{\gamma_D}\right),
+ &\text{otherwise}.
+ \end{cases}
+ \label{eq:pointwise-parity-rule}
+\end{equation}
+The first case uses that the entire monomial lies in \([0,1]\).  In the
+second case the uncertainty factor lies in \([0,1]\), while the positive and
+negative parts of the odd domain monomial have equal integral.  The last case
+retains the symmetric \([-1,1]\) bound because at least one non-domain
+uncertainty power is odd.  If a retained global symbolic factor cannot be
+classified safely, an implementation must use the last case.
+
+The improved \texttt{pointwise\_interval} semantics therefore produce
+\begin{align}
+    b_\nu
+    &:=
+    J_X
+    \sum_{\substack{\gamma:\,\gamma_U=\nu\\
+                    \gamma_i=0\ \forall i\in P}}
+    q_\gamma\mu_{\gamma_D},
+    \label{eq:retained-coefficients}\\
+    M_{\mathrm{app}}
+    &:=\sum_{\substack{\gamma:\\
+                    \exists i\in P:\ \gamma_i>0}}m_\gamma,
+    &
+    R_{\mathrm{app}}
+    &:=\sum_{\substack{\gamma:\\
+                    \exists i\in P:\ \gamma_i>0}}r_\gamma.
+    \label{eq:approximation-radius}
+\end{align}
+Here \(q_0\) may be viewed as the coefficient with zero exponent, so its
+contribution is included in \(b_0\).  Under the two-class convention,
+\(\gamma_i=0\) for every \(i\in P\) implies \(\gamma_U=0\); hence the
+retained object is the scalar \(B=b_0\).  The more general coefficient-map
+notation is kept below because it matches the implementation.
+It is finally interval-enclosed as
+\begin{equation}
+    \boxed{
+    \mathcal{I}_{\mathrm{current}}(Q)
+    =
+    \left[
+        b_0+M_{\mathrm{app}}-\sum_{\nu\neq0}\abs{b_\nu}-R_{\mathrm{app}},
+        b_0+M_{\mathrm{app}}+\sum_{\nu\neq0}\abs{b_\nu}+R_{\mathrm{app}}
+    \right],
+    }
+    \label{eq:current-functional}
+\end{equation}
+with outward rounding in an implementation.
+
+\begin{warning}
+For an approximation-noise term, the rule uses the absolute moment
+\(\mu^{\mathrm{abs}}_{\gamma_D}\), not the possibly vanishing signed moment
+\(\mu_{\gamma_D}\).  Thus an odd domain factor multiplying approximation
+noise is retained.  The rule remains coefficientwise and is generally not
+the sharp pointwise integral enclosure.
+\end{warning}
+
+\section{First symmetry: weighted upper-triangular Hessian coordinates}
+
+Instead of treating every scalar entry separately, collect precisely the
+coordinates required by the Sobolev integrand into one vector.
+For \(k\in\{0,1,2\}\), define a coordinate-selection map
+\[
+    \Phi_k(Y,J,H)\in\R^{N_k}
+\]
+as follows:
+\begin{align*}
+    \Phi_0(Y,J,H)
+    &:=
+    \bigl(Y_o\bigr)_{o},\\
+    \Phi_1(Y,J,H)
+    &:=
+    \bigl((Y_o)_o,(J_{oa})_{o,a}\bigr),\\
+    \Phi_2(Y,J,H)
+    &:=
+    \bigl((Y_o)_o,(J_{oa})_{o,a},
+           (H_{oaa})_{o,a},(H_{oab})_{o,a<b}\bigr).
+\end{align*}
+Associate the diagonal weight vector \(w^{(k)}\in\R^{N_k}\) given by
+\[
+    w_i^{(k)}
+    =
+    \begin{cases}
+        2,&\text{if coordinate }i\text{ represents }H_{oab},\ a<b,\\
+        1,&\text{otherwise}.
+    \end{cases}
+\]
+Let
+\[
+    W_k:=\diag(w^{(k)}).
+\]
+Then
+\begin{equation}
+    \mathcal{S}_k(Y,J,H)
+    =
+    \Phi_k(Y,J,H)^\top W_k\Phi_k(Y,J,H).
+    \label{eq:weighted-coordinate-form}
+\end{equation}
+
+This realizes Hessian symmetry without duplicating \(H_{oab}\) and \(H_{oba}\).
+The factor two is carried as a coordinate weight.  To reproduce the existing
+implementation, the stored upper-triangular entry \(H_{oab}\), \(a<b\), is
+authoritative; one should not average it with \(H_{oba}\).
+
+\section{Second symmetry: a coefficient-level Gram contraction}
+\label{sec:gram}
+
+Let the selected coordinate vector itself be a vector-valued polynomial
+zonotope
+\begin{equation}
+    v(\eps)
+    :=
+    \Phi_k(Y,J,H)(\eps)
+    =
+    c+\sum_{\beta\in\mathcal{B}}a_\beta\eps^\beta,
+    \label{eq:vector-pz}
+\end{equation}
+where
+\[
+    c,a_\beta\in\R^{N_k}.
+\]
+The support \(\mathcal{B}\) is the union of exponent keys occurring anywhere
+in the selected \(Y\), \(J\), and \(H\) coordinates.  A missing coefficient is
+filled by zero.  This is exactly the tensor-coefficient representation already
+used by the polynomial-zonotope class, viewed after coordinate selection.
+
+Substituting \eqref{eq:vector-pz} into
+\eqref{eq:weighted-coordinate-form} yields
+\begin{align}
+    Q(\eps)
+    &:=
+    v(\eps)^\top W_kv(\eps) \notag\\
+    &=
+    c^\top W_kc
+    +2\sum_{\beta\in\mathcal{B}}
+        c^\top W_ka_\beta\,\eps^\beta
+    +\sum_{\beta,\delta\in\mathcal{B}}
+        a_\beta^\top W_ka_\delta\,\eps^{\beta+\delta}.
+    \label{eq:weighted-expansion}
+\end{align}
+Define
+\begin{equation}
+    g_\beta:=c^\top W_ka_\beta,
+    \qquad
+    G_{\beta\delta}:=a_\beta^\top W_ka_\delta.
+    \label{eq:gram-definitions}
+\end{equation}
+The matrix \(G\) is symmetric.  Therefore
+\begin{equation}
+    Q(\eps)
+    =
+    c^\top W_kc
+    +2\sum_{\beta\in\mathcal{B}}g_\beta\eps^\beta
+    +\sum_{\beta\in\mathcal{B}}G_{\beta\beta}\eps^{2\beta}
+    +2\sum_{\beta<\delta}G_{\beta\delta}\eps^{\beta+\delta},
+    \label{eq:unordered-expansion}
+\end{equation}
+where \(<\) is any fixed ordering of the exponent keys.
+
+Equation \eqref{eq:unordered-expansion} is the central optimization:
+\begin{enumerate}[label=\arabic*.]
+    \item only the union support \(\mathcal{B}\) is traversed;
+    \item all selected scalar coordinates are contracted simultaneously;
+    \item only unordered monomial pairs \(\beta\leq\delta\) are processed;
+    \item the coefficient products \(G_{\beta\delta}\) can be computed in one
+    dense matrix multiplication.
+\end{enumerate}
+
+If the coefficient vectors are stored as the rows of
+\[
+    A\in\R^{m\times N_k},
+    \qquad
+    A_{\beta,:}=a_\beta^\top,
+\]
+then
+\begin{equation}
+    G=(AW_k)A^\top,
+    \qquad
+    g=(AW_k)c.
+    \label{eq:batched-gram}
+\end{equation}
+There is no need to introduce square roots of the weights.  In particular,
+using \(AW_k\) avoids the unnecessary rounding discrepancy that would arise
+from scaling off-diagonal Hessian coordinates by \(\sqrt{2}\).
+
+\begin{proposition}[Equality with the explicitly squared integrand]
+\label{prop:integrand-equality}
+Let \(Q_{\mathrm{old}}\) be the polynomial obtained by the existing sum of
+scalar squares, using upper-triangular Hessian entries with factor two.
+Let \(Q_{\mathrm{direct}}\) be the polynomial defined implicitly by
+\eqref{eq:unordered-expansion}.  Then
+\[
+    Q_{\mathrm{direct}}(\eps)=Q_{\mathrm{old}}(\eps)
+\]
+as formal polynomials.
+\end{proposition}
+
+\begin{proof}
+By construction of \(\Phi_k\) and \(W_k\),
+\[
+    \Phi_k(Y,J,H)^\top W_k\Phi_k(Y,J,H)
+    =
+    \mathcal{S}_k(Y,J,H),
+\]
+including the factor two on every off-diagonal Hessian square.
+Expanding the left-hand side coefficientwise gives
+\eqref{eq:weighted-expansion}.  Since
+\[
+    a_\beta^\top W_ka_\delta
+    =
+    a_\delta^\top W_ka_\beta,
+\]
+the two ordered terms associated with \(\beta\neq\delta\) combine into the
+factor two in \eqref{eq:unordered-expansion}.  This changes neither coefficients
+nor exponent keys.  Hence both procedures define the same formal polynomial.
+\end{proof}
+
+\section{Fusing canonicalization with integration}
+\label{sec:fused}
+
+It would be incorrect simply to take an absolute value of every pair
+contribution in \eqref{eq:unordered-expansion}.  Different monomial pairs and
+different two-jet coordinates may produce the same exponent \(\gamma\), and
+their coefficients must first be added.  Only after this canonicalization does
+the current integration routine take absolute values.
+
+The direct routine therefore maintains two coefficient maps:
+\begin{enumerate}[label=\arabic*.]
+    \item \texttt{approximation\_coeff[\(\gamma\)]}: the canonical coefficient of
+    every full exponent containing approximation noise;
+    \item \texttt{retained\_coeff[\(\nu\)]}: the already integrated
+    coefficient of every retained exponent \(\nu=\gamma_R\) for terms
+    containing no approximation noise.
+\end{enumerate}
+It also maintains a scalar \texttt{integrated\_center}.
+
+For every generated pair \((\gamma,s)\), meaning the contribution
+\(s\eps^\gamma\), the routing rule is:
+\begin{equation}
+\operatorname{route}(\gamma,s)
+=
+\begin{cases}
+    \texttt{approximation\_coeff[\(\gamma\)]}
+        \mathrel{+}= J_X s,
+        &\exists i\in P:\gamma_i>0,\\[1mm]
+    \text{discard},
+        &\mu_{\gamma_D}=0,\\[1mm]
+    \texttt{retained\_coeff[\(\gamma_R\)]}
+        \mathrel{+}= J_X\mu_{\gamma_D}s,
+        &\text{otherwise}.
+\end{cases}
+\label{eq:routing}
+\end{equation}
+The constant \(c^\top W_kc\) is handled directly as
+\[
+    \texttt{integrated\_center}
+    \mathrel{+}=
+    J_X M\,c^\top W_kc.
+\]
+Equivalently, it can be passed through
+\(\operatorname{route}(0,c^\top W_kc)\).
+
+After all contributions have been routed, set
+\begin{align}
+    R_{\mathrm{app}}
+    &:=
+    M\sum_{\gamma}
+        \abs{\texttt{approximation\_coeff[\(\gamma\)]}},
+    \label{eq:direct-approximation-radius}\\
+    b_0
+    &:=
+    \texttt{retained\_coeff[0]},\\
+    R_{\mathrm{sym}}
+    &:=
+    \sum_{\nu\neq0}
+        \abs{\texttt{retained\_coeff[\(\nu\)]}}.
+    \label{eq:direct-symbolic-radius}
+\end{align}
+The final interval is
+\begin{equation}
+    \boxed{
+    [b_0-R_{\mathrm{sym}}-R_{\mathrm{app}},
+     b_0+R_{\mathrm{sym}}+R_{\mathrm{app}}].
+    }
+    \label{eq:direct-final}
+\end{equation}
+
+\begin{proposition}[Drop-in enclosure equality]
+\label{prop:enclosure-equality}
+In exact arithmetic, the direct algorithm
+\eqref{eq:unordered-expansion}--\eqref{eq:direct-final} returns precisely
+\(\mathcal{I}_{\mathrm{current}}(Q_{\mathrm{old}})\) from
+\eqref{eq:current-functional}.
+\end{proposition}
+
+\begin{proof}
+Proposition~\ref{prop:integrand-equality} gives equality of the formal squared
+integrands.  For domain-only terms, moment integration is linear, so applying
+\(\mu_{\gamma_D}\) before collecting equal retained exponents produces the same
+\(b_\nu\) as collecting the full squared polynomial first and integrating
+afterward.  For approximation-noise terms, the direct algorithm retains the full exponent
+key and collects every contribution before taking its absolute value.
+Consequently \eqref{eq:direct-approximation-radius} equals
+\eqref{eq:approximation-radius}.  The final interval-enclosure step is identical to
+\eqref{eq:current-functional}.
+\end{proof}
+
+\begin{warning}[Why some apparently faster variants are not drop-in exact]
+The following changes do not necessarily reproduce the current enclosure:
+\begin{enumerate}[label=\arabic*.]
+    \item Taking \(\abs{s}\) for every generated pair before equal exponent
+    keys have been merged loses cancellations and generally enlarges the
+    approximation-noise radius.
+    \item Integrating the \(W^{1,2}\) and Hessian contributions into two
+    separate intervals and then adding the intervals loses cancellations
+    between their coefficients.
+    \item Using the domain moment of an approximation-noise term is inconsistent
+    with the present approximation-noise semantics and can be unsound.
+    \item Replacing the approximation part by an \(L^2\) radius and applying a
+    triangle inequality is a valid alternative enclosure, but it is not the
+    same enclosure.
+\end{enumerate}
+\end{warning}
+
+\section{Reference algorithm}
+
+\begin{algorithmblock}[Direct integrated squared two-jet enclosure]
+\label{alg:direct}
+The inputs are two-jet polynomial zonotopes \(Y,J,H\) with aligned noise
+metadata, a Sobolev order \(k\in\{0,1,2\}\), an affine cell density
+\(J_X\geq0\), domain indices \(D\), and approximation-noise indices \(P\).
+Proceed as follows.
+\begin{enumerate}[label=\arabic*.,leftmargin=1.8em]
+    \item Select the coordinates \(v=\Phi_k(Y,J,H)\) and their weights \(w\).
+    \item Form the union support \(\mathcal{B}\) in a deterministic order,
+    and extract the center vector \(c\) and coefficient matrix \(A\).
+    \item Compute
+    \[
+        G\gets(A\diag(w))A^\top,\qquad
+        g\gets(A\diag(w))c.
+    \]
+    \item Initialize
+    \[
+        \texttt{approximation\_coeff}\gets\{\},\qquad
+        \texttt{retained\_coeff}
+        \gets\{0:J_X 2^{\abs D}c^\top\diag(w)c\}.
+    \]
+    \item For every \(\beta\in\mathcal{B}\), call
+    \(\operatorname{route}(\beta,2g_\beta)\).
+    \item For \(i=1,\ldots,\abs{\mathcal{B}}\), set
+    \(\beta=\mathcal{B}_i\), call
+    \(\operatorname{route}(2\beta,G_{ii})\), and for every \(j>i\) call
+    \[
+        \operatorname{route}(\beta+\mathcal{B}_j,2G_{ij}).
+    \]
+    \item Compute
+    \[
+        R_{\mathrm{app}}
+        \gets2^{\abs D}\sum_\gamma
+        \abs{\texttt{approximation\_coeff[\(\gamma\)]}},
+        \quad
+        b_0\gets\texttt{retained\_coeff[0]},
+    \]
+    and
+    \[
+        R_{\mathrm{sym}}
+        \gets\sum_{\nu\neq0}
+        \abs{\texttt{retained\_coeff[\(\nu\)]}}.
+    \]
+    \item Return the outward-rounded interval
+    \[
+        [b_0-R_{\mathrm{sym}}-R_{\mathrm{app}},
+         b_0+R_{\mathrm{sym}}+R_{\mathrm{app}}].
+    \]
+\end{enumerate}
+\end{algorithmblock}
+
+\begin{algorithmblock}[Routing one implicit squared-polynomial contribution]
+\label{alg:route}
+For a contribution \(s\eps^\gamma\), define
+\(\operatorname{route}(\gamma,s)\) as follows.
+\begin{enumerate}[label=\arabic*.,leftmargin=1.8em]
+    \item If \(s=0\), return.
+    \item If \(\gamma_i>0\) for some \(i\in P\), perform
+    \[
+        \texttt{approximation\_coeff[\(\gamma\)]}
+        \mathrel{+}=J_X s
+    \]
+    and return.
+    \item Compute \(\mu=\operatorname{BoxMoment}(\gamma_D)\).  If
+    \(\mu=0\), return.
+    \item Set \(\nu=\gamma_R\) and perform
+    \[
+        \texttt{retained\_coeff[\(\nu\)]}
+        \mathrel{+}=J_X\mu s.
+    \]
+\end{enumerate}
+\end{algorithmblock}
+
+\section{Implementation blueprint for \texttt{intervalNets}}
+\label{sec:implementation}
+
+\subsection{Recommended public and private functions}
+
+A suitable public helper is
+\begin{verbatim}
+integrate_pz_twojet_squared(
+    jet: PZTwoJet,
+    cell: PZIntegrationCell,
+    integrand_kind: Literal["l2", "w12", "w22"],
+) -> Interval
+\end{verbatim}
+with private helpers of the form
+\begin{verbatim}
+_twojet_weighted_coordinates(jet, integrand_kind)
+_coefficient_matrix(selected_coordinates, union_support)
+_route_integrated_quadratic_term(...)
+\end{verbatim}
+
+The adaptive-cell evaluator can then replace
+\begin{verbatim}
+integrand = _squared_twojet_integrand(jet, integrand_kind)
+contribution = integrate_over_cell(integrand, cell, output="interval")
+\end{verbatim}
+by
+\begin{verbatim}
+contribution = integrate_pz_twojet_squared(
+    jet, cell, integrand_kind=integrand_kind
+)
+\end{verbatim}
+The existing integrand constructors should remain available for diagnostics,
+rendering, explicit \texttt{output="pz"}, and regression comparison.
+
+\subsection{Coordinate extraction}
+
+For PyTorch coefficients, form one flattened coordinate vector:
+\begin{enumerate}[label=\arabic*.]
+    \item append all entries of \(Y\), with weights one;
+    \item for \(W^{1,2}\) and \(W^{2,2}\), append all entries of \(J\), with
+    weights one;
+    \item for \(W^{2,2}\), append \(H_{oaa}\) with weights one and
+    \(H_{oab}\), \(a<b\), with weights two.
+\end{enumerate}
+Apply the identical indexing operation to the center tensor and every
+coefficient tensor.  This preserves the current upper-triangular Hessian
+convention.
+
+It is useful to build a globally sorted union of exponent keys.  Deterministic
+sorting makes tests reproducible and prevents hash-table insertion order from
+arbitrarily changing floating-point accumulation.
+
+\subsection{Batched coefficient contractions}
+
+Let \(A\) have one row per union-support exponent and one column per selected
+coordinate.  Then, in PyTorch notation, the central contractions are
+\begin{verbatim}
+weighted_A = A * weights.unsqueeze(0)
+gram = weighted_A @ A.T
+center_cross = weighted_A @ center
+center_square = torch.dot(center * weights, center)
+\end{verbatim}
+This replaces hundreds of thousands of small scalar tensor multiplications by
+a small number of tensor kernels.  Only the upper triangle of \texttt{gram}
+needs to be routed.  If memory becomes relevant for a much larger support, use
+blocked Gram computation as described in Section~\ref{sec:blocked}.
+
+\subsection{Reusing the existing final enclosure path}
+
+To minimize semantic drift, the direct routine may construct an
+\texttt{IntegratedPZResult}, not a squared input-domain PZ:
+\begin{enumerate}[label=\arabic*.]
+    \item create a scalar retained polynomial zonotope from
+    \texttt{retained\_coeff};
+    \item store \(R_{\mathrm{app}}\) as its \texttt{interval\_radius};
+    \item call the existing \texttt{interval\_enclosure()} method.
+\end{enumerate}
+Under the two-class convention this post-integration object has only its
+constant coefficient; it is not the 55,992-term squared integrand over all
+noise symbols.  Reusing the existing method also preserves the established
+outward-padding behavior.
+
+\subsection{Noise metadata and alignment}
+
+Before any contraction:
+\begin{enumerate}[label=\arabic*.]
+    \item verify that \(Y,J,H\) have compatible \texttt{num\_noise};
+    \item merge or validate their \texttt{noise\_kinds} exactly as the existing
+    PZ addition path would;
+    \item obtain \(D\) from \texttt{cell.domain\_noise\_indices};
+    \item obtain \(P\), the approximation-noise index set, using the same predicate and the same
+    \texttt{POINTWISE\_RESIDUAL\_KINDS} constant as the current integrator;
+    \item retain every index outside \(D\), including approximation-noise indices in the
+    metadata, even though terms involving them are converted to a radius.
+\end{enumerate}
+No new classification logic should be duplicated in the norm module.
+
+\subsection{Scope check for the cell density}
+
+The direct formula above assumes that
+\texttt{cell.jacobian\_density} is a non-negative scalar, which is exactly the
+current affine-box adaptive path.  The implementation should explicitly check
+this assumption and fall back to the old pipeline for a polynomial-zonotope
+density.
+
+A future extension to a polynomial density is possible by incorporating its
+coefficients into the same routing calculation.  It is not necessary for the
+present optimization and should not be mixed into the first implementation.
+
+\subsection{Floating-point equality}
+
+The method is exact as a formal-polynomial and enclosure transformation.
+However, changing the summation order or replacing scalar products by a BLAS
+matrix multiplication can change the last few floating-point bits.  Therefore:
+\begin{enumerate}[label=\arabic*.]
+    \item promise equality of the mathematical enclosure, not bitwise identity;
+    \item use the same dtype and device as the input coefficients;
+    \item apply the existing outward-padding functions to the final bounds;
+    \item compare old and new results with a tight numerical tolerance in
+    regression tests;
+    \item if fully rigorous floating-point certification is required, use
+    outward-rounded contractions or add a certified roundoff allowance.
+\end{enumerate}
+
+\section{Complexity and expected improvement}
+
+Let
+\begin{align*}
+    m:=\abs{\mathcal{B}},
+    \qquad&
+    N_k:=\text{number of selected two-jet coordinates},\\
+    &
+    K:=\text{number of canonical accumulator keys}.
+\end{align*}
+
+If \(m_r\) is the number of scalar monomials in coordinate \(r\), the present
+entrywise squaring performs approximately
+\[
+    \sum_{r=1}^{N_k}m_r^2
+\]
+ordered coefficient products, followed by construction and traversal of the
+squared PZ.
+
+The direct weighted-Gram method performs:
+\begin{enumerate}[label=\arabic*.]
+    \item a dense contraction of cost \(O(m^2N_k)\), executed in optimized
+    tensor code;
+    \item \(m(m+1)/2\) exponent-pair routing operations;
+    \item \(O(K)\) final absolute-value and enclosure operations.
+\end{enumerate}
+The formal arithmetic count is still quadratic in \(m\), because the exact
+square of a sparse polynomial is a convolution.  The speedup comes from:
+\begin{enumerate}[label=\arabic*.]
+    \item halving ordered pairs through \(\beta\leq\delta\);
+    \item replacing separate scalar-entry products by one coefficient-vector
+    contraction;
+    \item moving small tensor multiplications out of Python loops;
+    \item discarding odd domain-only moments immediately;
+    \item collapsing domain-only terms directly to retained exponents;
+    \item avoiding construction and a later traversal of the squared PZ.
+\end{enumerate}
+
+For \(m=524\), the union-support upper triangle contains
+\[
+    \frac{m(m+1)}{2}
+    =
+    \frac{524\cdot525}{2}
+    =
+    137{,}550
+\]
+monomial pairs.  In the motivating \(2\times2\) scalar-output Hessian case,
+this replaces approximately \(823{,}728\) ordered scalar-entry pairs by one
+batched weighted Gram contraction and \(137{,}550\) routing iterations.
+The exact wall-clock speedup must be measured, but the dominant
+\(27.27\)-second phase is the part directly targeted by this change.
+
+\section{Blocked implementation for larger supports}
+\label{sec:blocked}
+
+The full Gram matrix requires \(O(m^2)\) memory.  For \(m=524\) in
+\texttt{float64}, it occupies only about \(2.2\) MB and is unproblematic.
+For much larger supports, compute upper-triangular blocks:
+\[
+    G_{IJ}=(A_IW_k)A_J^\top.
+\]
+Route a block immediately and release it before computing the next block.
+For a diagonal block, process only its upper triangle.  For an off-diagonal
+block with block index \(I<J\), every pair is an unordered pair and receives
+the factor two.
+
+Blocking retains exact algebraic equivalence and reduces Gram storage from
+\(O(m^2)\) to \(O(b^2)\) for a chosen block size \(b\).
+
+\section{Tests required before replacing the old path}
+\label{sec:tests}
+
+\subsection{Randomized equivalence tests}
+
+Generate small scalar-, vector-, matrix-, and Hessian-valued PZs with mixtures
+of
+\[
+    \texttt{domain},\qquad
+    \texttt{approximation\_symbolic},\qquad
+    \texttt{approximation\_pointwise}
+\]
+noise kinds.  For every integrand kind, compare
+\begin{align*}
+    \texttt{old}
+    &:=
+    \texttt{integrate\_over\_cell(
+       \_squared\_twojet\_integrand(jet, kind), cell)},\\
+    \texttt{new}
+    &:=
+    \texttt{integrate\_pz\_twojet\_squared(jet, cell, kind)}.
+\end{align*}
+Check equality within a tolerance commensurate with the dtype and outward
+padding.
+
+\subsection{Cancellation before absolute value}
+
+Use the approximation noise symbol \(\eta\) and two coordinates
+\[
+    z_1=1+\eta,
+    \qquad
+    z_2=1-\eta.
+\]
+Then
+\[
+    z_1^2+z_2^2=2+2\eta^2.
+\]
+The two linear \(\eta\)-coefficients cancel before the approximation-noise radius is
+formed.  A faulty pairwise-absolute-value implementation would lose this
+cancellation.
+
+\subsection{Approximation noise multiplied by an odd domain monomial}
+
+Use
+\[
+    z(\alpha,\eta)=\alpha+\eta.
+\]
+Its square contains \(2\alpha\eta\).  The ordinary domain moment of this term
+is zero, but the pointwise semantics assign it a nonzero interval radius using
+\(\int_{-1}^1\abs{\alpha}\,d\alpha=1\), rather than the total measure two.
+The \(\eta^2\) term is nonnegative and therefore receives the one-sided
+midpoint/radius reduction.  The direct implementation must match the explicit
+squared-integrand result after both apply these rules.
+
+\subsection{Hessian symmetry}
+
+Construct a tensor Hessian for which \(H_{12}\) is nonzero and verify that its
+contribution is exactly
+\[
+    H_{11}^2+2H_{12}^2+H_{22}^2.
+\]
+Also verify that the lower-triangular stored entry is not accidentally added a
+second time.
+
+\subsection{Zero coefficients and unequal supports}
+
+Test different supports in \(Y,J,H\), coefficient tensors with structural
+zeros, an empty support, a constant network, and a zero network.  The union
+support and zero filling must reproduce scalar-entry extraction exactly.
+
+\subsection{Regression on the motivating notebook}
+
+On the two-hidden-layer affine-activation example, record:
+\begin{enumerate}[label=\arabic*.]
+    \item the old and new \(W^{2,2}\) integral intervals;
+    \item the old and new norm intervals after the square root;
+    \item two-jet time;
+    \item direct integrated-square time;
+    \item total time per cell;
+    \item total adaptive runtime.
+\end{enumerate}
+The old result should remain available behind a diagnostic flag until the new
+path has been validated on this example.
+
+\section{Suggested staged implementation}
+
+\begin{enumerate}[label=\textbf{Stage \arabic*.},leftmargin=2.2cm]
+    \item Implement the direct routine for affine cells and
+    \texttt{output="interval"} only.  Keep the old explicit integrand
+    constructors unchanged.
+    \item Add randomized equivalence and semantic edge-case tests.
+    \item Switch the adaptive \(L^2\), \(W^{1,2}\), and \(W^{2,2}\) interval
+    paths to the direct routine, with a fallback to the old path for unsupported
+    cell densities.
+    \item Benchmark the motivating notebook and add optional timing diagnostics.
+    \item If exponent routing is still significant, replace full-Gram routing
+    by blocked routing or group exponent pairs by their summed exponent.
+\end{enumerate}
+
+\section{Summary for implementation}
+
+The requested drop-in optimization is
+\[
+\boxed{
+\begin{aligned}
+    &(Y,J,H)
+    \\
+    &\longrightarrow
+    \text{weighted upper-triangular two-jet coefficient vectors}
+    \\
+    &\longrightarrow
+    \text{one symmetric Gram contraction}
+    \\
+    &\longrightarrow
+    \text{canonicalize directly into approximation-noise and integrated accumulators}
+    \\
+    &\longrightarrow
+    \text{the existing final interval-enclosure rule}.
+\end{aligned}
+}
+\]
+
+The mathematical squared integrand is unchanged.  Hessian symmetry is encoded
+by weights \(1\) on diagonal and \(2\) on upper off-diagonal entries.
+Polynomial-square symmetry is encoded by processing only
+\(\beta\leq\delta\), with factor two for \(\beta<\delta\).
+All selected two-jet coordinates are processed together, so cancellations are
+preserved across \(Y\), \(J\), and \(H\).
+
+One limitation is unavoidable: to reproduce the current enclosure exactly,
+coefficients of equal approximation-noise monomials must still be accumulated
+before their absolute values are taken.  Thus the algorithm avoids the squared
+\emph{polynomial-zonotope object}, but it cannot discard all canonical
+coefficient aggregation.  This is precisely what distinguishes the method
+from a faster but potentially looser pairwise-radius bound.
+
+For deep graphs where the exact canonical support is itself prohibitive, the
+separate note
+\texttt{dependency\_preserving\_graph\_hilbert\_integration.tex} specifies
+the implemented certified-compression backend.  That method keeps an immutable
+shared arithmetic graph, validates small cases against exact sparse moments,
+and replaces large intermediate fields by an orthogonal affine projection plus
+an explicit $L^2$ remainder.  It is not claimed to reproduce this direct
+coefficientwise functional exactly.
+
+\end{document}
