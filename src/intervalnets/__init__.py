@@ -1,6 +1,7 @@
 """Interval arithmetic utilities for neural network evaluation."""
 
 from .interval import Interval
+from .activations import tanh_double_prime_bounds
 from .polynomial_zonotope import (
     PZOneJet,
     PZTwoJet,
@@ -81,6 +82,7 @@ from .graph_hilbert import (
 
 __all__ = [
     "Interval",
+    "tanh_double_prime_bounds",
     "PolynomialZonotope",
     "PZOneJet",
     "PZTwoJet",

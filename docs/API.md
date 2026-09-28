@@ -42,6 +42,31 @@ optimal/tightest interval boxes for every operation.
 - Scalar division by an interval containing `0` raises `ZeroDivisionError`.
 - Vector interval division is intentionally not implemented and raises `NotImplementedError`.
 
+## Scalar second derivative of tanh
+
+`tanh_double_prime_bounds(value: Interval) -> Interval` is available directly
+from `intervalnets`, without PyTorch. It returns outward-rounded binary64 bounds
+for the mathematical function `tanh''` on a scalar interval:
+
+```python
+from intervalnets import Interval, tanh_double_prime_bounds
+
+bounds = tanh_double_prime_bounds(Interval(0.5, 1.0))
+# Approximately [-0.769800358919501, -0.639700008449225].
+```
+
+The calculation evaluates both endpoints and includes any interior extrema at
+`+/-atanh(1/sqrt(3))`. It encloses the exact real range, with a small outward
+rounding allowance, rather than repeatedly multiplying dependent intervals.
+Zero point intervals stay exactly zero; unbounded intervals use the limits at
+infinity. NaN endpoints and nonscalar inputs are rejected. Decimal arithmetic
+from the standard library bounds elementary-function and arithmetic errors;
+there is no additional dependency. See [the rounding argument](tanh_second_derivative_bounds.md).
+
+The internal PyTorch adapter retains additional float32 outward padding and
+preserves the known sign. This scalar API does not add a network Hessian API
+to branches that do not already have one.
+
 ## PyTorch integration (`IntervalTensor` + patching)
 
 ### `IntervalTensor`
